@@ -1,0 +1,46 @@
+# arch-lint configuration (tree-sitter engine)
+# This config enables cross-language architecture enforcement.
+# The presence of [[layers]] activates the tree-sitter engine automatically.
+
+[analyzer]
+root = "."
+exclude = ["**/test/**", "**/build/**", "**/generated/**"]
+
+# Layer definitions
+# Each layer has a name and a list of package prefixes.
+# Files whose package matches a prefix belong to that layer.
+
+[[layers]]
+name = "domain"
+packages = ["com.example.domain"]
+
+[[layers]]
+name = "application"
+packages = ["com.example.app", "com.example.usecase"]
+
+[[layers]]
+name = "infrastructure"
+packages = ["com.example.infra"]
+
+[[layers]]
+name = "presentation"
+packages = ["com.example.api", "com.example.handler"]
+
+# Dependency rules: which layers may depend on which.
+# A layer may always depend on itself (same-layer imports are allowed).
+
+[dependencies]
+domain = []
+application = ["domain"]
+infrastructure = ["domain", "application"]
+presentation = ["domain", "application", "infrastructure"]
+
+# Custom constraints (optional)
+# Pattern-based import restrictions.
+
+# [[constraints]]
+# type = "no-import-pattern"
+# pattern = "java.sql"
+# in_layers = ["domain", "application"]
+# severity = "warning"
+# message = "Avoid direct JDBC usage in upper layers"

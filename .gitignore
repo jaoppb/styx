@@ -1,0 +1,28 @@
+# Build output
+/target
+**/target
+
+# Rust editor/backup artifacts
+**/*.rs.bk
+*.pdb
+
+# Fuzzing artifacts (phase 1 onward: the wire codec is fuzzed)
+fuzz/target
+fuzz/corpus
+fuzz/artifacts
+crash-*
+leak-*
+timeout-*
+oom-*
+
+# Local editor and OS state
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local environment overrides
+.env
+.env.local
