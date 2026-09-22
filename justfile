@@ -17,6 +17,11 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # key and turn enforcement into silence.
 ARCH_LINT_VERSION := "0.6.0"
 
+# Pinned exactly. rumdl is pre-1.0: a minor bump can rename a rule or change a
+# default, which makes this gate noisy rather than silently inert — the milder
+# of the two failure modes, but still a change to verify rather than absorb.
+RUMDL_VERSION := "0.2.75"
+
 SELFTEST := "gate-selftest"
 
 _default:
@@ -26,7 +31,7 @@ _default:
 # The gate. Fail-fast, cheapest step first.
 # ---------------------------------------------------------------------------
 [doc("The complete per-push gate. Hermetic, fail-fast.")]
-gate: fmt-check lint arch deps hickory-dev-only test headless
+gate: fmt-check md lint arch deps hickory-dev-only test headless
     @echo ""
     @echo "gate: GREEN"
 
@@ -37,6 +42,29 @@ fmt-check:
     cargo fmt --all -- --check
 
 # 2. The fifteen denied lints, workspace-wide, every target, every feature.
+[doc("Lint every markdown file in the repository.")]
+md: _rumdl-version
+    @echo "── markdown ───────────────────────────────────────────────────────"
+    rumdl check .
+
+[doc("Apply markdown auto-fixes. NOT part of the gate — it writes to files.")]
+md-fix: _rumdl-version
+    rumdl fmt .
+
+_rumdl-version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v rumdl >/dev/null 2>&1; then
+        echo "rumdl is not installed. Run: just install-tools" >&2
+        exit 1
+    fi
+    found="$(rumdl --version | awk '{print $2}')"
+    if [[ "$found" != "{{ RUMDL_VERSION }}" ]]; then
+        echo "rumdl {{ RUMDL_VERSION }} is pinned, found $found." >&2
+        echo "Run: just install-tools" >&2
+        exit 1
+    fi
+
 [doc("Clippy's fifteen denied lints, workspace-wide.")]
 lint:
     @echo "── clippy ─────────────────────────────────────────────────────────"
@@ -110,7 +138,7 @@ headless:
 # fails the build rather than passing quietly.
 # ---------------------------------------------------------------------------
 [doc("Prove the gate rejects real violations. Run this after ANY gate change.")]
-gate-selftest: _arch-version
+gate-selftest: _arch-version _rumdl-version
     #!/usr/bin/env bash
     set -uo pipefail
     failures=0
@@ -155,6 +183,15 @@ gate-selftest: _arch-version
         cargo run --quiet --package xtask -- hickory-dev-only \
             --manifest-path {{ SELFTEST }}/fixture-d-hickory-in-deps/Cargo.toml
 
+    echo ""
+    echo "Fixture E — markdown with structural violations:"
+    # --no-exclude is LOAD-BEARING. rumdl does not lint an excluded file just
+    # because it was named on the command line: an explicitly-passed excluded
+    # path is still filtered out and the run exits 0 reporting "filtered out".
+    # Without this flag the check below would pass while proving nothing.
+    expect_rejected "rumdl structural rules" \
+        rumdl check {{ SELFTEST }}/fixture-e-markdown/bad-document.md --no-exclude
+
     # Fixture A carries its own copy of the clippy lints, because a standalone
     # workspace cannot inherit the real one's table. Assert the root manifest
     # still denies the same names, so the copy cannot drift unnoticed.
@@ -189,6 +226,7 @@ gate-selftest: _arch-version
 [doc("Install the pinned arch-lint.")]
 install-tools:
     cargo install arch-lint-cli --version {{ ARCH_LINT_VERSION }} --locked
+    cargo install rumdl --version {{ RUMDL_VERSION }} --locked
 
 # Installs the git hooks.
 [doc("Install the lefthook git hooks.")]

@@ -608,7 +608,7 @@ Eviction "1" --> "1" EvictionReport : reports
 
 ### Crate and module layout
 
-```
+```text
 styx-resolution/
   src/
     domain/
@@ -674,7 +674,7 @@ styx-resolution/
 
 ### Position in the resolution pipeline
 
-```
+```text
 client query
   → LocalRecords lookup      (Phase 2 port; hit ⇒ Insecure answer, AD cleared,
                               no forged signature, BYPASSES the cache entirely)

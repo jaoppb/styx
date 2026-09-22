@@ -646,7 +646,6 @@ StyxFilterPolicy "1" --> "1" BlockedReplyBuilder : forges reply
 > `Result<(), E>` for its layer's error enum. Full signatures are spelled out in
 > `## Structure` and `## Operations`.
 
-
 ---
 
 ## Approach
@@ -881,7 +880,7 @@ differs by half of the crate:
 
 ### Crate and module layout
 
-```
+```text
 styx-filtering/
 ├── src/
 │   ├── lib.rs
@@ -970,7 +969,7 @@ The `styx` binary additionally gains `adapters/filter_policy.rs` holding
 
 ### Position in the resolution pipeline
 
-```
+```text
    inbound query
         │
         ▼

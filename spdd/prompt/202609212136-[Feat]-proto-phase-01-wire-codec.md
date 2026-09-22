@@ -606,7 +606,7 @@ owns policy.
 
 ### Crate position in the workspace
 
-```
+```text
 styx-proto  ──────────────► (no workspace dependencies)
      ▲  ▲  ▲  ▲  ▲  ▲  ▲
      │  │  │  │  │  │  └── styx            (binary: listeners, wiring, adapters)
@@ -627,7 +627,7 @@ styx-proto  ──────────────► (no workspace dependen
 
 ### Module layout inside the crate
 
-```
+```text
 styx-proto/
 ├── Cargo.toml              # hickory-proto ONLY under [dev-dependencies]
 ├── src/

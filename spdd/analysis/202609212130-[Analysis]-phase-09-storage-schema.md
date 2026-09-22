@@ -219,20 +219,20 @@ Also recorded, and relevant because group identity is a schema concern:
 > lifecycle and default-group semantics are UI-shaped questions with schema
 > consequences; answering them two phases early, without the UI to think against,
 > is the cost of designing the schema once.
-
+>
 > **Client identity is unreliable by construction** (DHCP non-goal). Per-client
 > groups keyed on IP will silently misattribute after a lease change. Manual naming
 > and a visible "last seen" are mitigations, not fixes.
-
+>
 > **Two write paths for the query log must stay consistent.** Atomic counters and
 > raw rows can disagree if a bug lands in either; behaviour tests need to assert
 > they agree under load and diverge only by the `dropped_detail` count.
-
+>
 > **"Keep last known good" means a dead adlist blocks forever.** A list whose URL
 > rots keeps enforcing a frozen copy indefinitely, and the only signal is a
 > staleness badge nobody is looking at. Staleness needs to be visible on the
 > dashboard, not buried on an adlist settings page.
-
+>
 > **Local records under a signed public zone will break validating clients.** The
 > mitigation is documentation — "put local names under an unsigned suffix" — which
 > is a mitigation only for people who read it.

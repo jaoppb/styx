@@ -25,14 +25,27 @@ also hide these fixtures when the analyser is pointed straight at one.
 
 Both were found the only way they can be found: by the self-test failing.
 
+## The same trap, a third time
+
+Fixture E is excluded from the normal `rumdl` run so the clean gate stays green.
+But **rumdl does not lint an excluded file just because it was named on the
+command line** — an explicitly-passed excluded path is still filtered out, and
+the run exits 0 reporting that it filtered something. A self-test that simply
+pointed rumdl at this fixture would pass without reading a line of it.
+
+`just gate-selftest` passes `--no-exclude` for exactly that reason. Dropping the
+flag does not fail anything; it just stops the fixture from being checked, which
+is the failure this whole directory exists to catch.
+
 | Fixture | Violation | Rejected by |
 |---|---|---|
 | A | `.unwrap()` in a `domain` module | arch-lint `no-unwrap-expect` (AL001) **and** clippy `unwrap_used` |
 | B | cross-layer `use`: `domain` names `infrastructure` | arch-lint `[[deny-scope-dep]]` (ALD003) |
 | C | `styx-resolution` names `styx-filtering`, in source and in manifest | arch-lint `[[restrict-use]]` (ALD001) **and** the link-graph check |
 | D | `hickory-proto` on a normal dependency path | the `hickory-dev-only` containment check |
+| E | markdown: unlabelled fence, heading punctuation, over-long line | `rumdl`, via the repository's own `rumdl.toml` |
 
-## Why four, when the exit criteria name two
+## Why five, when the exit criteria name two
 
 The phase's stated exit criteria name A and B. C and D are here because:
 
@@ -44,6 +57,11 @@ The phase's stated exit criteria name A and B. C and D are here because:
 - **D** exercises the containment check, which otherwise passes vacuously
   until phase 2 adds the fake root/TLD/authoritative servers — it would be
   entirely unproven at exactly the moment it first matters.
+- **E** exercises the markdown gate, which carries a standing exemption:
+  `spdd/**` has the line-length rule switched off. An exemption list that
+  quietly grows until it covers everything is indistinguishable from a clean
+  repository by exit code, and widening it is the cheap fix every time a
+  generated document trips a rule. E is what notices.
 
 An inert config and a passing config emit the same exit code. This directory is
 the only thing that distinguishes them, which is why `just gate-selftest` runs

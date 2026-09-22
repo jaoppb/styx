@@ -203,7 +203,7 @@ household traffic only at the moment changing it costs the most.
 > **Client lifecycle is undefined.** Clients are identified by IP (DHCP is a non-goal), but
 > nothing says how one comes into existence — auto-discovered on first query, or added by hand
 > — what group an unknown client lands in, or what happens to history rows when a client or a
-> group is deleted. Decidable during phase 9's schema design, but it _is_ schema, so it cannot
+> group is deleted. Decidable during phase 9's schema design, but it *is* schema, so it cannot
 > be left to phase 11.
 
 **This is closed here, in four binding rules. They are constraints on the schema, not
@@ -743,7 +743,7 @@ All fallible boundaries return `Result<T, StorageError>` with a `thiserror`-deri
 
 ### Crate and module layout
 
-```
+```text
 crates/styx-storage/
   Cargo.toml
   migrations/
@@ -819,7 +819,7 @@ crates/styx-storage/
 
 ### Dependency direction
 
-```
+```text
 styx (binary)
   ├── styx-storage::application  ──▶ styx-storage::domain (traits)
   │        └── styx-storage::infrastructure (impls, wired at the binary)

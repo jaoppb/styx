@@ -137,7 +137,7 @@ prior phases and constrain this phase's shape:
 
 ### New Concepts Required
 
-**Transport and server loop**
+#### Transport and server loop
 
 - **UDP listener**: business purpose — accept datagram queries on a configured
   address, the overwhelming majority of real DNS traffic. Relates to the request
@@ -182,7 +182,7 @@ prior phases and constrain this phase's shape:
   is phase 12, so **everything before it relies on the lint and on task
   supervision**.
 
-**Time**
+#### Time
 
 - **`Clock` port**: business purpose — every place that reads "now" does so through
   an injected abstraction: TTL arithmetic and expiry in the answer cache, SRTT
@@ -193,7 +193,7 @@ prior phases and constrain this phase's shape:
   cannot be added later.** Two implementations: a system clock for production and a
   controllable test clock for the harness.
 
-**Hot-path ports (declared now, implemented later)**
+#### Hot-path ports (declared now, implemented later)
 
 - **`FilterPolicy` port**: business purpose — answers "for this client and this
   question, is the verdict allow or block, and under which blocked-reply mode".
@@ -222,7 +222,7 @@ prior phases and constrain this phase's shape:
   9 and 10 replace them, and they are what makes the socket tests in phases 3–7
   possible before the product half exists.
 
-**Test harness**
+#### Test harness
 
 - **Fake authoritative server**: business purpose — an in-process DNS server,
   **encoding its responses with `hickory-proto`**, bound to an ephemeral port and

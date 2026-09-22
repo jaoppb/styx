@@ -874,7 +874,7 @@ log boundaries rather than only in the writer.
 
 ### Crate and module layout
 
-```
+```text
 styx-telemetry/
   src/
     domain/
@@ -957,7 +957,7 @@ styx-telemetry/
 
 ### Position relative to the resolution pipeline
 
-```
+```text
 client query
   → LocalRecords lookup        (decision = LocalRecord)
   → FilterPolicy verdict       (decision = Blocked{reason} | Allowed)

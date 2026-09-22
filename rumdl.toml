@@ -1,0 +1,81 @@
+# ===========================================================================
+# styx documentation gate — rumdl 0.2.75, pinned exactly.
+#
+# This repository carries far more markdown than Rust: the SPDD contracts under
+# spdd/ are what the code is generated from, and the ADRs are the only
+# surviving record of why the gate has the shape it has. Documentation is a
+# deliverable here, not a by-product, so it is gated like one.
+#
+# TWO TIERS, because the repository has two authors:
+#
+#   Hand-written prose  (docs/adr/**, ROADMAP.md, gate-selftest/README.md)
+#       A person chooses every line break. Full rule set, line length included.
+#
+#   Generated contracts (spdd/**)
+#       Emitted by the /spdd-* commands, which decide their own wrapping and
+#       have never heard of this linter. Structural rules apply; the
+#       line-length rule does NOT — see [per-file-ignores] below.
+#
+# Measured against this repository before any of this was written: at the
+# default width of 80 the hand-written prose reported ~12 findings and spdd/
+# reported 7336 — over 99% of everything found, all of it one rule. At width 90
+# the hand-written tier reports ZERO and spdd/ still reports ~1190. No single
+# threshold serves both populations.
+# ===========================================================================
+
+[global]
+# Build output and untracked scratch files are never documents.
+respect_gitignore = true
+
+exclude = [
+    "target/**",
+    # Vendored tool definitions. Not authored in this project, so the
+    # repository's gate has no business holding an opinion about them.
+    ".claude/**",
+    # Fixture E is a DELIBERATE violation and must not fail the normal run.
+    #
+    # *** IT IS LINTED ANYWAY, AND THE HOW MATTERS. ***
+    #
+    # rumdl does NOT lint an excluded file just because it was named on the
+    # command line — an explicitly-passed excluded path is still filtered out,
+    # and the run exits 0 reporting "filtered out". A self-test that simply
+    # pointed rumdl at this fixture would therefore pass while proving
+    # nothing. `just gate-selftest` passes --no-exclude for exactly this
+    # reason. Verified empirically; do not remove that flag.
+    "gate-selftest/fixture-e-markdown/**",
+]
+
+[MD013]
+# 90, not the default 80, because 90 is the width the ADRs and the SPDD canvas
+# are already wrapped to. At 80 this gate would start red with ~12 findings
+# that are stylistic disagreements rather than defects, and a gate that starts
+# red teaches people to ignore it.
+#
+# `tables` is left at its default (exempt): a markdown table cannot be wrapped
+# and is not a defect for being wide.
+line-length = 90
+
+# ===========================================================================
+# The generated tier.
+#
+# spdd/** is exempt from the LINE-LENGTH RULE ONLY. Every structural rule —
+# unlabelled code fences, headings ending in punctuation, emphasis standing in
+# for a heading, stray blank lines in blockquotes — still applies there, and
+# those are the findings that indicate a real defect in a generated document.
+#
+# Why the exemption exists: those documents are emitted by the /spdd-* command
+# templates, which choose their own wrapping. A wrapping rule they do not
+# implement makes this gate go red on the next generated document through no
+# author's fault, and a gate that fails for reasons nobody caused is a gate
+# that gets bypassed.
+#
+# THIS EXEMPTION IS A SYMPTOM, NOT A RESOLUTION. The real fix is to teach the
+# SPDD command templates a wrap width, after which this block can be deleted
+# and the two tiers collapse back into one policy.
+#
+# Adding a second rule to this list is a change to what the gate MEANS, and
+# deserves the same scrutiny as weakening a clippy lint. Fixture E is what
+# notices if the list quietly grows.
+# ===========================================================================
+[per-file-ignores]
+"spdd/**" = ["MD013"]

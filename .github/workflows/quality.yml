@@ -16,6 +16,8 @@ env:
   # Pinned exactly, not a range. A minor bump can change a rule name or a
   # config key and turn enforcement into silence.
   ARCH_LINT_VERSION: "0.6.0"
+  # Pre-1.0: pinned for the same reason, with more force.
+  RUMDL_VERSION: "0.2.75"
 
 jobs:
   gate:
@@ -35,6 +37,9 @@ jobs:
 
       - name: Install the pinned arch-lint
         run: cargo install arch-lint-cli --version "${ARCH_LINT_VERSION}" --locked
+
+      - name: Install the pinned rumdl
+        run: cargo install rumdl --version "${RUMDL_VERSION}" --locked
 
       # The whole per-push gate, in one step, via the same target a developer
       # runs. Hermetic: no network, no external service, no live DNS.

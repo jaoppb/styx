@@ -1130,7 +1130,7 @@ what they render, not merely to what is stored.
 
 ### Crate and module layout
 
-```
+```text
 styx-web/
 ├── Cargo.toml
 └── src/
@@ -1242,7 +1242,7 @@ styx-web/
 
 ### Position in the running process
 
-```
+```text
 styx binary (single process, shared Arc state)
 ├── DNS listeners (UDP/TCP/DoT/DoH)  ── hot path, no I/O, unaffected by the DB
 ├── background workers (adlist ingestion, rollup flush, retention)

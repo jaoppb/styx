@@ -8,7 +8,7 @@
 
 ## Original Business Requirement
 
-*(verbatim, from the Phase 1 spec)*
+(verbatim, from the Phase 1 spec)
 
 ```markdown
 # Phase 1 — Wire codec (`styx-proto`)

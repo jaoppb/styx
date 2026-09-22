@@ -46,8 +46,8 @@ The phase spec cites three decisions by number. Because the source record is bei
 retired, their full text and rationale are reproduced here.
 
 **The infrastructure cache decision — "Two structurally different caches."**
-> The _answer cache_ (RRsets + messages, keyed by question) is global and lives in
-> `styx-resolution`. The _infrastructure cache_ (delegations, NS sets, per-nameserver
+> The *answer cache* (RRsets + messages, keyed by question) is global and lives in
+> `styx-resolution`. The *infrastructure cache* (delegations, NS sets, per-nameserver
 > RTT and EDNS capability, keyed by zone and nameserver) lives in `styx-recursion` and
 > is used only by recursion.
 
@@ -77,7 +77,7 @@ relaxed mode."**
 > protocol.
 
 **Recursion is an `Upstream`, not a server mode.**
-> `Upstream` is the unifying abstraction. An upstream is _either_ a forwarder or a
+> `Upstream` is the unifying abstraction. An upstream is *either* a forwarder or a
 > recursor. A pool holds upstreams of mixed kinds, each with its own health and
 > behaviour config. Recursion is an implementation of the same port, not a separate
 > server mode.
@@ -96,8 +96,8 @@ relaxed mode."**
 
 **DNSSEC chain material is pushed out of the descent.**
 > DNSSEC validation is its own crate behind a `ChainSource` port: `styx-recursion`
-> _pushes_ chain material it already collected during descent (DS RRsets arrive unasked
-> in DO=1 referrals, per RFC 4035 §3.1.4), while forwarder paths _pull_ DS/DNSKEY on
+> *pushes* chain material it already collected during descent (DS RRsets arrive unasked
+> in DO=1 referrals, per RFC 4035 §3.1.4), while forwarder paths *pull* DS/DNSKEY on
 > demand. One validator, two feeding strategies. This avoids widening the `Upstream`
 > port with a "chain material observed en route" field that would be permanently empty
 > for forwarders.
@@ -141,7 +141,7 @@ relaxed mode."**
 > Acceptance runs in two tiers. Per push, hermetic and fast: socket tests, fuzzing, and
 > the full lint/arch gate. Per phase, non-hermetic: a corpus of real domains resolved
 > through both styx and a local `unbound`, diffing RCODE, AD bit and rrset contents.
-> **In-process fakes only prove the resolver does what we _think_ delegation means; the
+> **In-process fakes only prove the resolver does what we *think* delegation means; the
 > differential run is the only gate that catches a shared misreading.** It depends on the
 > live internet and is flaky by nature, so it gates a phase and never a push.
 

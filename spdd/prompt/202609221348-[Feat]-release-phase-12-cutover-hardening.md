@@ -760,7 +760,7 @@ and reachable through the soak and beyond.
 
 ### Module layering inside the binary crate `styx`
 
-```
+```text
 styx/src/supervision/
   domain/          TaskId, TaskTier, RestartPolicy, Backoff, ExhaustionAction,
                    RestartLedger, RestartDecision, TaskOutcome, PanicReport,
@@ -778,7 +778,7 @@ the feature crates it adapts. arch-lint's `[[deny-scope-dep]]` rules enforce tha
 
 ### Module layering inside `styx-web` (feature `web` only)
 
-```
+```text
 styx-web/src/infrastructure/panic_boundary.rs
                    CatchPanicFuture, PanicBoundaryLayer, PanicBoundaryService,
                    CaughtPanic, PanicInjector (cfg-gated)
@@ -789,7 +789,7 @@ meaning, and it must not appear in `styx-web`'s `domain` or `application`.
 
 ### `xtask` crate (workspace member, not published)
 
-```
+```text
 xtask/src/
   release.rs       ReleaseTarget, ReleaseMatrix
   smoke.rs         SmokeCheck, SmokeOutcome, SmokeError
@@ -813,7 +813,7 @@ xtask/src/
 
 ### Documentation artefacts produced by this phase
 
-```
+```text
 docs/soak-checklist.md       the pre-written checklist, filled in during the soak
 docs/cutover.md              cutover procedure + rollback procedure (IP addresses, off-machine)
 docs/operations.md           standing obligations: trust anchor / KSK roll, local names
@@ -829,7 +829,7 @@ Five groups in order. **12a–12c are code, 12d is CI, 12e is procedure. Do not 
 until 12a–12d are green. Do not change the household's resolver until 12e's soak has
 passed.**
 
-### GROUP 12a — Supervision core. Land before 12b.
+### GROUP 12a — Supervision core. Land before 12b
 
 #### 12a.1 — Create the `supervision` module tree in the binary crate
 
@@ -996,7 +996,7 @@ passed.**
 
 ---
 
-### GROUP 12b — The panic boundary. Depends on 12a.
+### GROUP 12b — The panic boundary. Depends on 12a
 
 #### 12b.1 — Implement `CatchPanicFuture<F>`
 
@@ -1091,7 +1091,7 @@ passed.**
 
 ---
 
-### GROUP 12c — Shutdown coordination and wiring. Depends on 12a and 12b.
+### GROUP 12c — Shutdown coordination and wiring. Depends on 12a and 12b
 
 #### 12c.1 — Implement `ShutdownCoordinator`
 
@@ -1152,7 +1152,7 @@ passed.**
 
 ---
 
-### GROUP 12d — musl release matrix and artifact verification. Depends on 12a–12c.
+### GROUP 12d — musl release matrix and artifact verification. Depends on 12a–12c
 
 #### 12d.1 — Define `ReleaseTarget` and `ReleaseMatrix` in `xtask`
 
@@ -1207,7 +1207,7 @@ passed.**
 
 ---
 
-### GROUP 12e — Soak, differential gate, cutover. Depends on 12a–12d being green.
+### GROUP 12e — Soak, differential gate, cutover. Depends on 12a–12d being green
 
 #### 12e.1 — Write `docs/soak-checklist.md` **before** the soak starts
 

@@ -641,7 +641,7 @@ anchor rollover. Write them where the reasoning is freshest.
 
 ### Workspace layout
 
-```
+```text
 styx/
 ├── Cargo.toml                  # virtual manifest: members, [workspace.lints], [workspace.dependencies]
 ├── rust-toolchain.toml         # pinned rustc (the version the 15 lint names were verified against)

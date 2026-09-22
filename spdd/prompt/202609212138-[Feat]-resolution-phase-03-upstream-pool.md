@@ -226,7 +226,7 @@ UpstreamPool ..> UpstreamResponse : returns
 PoolConfig ..> UpstreamPool : constructs
 ```
 
-**Entity notes**
+### Entity notes
 
 - `HealthState` is a **concrete struct owned by `PoolMember`**, never a trait, never shared with anything outside the pool. It is the pool's private fold over dispatch outcomes.
 - `MemberView` is the **only** thing selection strategies see. Strategies are pure functions over a read-only projection plus the current time; they never touch an `Upstream` and never mutate health.
@@ -296,7 +296,7 @@ PoolConfig ..> UpstreamPool : constructs
 
 The project rule is **one crate per feature, with `domain` / `application` / `infrastructure` as modules inside it**. Cargo enforces feature-to-feature isolation; arch-lint enforces layering *within* a crate. This phase adds to `styx-resolution`:
 
-```
+```text
 styx-resolution/
   src/
     domain/

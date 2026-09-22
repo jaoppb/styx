@@ -110,7 +110,7 @@ every commit, **or the headless build rots within a month**.
 **Decision 34 — lint policy as specified.** 15 denied clippy lints workspace-wide, 4
 `allow-*-in-tests` entries in `clippy.toml`. All 15 names verified against rustc 1.96.0.
 
-**Decision 35 — arch-lint is enforced by lefthook (pre-commit/pre-push) _and_ GitHub
+**Decision 35 — arch-lint is enforced by lefthook (pre-commit/pre-push) *and* GitHub
 Actions.** A lint that only runs locally is not enforcement.
 
 **Decision 36 — CI on GitHub Actions.** Quality gates on every push/PR; release artifacts for
@@ -130,7 +130,7 @@ path, **or the exception rots into a real dependency**.
 **Decision 39 — acceptance runs in two tiers.** Per push, hermetic and fast: socket tests,
 fuzzing, and the full lint/arch gate. Per phase, non-hermetic: a corpus of real domains
 resolved through both styx and a local `unbound`, diffing RCODE, AD bit and rrset contents.
-In-process fakes only prove the resolver does what we _think_ delegation means; the
+In-process fakes only prove the resolver does what we *think* delegation means; the
 differential run is the only gate that catches a shared misreading. It depends on the live
 internet and is flaky by nature, so it gates a phase and never a push.
 
@@ -748,7 +748,6 @@ deliverable criterion. Both are assessed below.
 | S9 | ADR — layering and the arch-lint mechanism | Yes | Must record the two-engine selector and why `[[layers]]` is absent, or the config is "fixed" back into inertness by a future reader. |
 | S10 | ADR — the `hickory-proto` exception to the from-scratch rule | Yes | Must record the oracle argument: a self-encoded fixture shares every bug with the code it tests, so a green suite would prove only self-consistency. |
 | S11 | ADR — the pinned trust anchor | Yes | Documents a choice whose code lands in phase 6. Must carry the accepted consequence: a KSK roll needs a release or a file edit, and missing one SERVFAILs every lookup — a monitoring obligation, not code. |
-
 | S12 | *(amendment)* Markdown linting wired into the same gate, pinned, with the hand-written and generated tiers distinguished | Yes | Verified against the repository before being written down: the hand-written tier is already clean at the chosen width, and the tier split is expressible in a single configuration file. Carries a one-off cost of ~47 structural fixes, ~80% of them mechanical. Needs a self-test fixture to avoid becoming the vacuous check this phase exists to prevent — see Ambiguities. |
 
 **Coverage**: 3 of 3 stated exit criteria addressable; 12 scope deliverables, of which 10 are
