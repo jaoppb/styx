@@ -226,6 +226,37 @@ When syncing different types of changes:
    - Record new crates in Structure with their justification and feature flags
    - Update Safeguards if MSRV, feature combinations, or the semver contract moved
 
+**Markdown Output Norms** (the prompt file this command rewrites is linted)
+
+The updated prompt is checked by the repository's markdown gate.
+Every rule below is one that real generated output has actually tripped — these
+are not style preferences recovered from a manual. **Emit a clean document on
+the first write.** A document that has to be repaired after generation means the
+next run reintroduces the same defect, and the repair becomes a permanent tax on
+the workflow.
+
+- **Wrap prose at 90 columns**, not 80. Tables, long URLs and fenced blocks are
+  exempt — never contort a table to fit a width it is exempt from.
+- **Every fenced block carries a language.** Use `text` for ASCII diagrams, directory
+  trees and console output, and `mermaid` for diagrams. A bare ``` is a defect.
+- **Headings never end in punctuation.** Write `### GROUP 6a — Positive chain` and put
+  the qualifying sentence in the body, not in the heading.
+- **Emphasis style**: use `*emphasis*` and `**strong**`, never the `_underscore_` forms.
+- **A heading is a heading.** Never leave a standalone bold line standing in for one:
+  if it introduces a section, give it a real `###` or `####` level. If it is an aside
+  rather than a section, write it as ordinary prose instead of emphasising the whole
+  line.
+- **Consecutive blockquotes**: separate the paragraphs with a `>` line, not a blank
+  line — a blank line reads as a gap *inside* one quote rather than a break between
+  two.
+- **One blank line between blocks**, never two or more.
+- **Keep every table row adjacent to its table.** A blank line before a trailing row
+  orphans it from the header that gives it meaning.
+
+**Verify before you finish**: if the repository has a markdown linter configured
+(`just md`, `rumdl`, `markdownlint`), run it against the file you just wrote and fix
+what it reports. Do not hand the document to the gate to be rejected.
+
 **Output**
 
 - Updated structured prompt file with synced content
@@ -235,6 +266,9 @@ When syncing different types of changes:
 
 **Guardrails**
 
+- Emitted markdown MUST satisfy the **Markdown Output Norms** above: wrapped at 90
+  columns, every fence carrying a language, real headings rather than bold lines,
+  and no trailing punctuation in a heading
 - Do NOT remove content from prompt without explicit user approval
 - Do NOT change Requirements section unless user explicitly requests (business goals shouldn't change from code refactoring)
 - Do NOT simplify or abbreviate existing detailed specifications
