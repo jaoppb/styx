@@ -10,6 +10,13 @@
 > `ROADMAP.md` and `docs/specs/*.md`. All codebase-grounded analysis below is therefore
 > grounded in the project's settled design decisions rather than in existing code, and those
 > decisions are quoted in full so this document stands alone.
+>
+> **Revised 2026-09-22** with a documentation-linting amendment, raised after the phase 0
+> implementation had landed. The repository is no longer greenfield: the workspace, the
+> gate, the self-test fixtures and the three ADRs all exist, and the amendment's analysis is
+> grounded in the real repository — the linter was run against it before any of this was
+> written. Everything above this line describes the state the original analysis was written
+> in, and is left unchanged. Amendment content is marked where it appears.
 
 ---
 
@@ -53,6 +60,27 @@ An empty workspace where `just gate` is green, **and** a deliberate `.unwrap()` 
 a `domain` module plus a deliberate cross-layer `use` both fail the gate. Without
 that check the config may be silently inert again.
 ```
+
+### Amendment — 2026-09-22: documentation linting
+
+The specification above is reproduced verbatim and is silent on documentation. This
+amendment adds a **markdown linter to the gate**, raised after the phase 0 implementation
+landed. It is recorded here rather than rewritten into the quoted spec, so the original
+scope stays legible.
+
+**Requirement**: markdown files are linted by the same gate, under the same three callers,
+with the tool version pinned the same way.
+
+**Why it belongs in phase 0 rather than later**: this repository's prose *is* one of its
+primary artefacts. The SPDD contracts under `spdd/` are the specification the code is
+generated from, and the ADRs are the only record of reasoning that outlives the decisions.
+There are already **36 markdown files against 11 Rust files** — documentation outweighs code
+better than three to one, and will keep doing so until phase 2 or 3. A gate that governs the
+minority of the repository and ignores the majority is mis-aimed.
+
+The same argument the phase already makes about the headless build applies verbatim: the
+cost of wiring it is lowest now and rises with every phase, and an unexercised configuration
+rots within about a month.
 
 ### Referenced decisions, inlined
 
@@ -241,6 +269,26 @@ new.
   reasoning would otherwise be lost — the layering model and the arch-lint engine mechanism,
   the `hickory-proto` exception to the from-scratch rule, and the pinned root trust anchor.
 
+- **Markdown linter (`rumdl`)**: the documentation counterpart to clippy — a rule-based
+  checker over every `.md` file, run as a gate step and pinned exactly. It is a Rust binary
+  installed through `cargo install --locked`, which matters: it reaches the repository by
+  the same route as arch-lint, needs no second language runtime, and is pinned by the same
+  mechanism. Relates to the gate as an eighth step, and to the hooks and CI through the
+  single `gate` target they already share.
+
+- **Documentation tier**: the recognition that the repository's markdown is not one
+  homogeneous thing, and that a single policy over all of it is either too loose for the
+  prose or unlivable for the contracts. Two tiers:
+
+  - **Hand-written, reader-facing** — `docs/adr/**`, `ROADMAP.md`, `gate-selftest/README.md`.
+    Authored deliberately, read by humans looking for reasoning. Full rule set applies.
+  - **Generated contracts** — `spdd/**`. Emitted by the SPDD commands, read as
+    specifications. Structural rules apply; the *wrapping* rule does not, because the
+    generator is what decides line width and it does not know the linter exists.
+
+  Relates to the linter as its configuration axis, and to the SPDD workflow as the boundary
+  between what a human controls and what a command emits.
+
 ### Key Business Rules
 
 - **A crate is a feature; a layer is a module.** Governs: workspace root, feature crate,
@@ -277,9 +325,24 @@ new.
 - **`hickory-proto` never appears in a normal or build dependency path.** Governs: dev-only
   containment, the from-scratch rule. It may appear only under `[dev-dependencies]`.
 
+- **Documentation is a deliverable of this repository, and is gated like one.** Governs:
+  markdown linter, gate, documentation tier. The ADRs are the only surviving record of why
+  the gate has the shape it has, and the SPDD contracts are what the code is generated from.
+  Neither is a by-product.
+
+- **A rule the generator cannot satisfy is a rule that will be suppressed.** Governs:
+  documentation tier, markdown linter. `spdd/**` is emitted by the SPDD commands. Imposing a
+  wrapping rule those commands do not know about produces a gate that goes red on the next
+  `/spdd-generate` run through no author's fault — and a gate that fails for reasons nobody
+  caused is a gate that gets bypassed. The tier split exists to keep every enforced rule one
+  that an author can actually act on.
+
 - **Every gate must be proven to fail.** Governs: gate self-test. This is the exit criterion
   and, given the history of the committed config, the single most important rule in the
-  phase.
+  phase. **It extends to the markdown gate**: a linter pointed at an over-broad exclusion
+  list passes vacuously and looks identical to one finding nothing wrong. That is this
+  phase's founding failure in a new medium, and it needs a fixture like every other rule
+  family.
 
 ---
 
@@ -318,6 +381,12 @@ one `gate` target, which is then invoked identically by pre-commit, pre-push and
 
 The phase closes by attacking its own work: a deliberate `.unwrap()` in a `domain` module and
 a deliberate cross-layer `use`, both of which must turn the gate red.
+
+**The documentation amendment adds a fourth movement**, parallel to the third rather than
+after it: the same gate acquires a markdown step, pinned the same way, invoked by the same
+three callers, and proven by the same kind of fixture. Nothing about the gate's shape
+changes — it grows one more step, placed with the other cheap text-level checks and before
+anything that compiles.
 
 ### Key Design Decisions
 
@@ -373,6 +442,40 @@ a deliberate cross-layer `use`, both of which must turn the gate red.
   three in phase 0, where the reasoning is freshest and the gate configuration they explain
   is being created.**
 
+- **A Rust markdown linter, installed by `cargo install`, rather than the Node ecosystem's.**
+  Trade-off: `markdownlint-cli2` is the de facto standard, has the larger rule set and the
+  wider deployment; `rumdl` is at 0.2.x, pre-1.0, and will churn. Against that, adopting it
+  means a Node toolchain becomes a build requirement of a Rust project — a second runtime to
+  install in CI, a second version to pin, and a second lockfile to keep honest, all to check
+  prose. `rumdl` arrives through `cargo install --locked` exactly as arch-lint does, is
+  covered by the same pinning discipline, and needs nothing that is not already present.
+  → **`rumdl`, pinned to an exact version, with the pre-1.0 churn accepted and stated.**
+
+- **Two documentation tiers, expressed in one configuration file.** Trade-off: a single
+  uniform policy is simpler to explain and has no boundary to get wrong, but it cannot be
+  set anywhere useful — strict enough for the ADRs makes the generated contracts unlintable,
+  loose enough for the contracts stops the ADRs from being checked at all. The linter's
+  per-file rule-ignore mechanism expresses both tiers in one file, so there is still one
+  configuration and one invocation. → **One config, two tiers: full rules on hand-written
+  prose, structural rules only on `spdd/**`.**
+
+- **Exempt the generated contracts from the wrapping rule, not from linting.** Trade-off:
+  exempting anything weakens the gate, and an exemption is how enforcement rots. But the
+  alternative is worse in a specific way: `spdd/**` is emitted by the SPDD commands, and a
+  wrapping rule they do not implement makes the gate fail on the next generated document
+  through nobody's fault. The structural rules — unlabelled code fences, heading punctuation,
+  emphasis-as-heading, stray blank lines — remain enforced there, and those are the ones that
+  catch real defects in a generated document. → **Wrapping is a hand-written-prose rule;
+  structure is a universal one.**
+
+- **Line width set to match the prose that already exists.** Trade-off: the tool's default is
+  80, which is the conventional choice and needs no justification; but the ADRs written in
+  this phase wrap at just under 90, so the default would report ~12 violations that are
+  stylistic disagreements rather than defects. Setting the width to the convention already in
+  use makes the hand-written tier clean on day one, which matters because a gate that starts
+  red teaches people to ignore it. → **Match the existing wrap, and treat any later widening
+  as a decision rather than a drift.**
+
 ### Alternatives Considered
 
 - **Keep the committed `arch-lint.toml` and add `[[constraints]]` to it.** Rejected: the
@@ -405,6 +508,36 @@ a deliberate cross-layer `use`, both of which must turn the gate red.
   and a satisfied one are indistinguishable from the exit code alone.
 
 ---
+
+- **`markdownlint-cli2` (Node) for the markdown gate.** Rejected: it is the better-known
+  tool with the larger rule set, but it makes a Node runtime a build dependency of a Rust
+  project purely to lint prose — a second toolchain to install in CI, pin, and keep current.
+  The cost is paid on every machine and in every pipeline, forever, for a check that a Rust
+  binary already available through `cargo install` performs adequately.
+
+- **A formatter (`prettier`, `dprint`, `rumdl fmt`) run in `--check` mode instead of a
+  linter.** Rejected as the *primary* mechanism: a formatter enforces one canonical shape and
+  would reflow the SPDD contracts wholesale, including tables and mermaid blocks, producing
+  an enormous diff that reviews as noise. The structural defects worth catching — an
+  unlabelled code fence, a heading that is really emphasis — are not formatting questions and
+  a formatter does not report them. Auto-fix remains available as a developer convenience,
+  deliberately not wired into the gate.
+
+- **A prose linter (`vale`) for style, tone and terminology.** Rejected for this phase as
+  scope: it governs writing quality rather than document structure, needs a curated
+  vocabulary to be useful, and would turn a mechanical check into an editorial one. The
+  structural gate is the part that can be enforced without a style argument.
+
+- **Lint `spdd/**` under the full rule set, and reflow the 26 generated documents to match.**
+  Rejected: it wins compliance once and loses it on the next `/spdd-generate` run, because
+  the generator has no knowledge of the wrap width. Fixing that properly means teaching the
+  five SPDD command templates a formatting contract — real work, in a different part of the
+  system, that this phase has no mandate to touch.
+
+- **Defer markdown linting to a later phase.** Rejected on the phase's own logic: the cost
+  is lowest now and rises with every document added, and the documentation set is already
+  three times the size of the code. Deferring also means the ADRs — written in this phase,
+  and the artefact most in need of being kept readable — are the ones that never get checked.
 
 ## Risk & Gap Analysis
 
@@ -442,6 +575,21 @@ a deliberate cross-layer `use`, both of which must turn the gate red.
   but must not fail it permanently. Whether they are a scratch edit performed and reverted, a
   fixture directory excluded from the normal gate run, or a dedicated negative-test target is
   an open question with real consequences for whether the check survives past phase 0.
+
+- **The documentation amendment does not say which files are in scope.** "Markdown files"
+  could mean the hand-written prose only, everything tracked in git, or everything on disk.
+  The repository contains at least three populations with different authorship: hand-written
+  prose, SPDD contracts generated by command, and `.claude/commands/*.md`, which are tool
+  definitions vendored into the repo and not authored here at all. What needs clarification
+  is whether a document nobody in this project wrote should be gated by it — the canvas
+  assumes not, and excludes them.
+
+- **The amendment does not state whether the markdown gate needs its own self-test fixture.**
+  Every other rule family in this phase has one, on the explicit reasoning that an inert
+  check and a passing check are indistinguishable from an exit code. A markdown linter whose
+  exclusion list has quietly grown to cover everything is exactly that failure. The canvas
+  should treat a fixture as required rather than optional, but the amendment as written does
+  not say so.
 
 ### Edge Cases
 
@@ -549,6 +697,36 @@ a deliberate cross-layer `use`, both of which must turn the gate red.
   abstract and wrong in practice will not surface until phase 1 or later. The deliberate
   violation check is the only mitigation available — and it only proves the rules it exercises.
 
+- **The markdown gate governs documents the project does not author, and this is where it
+  will go wrong.** The linter was run against the repository before this amendment was
+  written, and the shape of the problem is entirely in one rule. At the tool's default width,
+  the hand-written prose reports around a dozen violations and the generated contracts report
+  **over seven thousand** — more than 99% of everything found. Widen the limit to the width
+  the ADRs already use and the hand-written tier goes to **zero** while the contracts still
+  report over a thousand. No threshold fixes both: the two populations are wrapped by
+  different authors to different rules, and one of those authors is a command.
+
+  With the wrapping rule scoped to hand-written prose, what remains repo-wide is **47
+  structural findings**, concentrated in unlabelled code fences, headings ending in
+  punctuation, and emphasis used where a heading was meant. About four-fifths are mechanically
+  fixable; the rest are genuine authoring choices in generated documents that have to be
+  settled by hand. **That residue is the real cost of this amendment** and it is paid once, in
+  this phase, before the gate can go green.
+
+- **The linter is pre-1.0 and its rule set will move.** A minor bump can rename a rule, change
+  a default, or add one that reports on documents that were clean yesterday. This is the same
+  hazard the phase already names for arch-lint and for rustc, and it takes the same
+  mitigation: pin the exact version, and treat an upgrade as a change that must be verified
+  rather than absorbed. The blast radius is smaller than arch-lint's — a markdown rule change
+  makes the gate noisy rather than silently inert — which is the one respect in which this
+  risk is milder than the ones already accepted.
+
+- **Auto-fix is the sharp edge.** The tool can rewrite documents in place, and it offers to
+  reflow prose. Run without thought across `spdd/**`, that reflows tables and mermaid blocks
+  and produces a diff nobody can review. The mitigation is a posture, not a setting: the gate
+  *checks* and never writes, auto-fix stays a deliberate developer action, and reflow stays
+  off.
+
 ### Acceptance Criteria Coverage
 
 The phase spec states two exit criteria; each scope bullet also functions as an implicit
@@ -571,6 +749,9 @@ deliverable criterion. Both are assessed below.
 | S10 | ADR — the `hickory-proto` exception to the from-scratch rule | Yes | Must record the oracle argument: a self-encoded fixture shares every bug with the code it tests, so a green suite would prove only self-consistency. |
 | S11 | ADR — the pinned trust anchor | Yes | Documents a choice whose code lands in phase 6. Must carry the accepted consequence: a KSK roll needs a release or a file edit, and missing one SERVFAILs every lookup — a monitoring obligation, not code. |
 
-**Coverage**: 3 of 3 stated exit criteria addressable; 11 scope deliverables, of which 9 are
+| S12 | *(amendment)* Markdown linting wired into the same gate, pinned, with the hand-written and generated tiers distinguished | Yes | Verified against the repository before being written down: the hand-written tier is already clean at the chosen width, and the tier split is expressible in a single configuration file. Carries a one-off cost of ~47 structural fixes, ~80% of them mechanical. Needs a self-test fixture to avoid becoming the vacuous check this phase exists to prevent — see Ambiguities. |
+
+**Coverage**: 3 of 3 stated exit criteria addressable; 12 scope deliverables, of which 10 are
 fully addressable and 2 (S2, S5) are partial pending the version verification and the lint
-enumeration noted above.
+enumeration noted above. S12 is an amendment to the original spec rather than one of its
+bullets, and is addressable in full.
