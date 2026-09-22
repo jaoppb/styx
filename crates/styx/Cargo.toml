@@ -1,0 +1,27 @@
+[package]
+name = "styx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "styx composition root: the single binary."
+
+[features]
+# The web UI is a compile-time feature so a headless resolver can be built.
+# CI builds and tests --no-default-features on every commit, or the headless
+# configuration rots within a month. It gates real code from phase 11; until
+# then the check is deliberately near-vacuous and wired anyway, because its
+# cost is lowest now and rises with every phase.
+default = ["web"]
+web = []
+
+[dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# The composition root is the only crate that may name every feature crate.
+# Phases 1+ add them here as they arrive.
+
+[lints]
+workspace = true

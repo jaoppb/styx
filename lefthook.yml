@@ -1,0 +1,25 @@
+# styx git hooks.
+#
+# Both hooks invoke the single `gate` target. They deliberately do NOT re-list
+# its steps: any drift between what CI runs and what the hooks run makes the
+# hooks theatre, and the hooks are the feedback developers actually feel.
+#
+# A lint that only runs locally is not enforcement; a lint that only runs
+# remotely makes every violation a round-trip through a failed pipeline. So the
+# gate runs in both places.
+#
+# ACCEPTED LIMITATION: these hooks are bypassable with `--no-verify`. CI is the
+# only non-bypassable gate. That is a conscious position, not an oversight —
+# see docs/adr/0001-layering-and-arch-lint.md.
+#
+# Install with: just install-hooks
+
+pre-commit:
+  jobs:
+    - name: gate
+      run: just gate
+
+pre-push:
+  jobs:
+    - name: gate
+      run: just gate

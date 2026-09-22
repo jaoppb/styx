@@ -1,46 +1,210 @@
-# arch-lint configuration (tree-sitter engine)
-# This config enables cross-language architecture enforcement.
-# The presence of [[layers]] activates the tree-sitter engine automatically.
+# ===========================================================================
+# styx architecture enforcement — arch-lint 0.6.0, syn engine.
+#
+#   *** THE ABSENCE OF A [[layers]] BLOCK IS LOAD-BEARING. ***
+#
+# arch-lint has two mutually exclusive engines, selected by whether this file
+# contains a [[layers]] table (arch-lint-cli-0.6.0/src/main.rs:153).
+#
+#   With [[layers]]:    the tree-sitter engine runs. It ships exactly one
+#                       grammar, tree-sitter-kotlin-ng, and filters discovery
+#                       to .kt/.kts. On a Rust repository it analyses ZERO
+#                       files and exits 0 — and, because it is selected, it
+#                       also silently disables AL001-AL013.
+#
+#   Without [[layers]]: the syn engine runs. It executes AL001-AL013 plus the
+#                       declarative [[scopes]], [[deny-scope-dep]] and
+#                       [[restrict-use]] rules below, enforcing layering on
+#                       Rust by path glob.
+#
+# The file this replaced contained [[layers]]. It had been green since the day
+# it was committed, having checked nothing at all. An enforcement tool that
+# checks nothing and one that finds nothing wrong emit the same exit code.
+#
+# Do NOT reintroduce [[layers]], and do NOT "simplify" this file without
+# running `just gate-selftest` afterwards. See docs/adr/0001.
+# ===========================================================================
+
+# strict = all rules (AL001-AL007, AL009-AL013; note AL008 does not exist).
+preset = "strict"
+
+# Violations at or above this severity fail the run.
+fail_on = "error"
 
 [analyzer]
 root = "."
-exclude = ["**/test/**", "**/build/**", "**/generated/**"]
+# Declaring this table replaces the built-in default, so target/ and vendor/
+# must be listed explicitly here or they come back into the analysis.
+exclude = [
+    "**/target/**",
+    "**/vendor/**",
+]
+# Only these trees are analysed.
+#
+# This is an ALLOWLIST rather than an exclude of `gate-selftest/**`, and the
+# distinction is load-bearing. `analyzer.exclude` falls back to a plain
+# SUBSTRING match against the absolute path
+# (arch-lint-core-0.6.0/src/analyzer.rs:527), so excluding the fixture
+# directory would also hide the fixtures when `just gate-selftest` points the
+# analyser straight at one — discovery would report zero files and every
+# fixture would "pass". An include pattern is matched against the path
+# relative to the analysis root, so:
+#
+#   root = repo      -> a fixture is `gate-selftest/.../crates/...`: not included.
+#   root = a fixture -> the same file is `crates/...`: included and analysed.
+#
+# One configuration, correct in both directions.
+include = [
+    "crates/**",
+    "xtask/**",
+]
+respect_gitignore = true
 
-# Layer definitions
-# Each layer has a name and a list of package prefixes.
-# Files whose package matches a prefix belong to that layer.
+# ---------------------------------------------------------------------------
+# Rule options.
+#
+# Test code may use the panicking constructs production code is denied — the
+# same exemption posture as clippy.toml's four allow-*-in-tests entries.
+# Unknown option names are a hard error, not a silent ignore.
+# ---------------------------------------------------------------------------
+[rules.no-unwrap-expect]
+allow_in_tests = true
+allow_expect = false
 
-[[layers]]
-name = "domain"
-packages = ["com.example.domain"]
+[rules.no-panic-in-lib]
+allow_in_tests = true
 
-[[layers]]
-name = "application"
-packages = ["com.example.app", "com.example.usecase"]
+[rules.no-silent-result-drop]
+allow_in_tests = true
 
-[[layers]]
-name = "infrastructure"
-packages = ["com.example.infra"]
+[rules.async-trait-send-check]
+# DNS listeners, Leptos SSR and background workers share state across a
+# multi-threaded tokio runtime from phase 2 onward.
+runtime_mode = "multi-thread"
 
-[[layers]]
-name = "presentation"
-packages = ["com.example.api", "com.example.handler"]
+# ===========================================================================
+# Scopes — one per feature crate x layer, keyed by path glob.
+#
+#   *** THE SECOND GLOB IN EACH LAYER SCOPE IS LOAD-BEARING. ***
+#
+# [[deny-scope-dep]] resolves a `crate::a::b` use path to the candidate file
+# paths `src/a/b.rs` and `src/a/b/mod.rs`, RELATIVE TO THE ANALYSIS ROOT
+# (arch-lint-core-0.6.0/src/declarative/rules/scope_dep.rs:118) — it assumes a
+# single-crate layout. In this workspace the real file is
+# `crates/<crate>/src/a/b/mod.rs`, which that candidate never matches.
+#
+# With only the `crates/**` glob, the layering rules match nothing and the run
+# exits 0. That is the inert-config failure in a new dress, and it was
+# confirmed empirically before this file was written.
+#
+# The `src/<layer>/**` glob is what the synthetic candidate path resolves
+# against. It matches no real file in a workspace layout, so it cannot
+# mis-attribute one. Fixture B is the only thing that catches its removal.
+# ===========================================================================
 
-# Dependency rules: which layers may depend on which.
-# A layer may always depend on itself (same-layer imports are allowed).
+[[scopes]]
+name = "styx-proto"
+paths = ["crates/styx-proto/src/**"]
 
-[dependencies]
-domain = []
-application = ["domain"]
-infrastructure = ["domain", "application"]
-presentation = ["domain", "application", "infrastructure"]
+[[scopes]]
+name = "styx-resolution"
+paths = ["crates/styx-resolution/src/**"]
 
-# Custom constraints (optional)
-# Pattern-based import restrictions.
+[[scopes]]
+name = "styx-resolution-domain"
+paths = ["crates/styx-resolution/src/domain/**", "src/domain/**"]
 
-# [[constraints]]
-# type = "no-import-pattern"
-# pattern = "java.sql"
-# in_layers = ["domain", "application"]
-# severity = "warning"
-# message = "Avoid direct JDBC usage in upper layers"
+[[scopes]]
+name = "styx-resolution-application"
+paths = ["crates/styx-resolution/src/application/**", "src/application/**"]
+
+[[scopes]]
+name = "styx-resolution-infrastructure"
+paths = ["crates/styx-resolution/src/infrastructure/**", "src/infrastructure/**"]
+
+[[scopes]]
+name = "styx-filtering"
+paths = ["crates/styx-filtering/src/**"]
+
+[[scopes]]
+name = "styx-filtering-domain"
+paths = ["crates/styx-filtering/src/domain/**", "src/domain/**"]
+
+[[scopes]]
+name = "styx-filtering-application"
+paths = ["crates/styx-filtering/src/application/**", "src/application/**"]
+
+[[scopes]]
+name = "styx-filtering-infrastructure"
+paths = ["crates/styx-filtering/src/infrastructure/**", "src/infrastructure/**"]
+
+[[scopes]]
+name = "styx-bin"
+paths = ["crates/styx/src/**"]
+
+# ===========================================================================
+# Layering — Structure rules 1-3, one denial per edge that must not exist.
+#
+# The `message` teaches the invariant rather than merely rejecting: the
+# failure text is the only documentation most readers will ever see.
+# ===========================================================================
+
+[[deny-scope-dep]]
+name = "resolution-domain-outward"
+from = "styx-resolution-domain"
+to = ["styx-resolution-application", "styx-resolution-infrastructure"]
+message = "domain is the innermost layer: it declares ports and owns error types, and depends outward on nothing but styx-proto and third-party crates. Move the type into domain, or invert the call behind a port that infrastructure implements"
+
+[[deny-scope-dep]]
+name = "resolution-application-to-infrastructure"
+from = "styx-resolution-application"
+to = ["styx-resolution-infrastructure"]
+message = "application orchestrates over the ports declared in domain; it must not know which adapter implements them. Depend on the port, and let the styx binary inject the adapter at startup"
+
+[[deny-scope-dep]]
+name = "filtering-domain-outward"
+from = "styx-filtering-domain"
+to = ["styx-filtering-application", "styx-filtering-infrastructure"]
+message = "domain is the innermost layer: it declares ports and owns error types, and depends outward on nothing but styx-proto and third-party crates. Move the type into domain, or invert the call behind a port that infrastructure implements"
+
+[[deny-scope-dep]]
+name = "filtering-application-to-infrastructure"
+from = "styx-filtering-application"
+to = ["styx-filtering-infrastructure"]
+message = "application orchestrates over the ports declared in domain; it must not know which adapter implements them. Depend on the port, and let the styx binary inject the adapter at startup"
+
+# ===========================================================================
+# Feature isolation — Structure rules 4-7.
+#
+# Note what is NOT written here: there is no rule of the form "no crate may
+# name another workspace crate". That phrasing would forbid styx-proto and
+# break the entire build. Each rule denies specific sibling feature crates, so:
+#
+#   - styx-proto is exempt as a TARGET by never appearing in a deny list
+#     (everyone may name it), and is bound as a SOURCE by the last rule below.
+#   - styx-web (phase 11) and the styx binary are exempt BY CONSTRUCTION: the
+#     rules below are scoped to feature crates, and neither is one. This is
+#     why no `except` entry is needed for either, and why adding styx-web in
+#     phase 11 requires no change here.
+#   - New feature crates must be added to every rule below. A crate without
+#     its scopes is a defect, not an omission: the rules would simply not
+#     apply to it and the gate would pass in silence.
+# ===========================================================================
+
+[[restrict-use]]
+name = "no-resolution-to-filtering"
+scope = "styx-resolution"
+deny = ["styx_filtering", "styx_filtering::**"]
+message = "feature crates must not name each other. styx-resolution declares a FilterPolicy port in its domain module and the styx binary wires styx-filtering into it; a direct dependency makes the isolation a rewrite to recover"
+
+[[restrict-use]]
+name = "no-filtering-to-resolution"
+scope = "styx-filtering"
+deny = ["styx_resolution", "styx_resolution::**"]
+message = "feature crates must not name each other. Declare a port in this crate's domain module and let the styx binary inject the adapter"
+
+[[restrict-use]]
+name = "proto-names-no-feature"
+scope = "styx-proto"
+deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**"]
+message = "styx-proto is shared foundation: it is exempt from feature isolation as a dependency target, not as a source. Every crate parses through the wire codec, so the codec must depend on none of them"

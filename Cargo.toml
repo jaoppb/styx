@@ -1,0 +1,81 @@
+# styx — a filtering DNS resolver written from scratch in Rust.
+#
+# Virtual manifest. Layer structure lives *inside* crates as `domain`,
+# `application` and `infrastructure` modules; Cargo enforces crate-to-crate
+# isolation and arch-lint enforces the layer axis. See docs/adr/0001.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/styx-proto",
+    "crates/styx-resolution",
+    "crates/styx-filtering",
+    "crates/styx",
+    "xtask",
+]
+# The gate self-test fixtures are deliberate rule violations. They stay
+# committed and reviewable, but they are not built by `cargo build --workspace`
+# and not analysed by the normal `arch-lint check` run.
+exclude = ["gate-selftest"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96.0"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/jaoppb/styx"
+
+[workspace.dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+cargo_metadata = "0.18"
+
+# ---------------------------------------------------------------------------
+# The denied lint set, declared once. Every member opts in with
+# `[lints] workspace = true`.
+#
+# Fifteen clippy lints, every name verified to exist and to be non-deprecated
+# under the pinned rustc 1.96.0 (see rust-toolchain.toml) before being
+# committed. An unrecognised lint name degrades to an ignored unknown-lint
+# warning, which would make the count fiction and the enforcement silence.
+#
+# Test code is exempted from the panicking subset through clippy.toml's four
+# `allow-*-in-tests` entries, not by weakening anything here.
+# ---------------------------------------------------------------------------
+[workspace.lints.clippy]
+# -- Unchecked indexing and arithmetic (4) --------------------------------
+# The intended tax: every label offset and every TTL decrement in the phase 1
+# wire codec becomes a checked operation. This is why fuzzing is not optional
+# there.
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+integer_division = "deny"
+modulo_arithmetic = "deny"
+
+# -- Implicit panicking (7) -----------------------------------------------
+# Load-bearing. styx is a single process: a panic in a Leptos request handler
+# takes DNS down for the whole house. The catch_unwind boundary around the web
+# layer and the supervised task model arrive in phase 12 — until then this set
+# is the only protection there is. Do not weaken it before phase 12.
+panic = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+panic_in_result_fn = "deny"
+
+# -- Silent truncation (4) ------------------------------------------------
+# DNS is a binary protocol full of u8/u16 fields. A silent truncation here is
+# a wire-format bug that a test is unlikely to catch.
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+cast_precision_loss = "deny"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }

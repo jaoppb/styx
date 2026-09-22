@@ -1,0 +1,6 @@
+# Fixture C — one feature crate naming another, in the source AND in the
+# manifest, so that BOTH layering gates are exercised: arch-lint reads the
+# `use` statement, the link-graph check reads the dependency edge.
+[workspace]
+resolver = "2"
+members = ["crates/styx-resolution", "crates/styx-filtering"]

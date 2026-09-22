@@ -1,0 +1,9 @@
+[package]
+name = "styx-resolution"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# The forbidden edge, in the manifest. This is what the link-graph gate sees.
+[dependencies]
+styx-filtering = { path = "../styx-filtering" }

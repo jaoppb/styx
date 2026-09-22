@@ -1,0 +1,19 @@
+# Pinned exactly, not floated.
+#
+# An unpinned toolchain can rename or remove a clippy lint on upgrade. A
+# renamed lint does not fail the build — it degrades to an ignored
+# unknown-lint warning, which silently downgrades a denied lint to nothing.
+# The fifteen lint names in the root Cargo.toml were verified against this
+# exact version.
+#
+# The two musl targets are the artifacts the release workflow publishes on v*
+# tags, and the cutover in phase 12 consumes.
+
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt"]
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
+profile = "minimal"

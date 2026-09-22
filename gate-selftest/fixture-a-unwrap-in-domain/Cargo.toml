@@ -1,0 +1,6 @@
+# Fixture A — a deliberate `.unwrap()` in a domain module.
+# Standalone workspace: excluded from the styx workspace so the clean gate
+# stays green while this stays committed and reviewable.
+[workspace]
+resolver = "2"
+members = ["crates/styx-resolution"]

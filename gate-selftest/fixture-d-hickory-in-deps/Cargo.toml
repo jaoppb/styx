@@ -1,0 +1,9 @@
+# Fixture D — the test oracle escaping into shipping code.
+#
+# `hickory-proto` here is a local stub, not the real crate: the fixture needs a
+# dependency edge NAMED `hickory-proto` on a normal path, and nothing more.
+# Using a stub keeps `just gate-selftest` offline — the real crate would make
+# the self-test depend on crates.io to prove a point about a manifest edge.
+[workspace]
+resolver = "2"
+members = ["crates/styx-resolution", "vendor-stub/hickory-proto"]

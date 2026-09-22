@@ -150,6 +150,8 @@ class PresentationCrate {
 class ArchLintConfig {
   <<arch-lint.toml, syn engine>>
   +NO layers block
+  +String preset "strict"
+  +String fail_on "error"
   +Vec~Scope~ scopes
   +Vec~DenyScopeDep~ deny_scope_dep
   +Vec~RestrictUse~ restrict_use
@@ -159,19 +161,25 @@ class ArchLintConfig {
 
 class Scope {
   +String name
-  +Vec~String~ paths_glob
+  +Vec~String~ paths
+  +Vec~String~ exclude
 }
 
 class DenyScopeDep {
+  +Option~String~ name
   +String from
   +Vec~String~ to
-  +String reason
+  +String message
+  +String severity
 }
 
 class RestrictUse {
+  +String name
   +String scope
   +Vec~String~ deny
-  +Vec~String~ allow
+  +Vec~String~ except
+  +String message
+  +String severity
 }
 
 class RuleSet {
@@ -180,7 +188,7 @@ class RuleSet {
   +tracing_env_init
   +no_sync_io
   +require_thiserror
-  +AL001_to_AL013 active
+  +AL001_to_AL013 active, AL008 absent
 }
 
 class ClippyPolicy {
@@ -348,6 +356,39 @@ stands; the fix is replacing the file in phase 0, and pairing it with an indepen
 graph. Verify with a deliberate violation — an inert config looks identical to a passing
 one.*
 
+**Verified against arch-lint 0.6.0 on 2026-09-22 (the re-spike Task 4 mandates).** The
+engine analysis holds, and five configuration details differ from what was assumed:
+
+- **Engine selector confirmed.** `detect_engine` (`arch-lint-cli-0.6.0/src/main.rs:153`)
+  still routes to the tree-sitter engine if and only if a non-empty `[[layers]]` array is
+  present, and to the syn engine otherwise. 0.6.0 additionally ignores commented-out and
+  quoted `[[layers]]` text, so only a real table flips the engine.
+- **Rule codes.** `AL008` **does not exist**. The active set is `AL001`–`AL007` and
+  `AL009`–`AL013` — twelve rules, not thirteen. All five named rules exist under the
+  expected names, and `allow_in_tests` is still the spelling for the test exemption.
+  Unknown rule options are a hard error, not a silent ignore.
+- **`[[scopes]]` field is `paths`, not `paths_glob`**, and scope *names* are validated as
+  `[a-z0-9-]` only. `styx-resolution::domain` is rejected outright; the separator must be a
+  hyphen: `styx-resolution-domain`.
+- **`[[deny-scope-dep]]` carries `message`, not `reason`**, and `[[restrict-use]]` carries
+  `except`, not `allow`, plus a required `name` and `message`. Every declarative table is
+  `deny_unknown_fields`, so a wrong key aborts the run rather than disabling the rule —
+  this failure mode is loud, which is what this phase wants.
+- **`[[deny-scope-dep]]` resolves `crate::` paths against the analyzer root, not the crate
+  root.** `resolve_target_scopes`
+  (`arch-lint-core-0.6.0/src/declarative/rules/scope_dep.rs:118`) maps `crate::a::b` to the
+  candidate paths `src/a/b.rs` and `src/a/b/mod.rs`, relative to the analysis root. In a
+  workspace the real file is `crates/<crate>/src/a/b/mod.rs`, which those candidates never
+  match — so **with the obvious per-crate globs alone, the layering rule matches nothing and
+  exits 0.** This was confirmed empirically: a `use crate::infrastructure::Thing` in a
+  `domain` module produced no violation. *That is the inert-config failure in a new dress,
+  and it is exactly what this phase exists to catch.*
+  **The fix**: every layer scope carries a second, root-relative glob —
+  `src/<layer>/**` — alongside its real `crates/<crate>/src/<layer>/**` glob, so the
+  synthetic candidate path resolves to the intended scope. With it, the same violation is
+  reported as `ALD003`. The synthetic glob matches no real file in a workspace layout, so
+  it cannot mis-attribute one. **This glob is load-bearing and must never be "tidied away".**
+
 Therefore:
 
 - **Replace the file wholesale; do not amend it.** The defect is structural. Any amendment
@@ -509,14 +550,39 @@ styx/
 ├── justfile                    # `gate` and its constituent recipes
 ├── lefthook.yml                # pre-commit, pre-push -> just gate
 ├── .github/workflows/          # gate + headless build; release on v* tags
-├── xtask/ (or scripts/)        # hickory-dev-only and cargo-tree layering checks
+├── xtask/                      # hickory-dev-only and link-graph layering checks
 ├── docs/adr/                   # the three ADRs
 ├── crates/
 │   ├── styx-proto/             # shared foundation
 │   ├── styx-<feature>/         # src/domain, src/application, src/infrastructure
 │   └── styx/                   # composition root, `web` feature
-└── tests/gate-selftest/        # deliberate violations, excluded from the normal gate run
+└── gate-selftest/              # deliberate violations, kept out of the normal gate run
+                                # (NOT under tests/ — see Operations 11)
 ```
+
+### Dependency inventory (the whole of it, this phase)
+
+Declared once in `[workspace.dependencies]`; members reference them with `workspace = true`.
+
+| Crate | Where | Why |
+|---|---|---|
+| `tracing` | `styx` binary | Norm 7. The binary emits the one startup event that makes the subscriber observable. |
+| `tracing-subscriber` (`env-filter`) | `styx` binary | Norm 7 and arch-lint's `tracing-env-init`: the subscriber is built from `RUST_LOG`, never a hardcoded level. |
+| `anyhow` | `xtask` only | Tooling, not shipping code. Norm 3 bans it in library crates; `xtask` is a binary that reports a verdict to a human. |
+| `cargo_metadata` | `xtask` only | Reads the resolved link graph for the layering and containment checks. |
+
+No other dependency is introduced. **No DNS crate of any kind**, and no `hickory-*` — not
+even under `[dev-dependencies]`, which stays empty until Phase 1.
+
+### Crate classification (what the link-graph gate keys on)
+
+| Class | Members | Rule |
+|---|---|---|
+| Shared foundation | `styx-proto` | Everyone may name it; it names no one. |
+| Feature crate | `styx-resolution`, `styx-filtering` | May not name another feature crate. |
+| Presentation | `styx-web` (from Phase 11) | May name a feature's `application`. Not a peer. |
+| Composition root | `styx` | May name every feature crate. The only one that may. |
+| Tooling | `xtask` | Outside the layering model entirely; bound by the lints, not by the scopes. |
 
 ### Gate composition (execution order, fail-fast)
 
@@ -602,16 +668,24 @@ Tasks are ordered by dependency. Each is independently verifiable.
      top of the file stating that the absence of `[[layers]]` is the engine selector, that
      adding one routes the tool to a Kotlin-only tree-sitter engine which discovers zero
      `.rs` files and exits 0, and that this silently disables AL001–AL013.
-   - **`[[scopes]]`** — one per feature crate × layer, keyed by path glob:
-     `styx-resolution::domain` → `crates/styx-resolution/src/domain/**`, and likewise for
-     `application` and `infrastructure`; the same triple for `styx-filtering`; a scope for
-     `styx-proto`; a scope for the `styx` binary.
+   - **`[[scopes]]`** — one per feature crate × layer, keyed by the `paths` glob list
+     (the field is `paths`, not `paths_glob`): `styx-resolution-domain` →
+     `crates/styx-resolution/src/domain/**`, and likewise for `application` and
+     `infrastructure`; the same triple for `styx-filtering`; a scope for `styx-proto`; a
+     scope for the `styx` binary. Scope names are validated `[a-z0-9-]`, so the separator is
+     a hyphen and never `::`.
+     **Each layer scope additionally carries the root-relative glob `src/<layer>/**`**, for
+     the reason recorded in Approach §2: `[[deny-scope-dep]]` resolves `crate::a::b` against
+     the *analysis root*, so without it the layering rule silently matches nothing.
    - **`[[deny-scope-dep]]`** — encode the layering denials from Structure rules 1–3, each
-     with a `reason` string that states the invariant in prose, so the failure message
-     teaches rather than merely rejects.
-   - **`[[restrict-use]]`** — encode Structure rules 4–7: feature crates may not name each
-     other; `styx-proto` is allowed as a target from everywhere; `styx-web` is allowed to
-     name a feature's `application`; the `styx` binary is allowed to name everything.
+     with a `message` string (the field is `message`, not `reason`) that states the invariant
+     in prose, so the failure message teaches rather than merely rejects.
+   - **`[[restrict-use]]`** — encode Structure rules 4–7, one rule per feature crate naming
+     the *other* feature crates in `deny`. Each rule requires a `name` and a `message`;
+     exceptions are spelled `except`, not `allow`. `styx-proto` is exempt by never appearing
+     in any `deny` list, so everyone may name it. `styx-web` and the `styx` binary are exempt
+     **by construction**: the restriction's `scope` covers only feature-crate sources, so a
+     crate that is not a feature crate is unrestricted without needing an `except` entry.
    - **Rules to enable**: `no-unwrap-expect` with `allow_in_tests = true`,
      `require-tracing`, `tracing-env-init`, `no-sync-io`, `require-thiserror`.
    - **Pin arch-lint to an exact 0.6.0 version**, not a range.
@@ -635,7 +709,12 @@ Tasks are ordered by dependency. Each is independently verifiable.
 2. **Implementation shape**: a small Rust `xtask` binary (preferred, so it is covered by the
    same lints and toolchain) or a shell script, invoked by the `gate` target.
 3. **Logic**:
-   - Invoke `cargo tree --edges normal --workspace` and parse the resolved graph.
+   - Read the resolved dependency graph from `cargo metadata --format-version 1`, whose
+     `resolve.nodes[].deps[].dep_kinds[]` gives each edge's kind (normal, `dev` or `build`)
+     exactly. This is the same resolved link graph `cargo tree --edges normal` renders, taken
+     as structured data rather than as an indentation-formatted tree — the property that
+     matters (the graph is what the build links, not what the source text says) is unchanged,
+     and the verdict no longer depends on parsing ASCII art.
    - Build the set of workspace member crates and classify each as feature crate, shared
      foundation, presentation, or composition root.
    - **Violation**: a normal edge from one feature crate to another feature crate.
@@ -748,9 +827,28 @@ Tasks are ordered by dependency. Each is independently verifiable.
 
 1. **Responsibility**: prove each rule family rejects a real violation. **This is the
    deliverable of the phase — the empty workspace is not.**
-2. **Fixtures**, housed under `tests/gate-selftest/` and excluded from the normal gate run
-   (via a workspace exclusion, so the clean gate stays green while the fixtures remain
-   committed and reviewable):
+2. **Fixtures**, housed under **`gate-selftest/`** — *not* `tests/gate-selftest/* — and kept
+   out of the normal gate run by a Cargo workspace `exclude` plus arch-lint's
+   `analyzer.include` allowlist, so the clean gate stays green while the fixtures remain
+   committed and reviewable.
+
+   **Two mechanisms here are load-bearing, and both were found by the self-test failing:**
+
+   - **No path component may be named `tests`.** arch-lint marks a file as test code when
+     *any* component of its path is `tests`, `test` or `benches`
+     (`arch-lint-core-0.6.0/src/context.rs:43`), and test code is exactly what
+     `allow_in_tests = true` exempts. Under `tests/gate-selftest/` **every fixture passes**
+     and the self-test certifies a gate that is proving nothing — the phase 0 failure mode,
+     reproduced inside the very thing built to detect it.
+   - **The fixtures are hidden from the normal run by an `include` allowlist, not an
+     `exclude`.** `analyzer.exclude` falls back to a plain substring match against the
+     absolute path (`arch-lint-core-0.6.0/src/analyzer.rs:527`), so excluding the fixture
+     directory also hides the fixtures when `gate-selftest` points the analyser straight at
+     one, yielding a zero-file green run. `include` is matched relative to the analysis
+     root, so `crates/**` selects the workspace when rooted at the repo and selects the
+     fixture when rooted at the fixture. One configuration, correct in both directions.
+
+   The fixtures:
    - **Fixture A — `no-unwrap-expect`**: a `.unwrap()` in a `domain` module of a feature
      crate. Must be rejected by arch-lint *and* by clippy.
    - **Fixture B — `[[deny-scope-dep]]`**: a cross-layer `use` — `domain` naming
@@ -920,8 +1018,20 @@ Tasks are ordered by dependency. Each is independently verifiable.
   AL001–AL013.
 - `arch-lint.toml` declares `[[scopes]]` per feature crate × layer, `[[deny-scope-dep]]` for
   the layering rules, and `[[restrict-use]]` for feature isolation.
-- AL001–AL013 are active, plus `no-unwrap-expect` (`allow_in_tests = true`),
-  `require-tracing`, `tracing-env-init`, `no-sync-io`, `require-thiserror`.
+- AL001–AL013 are active — **noting that `AL008` does not exist in 0.6.0**, so the real set
+  is `AL001`–`AL007` plus `AL009`–`AL013` — via `preset = "strict"`, plus
+  `no-unwrap-expect` (`allow_in_tests = true`), `require-tracing`, `tracing-env-init`,
+  `no-sync-io`, `require-thiserror`.
+- Every layer scope carries both its `crates/<crate>/src/<layer>/**` glob and the
+  root-relative `src/<layer>/**` glob. Removing the second silently disables
+  `[[deny-scope-dep]]` — Fixture B is the only thing that catches it.
+- The self-test fixtures live under `gate-selftest/`, and **no ancestor directory of a
+  fixture may be named `tests`, `test` or `benches`** — such a component marks the fixture
+  as test code, which `allow_in_tests = true` then exempts from the rules the fixture
+  exists to prove.
+- The fixtures are kept out of the normal arch-lint run by `analyzer.include`, never by
+  `analyzer.exclude`: the latter substring-matches absolute paths and would hide the
+  fixtures from the self-test too, turning every fixture green.
 - `domain` depends outward on nothing but `styx-proto` and third-party crates.
 - No feature crate names another feature crate. Cross-feature needs are a port in the
   consumer's `domain` and an adapter in the binary.
@@ -1001,8 +1111,11 @@ Tasks are ordered by dependency. Each is independently verifiable.
   the abstract and wrong in practice will not surface until phase 1 or later. The self-test
   is the only mitigation available, and it only proves the rules it exercises — which is
   precisely why it exercises three rule families rather than the two the exit criteria name.
-- **The arch-lint 0.6.0 behaviour is unverified** against the engine analysis, which was
-  spiked on 0.5.0. Task 4's verification step is not optional.
+- ~~**The arch-lint 0.6.0 behaviour is unverified**~~ — **resolved 2026-09-22.** The
+  re-spike was run; the engine selector holds and five configuration details were corrected.
+  See Approach §2. The finding that `[[deny-scope-dep]]` resolves module paths against the
+  analysis root — and therefore matches nothing in a workspace without the synthetic
+  `src/<layer>/**` glob — is the one to re-check on any arch-lint upgrade.
 - **`panic = deny` is the only panic mitigation until phase 12.** The `catch_unwind`
   boundary around the web layer and the supervised task model arrive in **Phase 12 — Cutover
   hardening**. Weakening the lint before then removes the only protection there is.

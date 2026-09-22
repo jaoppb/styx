@@ -1,0 +1,4 @@
+# Fixture B — a deliberate cross-layer `use`: domain naming infrastructure.
+[workspace]
+resolver = "2"
+members = ["crates/styx-resolution"]

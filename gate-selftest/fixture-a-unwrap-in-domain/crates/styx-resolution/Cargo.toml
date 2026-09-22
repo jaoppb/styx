@@ -1,0 +1,16 @@
+[package]
+name = "styx-resolution"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Mirrors the subset of [workspace.lints.clippy] (root Cargo.toml) that this
+# fixture exercises. It cannot inherit them: a standalone workspace has no
+# access to the real one's lint table.
+#
+# `just gate-selftest` asserts that the root manifest still denies each of
+# these names, so this copy cannot drift out of agreement unnoticed.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

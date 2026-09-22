@@ -1,0 +1,55 @@
+name: quality
+
+# Enforcement that cannot be bypassed. The lefthook hooks run the same `gate`
+# target locally, but they are bypassable with `--no-verify`; this is not.
+on:
+  push:
+  pull_request:
+
+# A new push to the same branch supersedes the run in flight.
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned exactly, not a range. A minor bump can change a rule name or a
+  # config key and turn enforcement into silence.
+  ARCH_LINT_VERSION: "0.6.0"
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the version, the components and the musl
+      # targets. Nothing here restates them, so the pin has one home.
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: extractions/setup-just@v2
+
+      - name: Install the pinned arch-lint
+        run: cargo install arch-lint-cli --version "${ARCH_LINT_VERSION}" --locked
+
+      # The whole per-push gate, in one step, via the same target a developer
+      # runs. Hermetic: no network, no external service, no live DNS.
+      - name: just gate
+        run: just gate
+
+      # Reported separately, although `gate` already covers it, so a headless
+      # regression is legible in the job list rather than buried in an
+      # aggregate. It passes near-vacuously until phase 11 gives the `web`
+      # feature real code to gate.
+      - name: just headless
+        run: just headless
+
+      # "Is the gate alive?" answered on every push rather than once, at the
+      # end of phase 0. An inert config and a passing config emit the same exit
+      # code; this step is the only thing that tells them apart.
+      - name: just gate-selftest
+        run: just gate-selftest

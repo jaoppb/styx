@@ -1,0 +1,16 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "styx repository gates that read the resolved dependency graph."
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+cargo_metadata.workspace = true
+
+[lints]
+workspace = true

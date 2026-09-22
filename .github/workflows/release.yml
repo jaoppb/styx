@@ -1,0 +1,57 @@
+name: release
+
+# The path phase 12 uses for the cutover artifacts. It exists now so that it is
+# not written under pressure at the end, and so the musl build is exercised
+# before anything depends on it.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  artifacts:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The cutover host and the spare, respectively.
+          - target: x86_64-unknown-linux-musl
+          - target: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Static musl binaries, so the cutover does not inherit the host's libc.
+      - name: Install cross
+        run: cargo install cross --locked
+
+      - name: Build
+        run: cross build --release --locked --target ${{ matrix.target }} --package styx
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          staging="styx-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target }}/release/styx" "$staging/"
+          cp README.md "$staging/" 2>/dev/null || true
+          tar czf "${staging}.tar.gz" "$staging"
+          sha256sum "${staging}.tar.gz" > "${staging}.tar.gz.sha256"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            styx-*.tar.gz
+            styx-*.tar.gz.sha256

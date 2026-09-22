@@ -1,0 +1,21 @@
+# styx clippy configuration.
+#
+# This file carries ONLY the test-allowance configuration. The denied lint set
+# itself lives in [workspace.lints.clippy] in the root Cargo.toml, so that
+# "workspace-wide" is enforced from exactly one place; every member crate opts
+# in with `[lints] workspace = true`.
+#
+# The four entries below exist so test code can use the panicking constructs
+# that production code is denied — the same exemption posture as arch-lint's
+# `no-unwrap-expect` with `allow_in_tests = true`. A test that cannot assert is
+# not a test, and from phase 2 the suite is socket-level: it unwraps bound
+# ports, fixture bytes and parsed responses constantly.
+#
+# This exempts TEST code. It does not weaken the denial anywhere else, and in
+# particular `panic = deny` stays load-bearing on every non-test path until
+# phase 12 brings the catch_unwind boundary and the supervised task model.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
