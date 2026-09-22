@@ -8,24 +8,25 @@
 > correctness grind: spec-first, socket-level behaviour tests, aggressive lints, CI from
 > the first commit.
 >
-> **Repository state**: greenfield, no existing implementation. No git repository, no Cargo
-> workspace, no Rust source file. The only files on disk are `arch-lint.toml` (an upstream
-> Kotlin template — the artefact this phase destroys and rebuilds) and the design
+> **Repository state**: greenfield, no existing implementation. No git repository, no
+> Cargo workspace, no Rust source file. The only files on disk are `arch-lint.toml` (an
+> upstream Kotlin template — the artefact this phase destroys and rebuilds) and the design
 > documents. This canvas is self-contained: every decision, rationale and accepted
 > consequence it depends on is written out in full below, because the source documents are
 > being retired.
 >
-> **Phase position**: Phase 0 is the first phase and depends on no other phase. **Every
-> phase 1 through 12 depends on it**, because every one of them is gated by `just gate`.
-> The tightest couplings are **Phase 1 — Wire codec (`styx-proto`)**, the first consumer of
-> the workspace skeleton and the first crate written entirely under `indexing_slicing` and
-> `arithmetic_side_effects` set to `deny`; **Phase 2 — Server loop and test harness**, the
-> first consumer of the `hickory-proto` dev-dependency that the containment check exists to
-> police; **Phase 11 — Web UI (`styx-web`)**, the first phase at which the
-> `--no-default-features` headless build stops passing vacuously and the
-> presentation-layer exception in the use-restrictions is first exercised; and **Phase 12 —
-> Cutover hardening**, which reuses this phase's release workflow to publish
-> `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` artifacts on `v*` tags.
+> **Phase position**: Phase 0 is the first phase and depends on no other phase.
+> **Every phase 1 through 12 depends on it**, because every one of them is gated by
+> `just gate`. The tightest couplings are **Phase 1 — Wire codec (`styx-proto`)**, the
+> first consumer of the workspace skeleton and the first crate written entirely under
+> `indexing_slicing` and `arithmetic_side_effects` set to `deny`;
+> **Phase 2 — Server loop and test harness**, the first consumer of the `hickory-proto`
+> dev-dependency that the containment check exists to police;
+> **Phase 11 — Web UI (`styx-web`)**, the first phase at which the `--no-default-features`
+> headless build stops passing vacuously and the presentation-layer exception in the
+> use-restrictions is first exercised; and **Phase 12 — Cutover hardening**, which reuses
+> this phase's release workflow to publish `x86_64-unknown-linux-musl` and
+> `aarch64-unknown-linux-musl` artifacts on `v*` tags.
 >
 > The full ordering, for reference: 0 Foundation and gates · 1 Wire codec · 2 Server loop
 > and test harness · 3 `Upstream` port, forwarding, pool · 4 Answer cache · 5 Recursion ·
@@ -37,29 +38,29 @@
 ## Requirements
 
 Establish the repository that the following twelve phases are built inside, and make every
-structural rule they must obey an executable, *proven-to-fail* check before a single line of
-DNS code exists.
+structural rule they must obey an executable, *proven-to-fail* check before a single line
+of DNS code exists.
 
 Concretely, this phase must:
 
 - **Create the repository and its build topology** — git, and a Cargo workspace in the
-  crate-per-feature shape, where `domain`/`application`/`infrastructure` are modules inside
-  a crate rather than crates of their own.
+  crate-per-feature shape, where `domain`/`application`/`infrastructure` are modules
+  inside a crate rather than crates of their own.
 - **Replace the enforcement layer that currently enforces nothing.** The committed
-  `arch-lint.toml` is an upstream Kotlin template whose very structure routes the tool into
-  an engine that cannot read Rust. It exits 0 having analysed zero files. Replacing it —
-  not amending it — is the central deliverable.
+  `arch-lint.toml` is an upstream Kotlin template whose very structure routes the tool
+  into an engine that cannot read Rust. It exits 0 having analysed zero files. Replacing
+  it — not amending it — is the central deliverable.
 - **Surround that single check with independent corroboration**: a second layering gate
   that reads the resolved link graph rather than source text, and a containment check that
   keeps the test oracle out of the shipping binary.
-- **Gate the repository's prose as well as its code.** Markdown is linted by the same gate,
-  under the same three callers, with the tool pinned the same way. This repository carries
-  **36 markdown files against 11 Rust files**: the SPDD contracts are what the code is
-  generated from and the ADRs are the only surviving record of why the gate has its shape, so
-  documentation is a deliverable here rather than a by-product. Two tiers, because the
-  repository has two authors: hand-written prose, which a person controls, and the generated
-  contracts under `spdd/`, whose line width is decided by a command that has never heard of
-  the linter.
+- **Gate the repository's prose as well as its code.** Markdown is linted by the same
+  gate, under the same three callers, with the tool pinned the same way. This repository
+  carries **36 markdown files against 11 Rust files**: the SPDD contracts are what the
+  code is generated from and the ADRs are the only surviving record of why the gate has
+  its shape, so documentation is a deliverable here rather than a by-product. Two tiers,
+  because the repository has two authors: hand-written prose, which a person controls, and
+  the generated contracts under `spdd/`, whose line width is decided by a command that has
+  never heard of the linter.
 - **Aggregate all of it behind one command** (`just gate`) invoked identically by the
   developer, by pre-commit and pre-push hooks, and by CI, so the three can never disagree.
 - **Prove the gate is live** by breaking it on purpose.
@@ -67,19 +68,19 @@ Concretely, this phase must:
   layering model and the arch-lint engine mechanism, the `hickory-proto` exception to the
   from-scratch rule, and the pinned root trust anchor.
 
-**Value**: the gate is the only continuous feedback signal this project has for most of its
-life. The cutover is last — styx runs on a dev box until v1 is complete, so phases 1
-through 7 produce nothing a human can look at except `dig` output, and nobody is waiting on
-the result either. That removes both visible progress and external pressure from a long,
-scope-heavy stretch. The gate has to be trustworthy, and it has to be fast.
+**Value**: the gate is the only continuous feedback signal this project has for most of
+its life. The cutover is last — styx runs on a dev box until v1 is complete, so phases 1
+through 7 produce nothing a human can look at except `dig` output, and nobody is waiting
+on the result either. That removes both visible progress and external pressure from a
+long, scope-heavy stretch. The gate has to be trustworthy, and it has to be fast.
 
 **Boundary**: nothing DNS-related. No wire format, no resolver, no listener, no DNS type.
 The workspace this phase delivers is empty of product code by design.
 
-**The one thing that must not happen**: shipping a second enforcement configuration that is
-silently inert. An enforcement tool that checks nothing and an enforcement tool that finds
-nothing wrong emit the same exit code. That is not a hypothetical — it is the state of the
-repository today.
+**The one thing that must not happen**: shipping a second enforcement configuration that
+is silently inert. An enforcement tool that checks nothing and an enforcement tool that
+finds nothing wrong emit the same exit code. That is not a hypothetical — it is the state
+of the repository today.
 
 ---
 
@@ -318,9 +319,9 @@ ArchitectureDecisionRecord --> ArchLintConfig : explains
 ```
 
 **Conservative note**: nothing here wraps a simpler thing in a more complex one. The
-workspace skeleton is minimal — a shared foundation crate, the composition-root binary, and
-the smallest set of feature-crate skeletons needed to make a scope, a layer denial and a
-use-restriction all *exercisable*. Later phases add crates against the documented
+workspace skeleton is minimal — a shared foundation crate, the composition-root binary,
+and the smallest set of feature-crate skeletons needed to make a scope, a layer denial and
+a use-restriction all *exercisable*. Later phases add crates against the documented
 convention; they do not reshape it.
 
 ---
@@ -337,14 +338,14 @@ convention; they do not reshape it.
   edits. The chosen split puts the crate boundary where isolation actually matters and
   leaves the layer axis to a linter.
 
-- **Feature crates never depend on each other.** A cross-feature need is a **trait (a port)
-  declared in the consumer's `domain` module**, implemented by an **adapter in the binary**
-  — for example `styx-resolution` will declare a `FilterPolicy` port and the `styx` binary
-  wires `styx-filtering` into it. The composition-root binary is consequently the one crate
-  permitted to name every feature crate at once.
+- **Feature crates never depend on each other.** A cross-feature need is a
+  **trait (a port) declared in the consumer's `domain` module**, implemented by an
+  **adapter in the binary** — for example `styx-resolution` will declare a `FilterPolicy`
+  port and the `styx` binary wires `styx-filtering` into it. The composition-root binary
+  is consequently the one crate permitted to name every feature crate at once.
   *Rationale*: without this, three features reach into each other and the isolation is a
-  rewrite to recover. It must be enforced from the first commit, which is why it is a phase
-  0 deliverable and not a phase 8 discovery.
+  rewrite to recover. It must be enforced from the first commit, which is why it is a
+  phase 0 deliverable and not a phase 8 discovery.
 
 - **`styx-proto` is shared foundation, not a feature crate, and is the single explicit
   exception.** Every crate parses through the wire codec, so the "feature crates never
@@ -367,18 +368,19 @@ convention; they do not reshape it.
 hypothesis. Spiked 2026-09-21 against arch-lint 0.5.0; what was feared to be a
 missing-capability risk turned out to be a configuration defect. The mechanism in full:**
 
-- arch-lint has **two mutually exclusive engines**, selected by whether the config contains
-  a `[[layers]]` block (`arch-lint-cli-0.5.0/src/main.rs:144`).
-- **With `[[layers]]` present, the tree-sitter engine runs.** That engine ships exactly one
-  grammar, `tree-sitter-kotlin-ng`, and filters discovery to `.kt`/`.kts`
-  (`check_ts.rs:122`). On a Rust repo it analyses **zero files and exits 0**. Because it is
-  selected, it also **silently disables AL001–AL013**.
+- arch-lint has **two mutually exclusive engines**, selected by whether the config
+  contains a `[[layers]]` block (`arch-lint-cli-0.5.0/src/main.rs:144`).
+- **With `[[layers]]` present, the tree-sitter engine runs.** That engine ships exactly
+  one grammar, `tree-sitter-kotlin-ng`, and filters discovery to `.kt`/`.kts`
+  (`check_ts.rs:122`). On a Rust repo it analyses **zero files and exits 0**. Because it
+  is selected, it also **silently disables AL001–AL013**.
 - **The config committed to this repository contains `[[layers]]`.** So that is exactly
   what happens today: a green run that checked nothing.
 - **Without `[[layers]]`, the syn engine runs.** It executes **AL001–AL013** *plus*
   `[[scopes]]`, `[[deny-scope-dep]]` and `[[restrict-use]]`
-  (`arch-lint-core-0.5.0/src/declarative/config_dto.rs:27`), which enforce layering on Rust
-  by path glob. `alloy/arch-lint.toml` is a working proof of this on a real Rust workspace.
+  (`arch-lint-core-0.5.0/src/declarative/config_dto.rs:27`), which enforce layering on
+  Rust by path glob. `alloy/arch-lint.toml` is a working proof of this on a real Rust
+  workspace.
 
 **The conclusion carried forward verbatim**: *the crate-per-feature layering decision
 stands; the fix is replacing the file in phase 0, and pairing it with an independent
@@ -398,26 +400,27 @@ engine analysis holds, and five configuration details differ from what was assum
   expected names, and `allow_in_tests` is still the spelling for the test exemption.
   Unknown rule options are a hard error, not a silent ignore.
 - **`[[scopes]]` field is `paths`, not `paths_glob`**, and scope *names* are validated as
-  `[a-z0-9-]` only. `styx-resolution::domain` is rejected outright; the separator must be a
-  hyphen: `styx-resolution-domain`.
+  `[a-z0-9-]` only. `styx-resolution::domain` is rejected outright; the separator must be
+  a hyphen: `styx-resolution-domain`.
 - **`[[deny-scope-dep]]` carries `message`, not `reason`**, and `[[restrict-use]]` carries
   `except`, not `allow`, plus a required `name` and `message`. Every declarative table is
   `deny_unknown_fields`, so a wrong key aborts the run rather than disabling the rule —
   this failure mode is loud, which is what this phase wants.
 - **`[[deny-scope-dep]]` resolves `crate::` paths against the analyzer root, not the crate
   root.** `resolve_target_scopes`
-  (`arch-lint-core-0.6.0/src/declarative/rules/scope_dep.rs:118`) maps `crate::a::b` to the
-  candidate paths `src/a/b.rs` and `src/a/b/mod.rs`, relative to the analysis root. In a
-  workspace the real file is `crates/<crate>/src/a/b/mod.rs`, which those candidates never
-  match — so **with the obvious per-crate globs alone, the layering rule matches nothing and
-  exits 0.** This was confirmed empirically: a `use crate::infrastructure::Thing` in a
-  `domain` module produced no violation. *That is the inert-config failure in a new dress,
-  and it is exactly what this phase exists to catch.*
-  **The fix**: every layer scope carries a second, root-relative glob —
+  (`arch-lint-core-0.6.0/src/declarative/rules/scope_dep.rs:118`) maps `crate::a::b` to
+  the candidate paths `src/a/b.rs` and `src/a/b/mod.rs`, relative to the analysis root. In
+  a workspace the real file is `crates/<crate>/src/a/b/mod.rs`, which those candidates
+  never match — so **with the obvious per-crate globs alone, the layering rule matches
+  nothing and exits 0.** This was confirmed empirically: a
+  `use crate::infrastructure::Thing` in a `domain` module produced no violation. *That is
+  the inert-config failure in a new dress, and it is exactly what this phase exists to
+  catch.* **The fix**: every layer scope carries a second, root-relative glob —
   `src/<layer>/**` — alongside its real `crates/<crate>/src/<layer>/**` glob, so the
   synthetic candidate path resolves to the intended scope. With it, the same violation is
   reported as `ALD003`. The synthetic glob matches no real file in a workspace layout, so
-  it cannot mis-attribute one. **This glob is load-bearing and must never be "tidied away".**
+  it cannot mis-attribute one.
+  **This glob is load-bearing and must never be "tidied away".**
 
 Therefore:
 
@@ -436,54 +439,54 @@ Therefore:
   `require-tracing`, `tracing-env-init`, `no-sync-io`, `require-thiserror`. Bump the tool
   from 0.5.0 to 0.6.0 and pin the exact version.
 - **`no-sync-io` is an architectural invariant here, not a style preference**, because the
-  hot path touches no I/O: matcher state is in memory, built at boot and on reload, and the
-  database holds config, adlist definitions, clients/groups and history only. A DB outage
-  must degrade logging and admin, never resolution. A synchronous read that lands in
-  `domain` or `application` is a latent violation of that guarantee.
+  hot path touches no I/O: matcher state is in memory, built at boot and on reload, and
+  the database holds config, adlist definitions, clients/groups and history only. A DB
+  outage must degrade logging and admin, never resolution. A synchronous read that lands
+  in `domain` or `application` is a latent violation of that guarantee.
 
 ### 3. Independent corroboration
 
 - **Two layering gates, deliberately overlapping.** arch-lint reads source text; the
-  link-graph gate built on `cargo tree --edges normal` reads what the build actually links.
-  A misconfiguration in one is not a misconfiguration in the other, and a tool that fails
-  open is caught by its neighbour. Given that this project's enforcement has already been
-  silently inert once, the redundancy is bought on purpose and the ADR must say that the
-  overlap *is* the point.
-  *Accepted cost*: duplicated intent, two things to keep in sync, and a class of violation
-  that fails twice with two different messages.
+  link-graph gate built on `cargo tree --edges normal` reads what the build actually
+  links. A misconfiguration in one is not a misconfiguration in the other, and a tool that
+  fails open is caught by its neighbour. Given that this project's enforcement has already
+  been silently inert once, the redundancy is bought on purpose and the ADR must say that
+  the overlap *is* the point. *Accepted cost*: duplicated intent, two things to keep in
+  sync, and a class of violation that fails twice with two different messages.
 - **`hickory-dev-only`**: assert `hickory-proto` appears in no normal or build dependency
-  path, transitively — not merely as a direct manifest entry.
-  *Rationale*: `hickory-proto` is the **test oracle**, `[dev-dependencies]` only. The fake
-  root/TLD/authoritative servers and the expected-byte fixtures have to encode DNS wire
-  format; if our own codec encodes them, the resolver and its oracle share every bug and a
-  green suite proves only self-consistency. The from-scratch ban — *the entire DNS stack is
-  written from scratch: wire codec, server loop, caches, recursion algorithm, DNSSEC
-  validation; no `hickory-dns`, no `domain` crate for the protocol* — is on shipping code,
-  not the test rig. Without a check, the exception rots into a real dependency.
+  path, transitively — not merely as a direct manifest entry. *Rationale*: `hickory-proto`
+  is the **test oracle**, `[dev-dependencies]` only. The fake root/TLD/authoritative
+  servers and the expected-byte fixtures have to encode DNS wire format; if our own codec
+  encodes them, the resolver and its oracle share every bug and a green suite proves only
+  self-consistency. The from-scratch ban — *the entire DNS stack is written from scratch:
+  wire codec, server loop, caches, recursion algorithm, DNSSEC validation; no
+  `hickory-dns`, no `domain` crate for the protocol* — is on shipping code, not the test
+  rig. Without a check, the exception rots into a real dependency.
 
 ### 4. Lint policy
 
 - **15 denied clippy lints workspace-wide, 4 `allow-*-in-tests` entries in `clippy.toml`,
   all names verified against rustc 1.96.0.**
 - Three are fixed by the record and are load-bearing for later phases:
-  - `indexing_slicing = deny` and `arithmetic_side_effects = deny` — every label offset and
-    TTL decrement in the phase 1 wire codec becomes a checked operation. **That is the
-    intended tax.** It makes the codec verbose and compression-pointer loop detection
-    fiddly, and it is why fuzzing is not optional there.
+  - `indexing_slicing = deny` and `arithmetic_side_effects = deny` — every label offset
+    and TTL decrement in the phase 1 wire codec becomes a checked operation.
+    **That is the intended tax.** It makes the codec verbose and compression-pointer loop
+    detection fiddly, and it is why fuzzing is not optional there.
   - `panic = deny` — **load-bearing**. In a single process, a panic in a Leptos request
     handler takes DNS down for the whole house. The lint helps; a `catch_unwind` boundary
     around the web layer and a supervised task model are the real mitigation, and **those
     arrive in phase 12, last**. Everything before phase 12 relies on the lint alone, so
     phase 0 must not weaken it.
-- **Pin the toolchain.** Without a pinned rustc, an upgrade can rename or remove a lint and
-  turn the gate red — or, worse, downgrade a denied lint into an ignored unknown-lint
+- **Pin the toolchain.** Without a pinned rustc, an upgrade can rename or remove a lint
+  and turn the gate red — or, worse, downgrade a denied lint into an ignored unknown-lint
   warning.
 
 ### 5. One gate, three callers
 
-- **A lint that only runs locally is not enforcement**, and the converse — a lint that only
-  runs remotely — makes every violation a round-trip through a failed pipeline. arch-lint
-  is therefore enforced by lefthook (pre-commit and pre-push) **and** GitHub Actions.
+- **A lint that only runs locally is not enforcement**, and the converse — a lint that
+  only runs remotely — makes every violation a round-trip through a failed pipeline.
+  arch-lint is therefore enforced by lefthook (pre-commit and pre-push) **and** GitHub
+  Actions.
 - **Both callers invoke the single `gate` target rather than re-listing its steps.** Any
   drift between what CI runs and what the hooks run makes the hooks theatre.
 - **Acceptance has two tiers and phase 0 owns the first.** Per push: hermetic and fast —
@@ -503,76 +506,76 @@ Therefore:
   "The config is inert" and "the config passes" are observationally identical from an exit
   code. The phase's entire value evaporates if the second mistake goes unnoticed the way
   the first did.
-- Exercise **three** distinct rule families, not one: `no-unwrap-expect` (a `.unwrap()` in a
-  `domain` module), `[[deny-scope-dep]]` (a cross-layer `use`), and `[[restrict-use]]` (one
-  feature crate naming another). The stated exit criteria name the first two; the third is
-  a distinct rule family that a cross-layer `use` does not necessarily reach, and it is the
-  rule most likely to be silently wrong because of its `styx-proto` and `styx-web`
-  exemptions.
+- Exercise **three** distinct rule families, not one: `no-unwrap-expect` (a `.unwrap()` in
+  a `domain` module), `[[deny-scope-dep]]` (a cross-layer `use`), and `[[restrict-use]]`
+  (one feature crate naming another). The stated exit criteria name the first two; the
+  third is a distinct rule family that a cross-layer `use` does not necessarily reach, and
+  it is the rule most likely to be silently wrong because of its `styx-proto` and
+  `styx-web` exemptions.
 - The violations must fail the gate **on demand** without failing it **permanently** — the
   workspace must otherwise stay green.
 
 ### 7. ADRs written now, not when the code lands
 
 Two of the three document choices whose implementation is phases away. Both look like
-mistakes to a reader who does not know the reasoning: a from-scratch DNS project that lists
-a DNS library in its manifest, and a validator that does not implement automated trust
-anchor rollover. Write them where the reasoning is freshest.
+mistakes to a reader who does not know the reasoning: a from-scratch DNS project that
+lists a DNS library in its manifest, and a validator that does not implement automated
+trust anchor rollover. Write them where the reasoning is freshest.
 
 ### 8. Documentation linting (amendment, 2026-09-22)
 
 - **The gate lints markdown, using `rumdl` pinned to exactly 0.2.75.** It installs through
-  `cargo install --locked`, exactly as arch-lint does, so the documentation gate reaches the
-  repository by a route that already exists and is pinned by a mechanism already in place.
-  *Rationale for not using `markdownlint-cli2`*: it is the better-known tool with the larger
-  rule set, but adopting it makes a Node runtime a build requirement of a Rust project purely
-  to check prose — a second toolchain to install in CI, pin, and keep current, on every
-  machine, forever.
-  *Accepted cost*: `rumdl` is pre-1.0 and its rule set will move. A minor bump can rename a
-  rule or change a default. This is the same hazard already accepted for arch-lint and rustc
-  and it takes the same mitigation — pin exactly, treat an upgrade as a change to verify.
-  It is milder in one respect worth stating: a markdown rule change makes the gate *noisy*,
-  not silently inert.
+  `cargo install --locked`, exactly as arch-lint does, so the documentation gate reaches
+  the repository by a route that already exists and is pinned by a mechanism already in
+  place. *Rationale for not using `markdownlint-cli2`*: it is the better-known tool with
+  the larger rule set, but adopting it makes a Node runtime a build requirement of a Rust
+  project purely to check prose — a second toolchain to install in CI, pin, and keep
+  current, on every machine, forever. *Accepted cost*: `rumdl` is pre-1.0 and its rule set
+  will move. A minor bump can rename a rule or change a default. This is the same hazard
+  already accepted for arch-lint and rustc and it takes the same mitigation — pin exactly,
+  treat an upgrade as a change to verify. It is milder in one respect worth stating: a
+  markdown rule change makes the gate *noisy*, not silently inert.
 
-- **Two documentation tiers, expressed in one configuration file.** The repository's markdown
-  has two authors, and a single policy cannot serve both. Measured against the real
-  repository before this was written: at the tool's default width the hand-written prose
-  reports about a dozen findings and the generated contracts report **over seven thousand** —
-  more than 99% of everything found, and all of it one rule. Widen to the width the ADRs
-  already use and the hand-written tier goes to **zero** while the contracts still report over
-  a thousand. **No single threshold serves both**, because the two populations are wrapped by
-  different authors to different rules and one of those authors is a command.
-  - **Hand-written, reader-facing** — `docs/adr/**`, `ROADMAP.md`, `gate-selftest/README.md`:
-    the full rule set, including line length.
-  - **Generated contracts** — `spdd/**`: structural rules only. The line-length rule is
-    exempted there through the linter's per-file rule-ignore mechanism, so there is still one
-    configuration file and one invocation.
-  - **Vendored tool definitions** — `.claude/commands/**`: excluded outright. They are not
-    authored in this project and gating them makes the repository's gate an opinion about
-    somebody else's file.
+- **One policy over every document — after the two tiers were retired.** *(Updated
+  2026-09-22: this decision originally split the repository into two tiers. The split has
+  since been removed; the reasoning is kept because it is what the removal had to
+  satisfy.)* The repository's markdown had two authors, and a single policy could not
+  serve both. Measured against the real repository before this was written: at the tool's
+  default width the hand-written
 
-- **The wrapping rule is exempted for `spdd/**`; the structural rules are not.** *Rationale*:
-  `spdd/**` is emitted by the SPDD commands. A wrapping rule those commands do not implement
-  makes the gate go red on the next generated document through no author's fault, and **a
-  gate that fails for reasons nobody caused is a gate that gets bypassed**. What stays
-  enforced there is the class of finding that is a real defect in a generated document —
-  unlabelled code fences, headings ending in punctuation, emphasis used where a heading was
-  meant, stray blank lines inside blockquotes.
+- **The `spdd/**` wrapping exemption has been retired, by removing its cause rather than
+  by widening it.** The exemption existed because the SPDD commands did not implement a
+  wrapping rule, so enforcing one would have failed on the next generated document through
+  no author's fault. Both halves of that were fixed: the five `/spdd-*` command
+  definitions now carry a **Markdown Output Norms** block, so generated documents are
+  written to this policy in the first place; and the 26 existing contracts were reflowed
+  to 90 columns in a single pass, with the few over-long headings no reflow can fix
+  shortened by moving their qualifiers into the body. **If a generated document fails this
+  gate in future, the fix is to correct what the command emits.** Reintroducing an
+  exemption here is the failure mode, not the remedy.
 
-- **The gate checks and never writes.** The linter can rewrite documents in place and offers
-  to reflow prose; run across `spdd/**` that reflows tables and mermaid blocks into a diff
-  nobody can review. Auto-fix stays a deliberate developer action behind its own recipe, and
-  reflow stays off.
+- **What the line-length rule does *not* ask anyone to wrap**: tables, fenced code blocks
+  and inline code spans. A table column cannot be broken; a directory tree or console
+  transcript means exactly what its layout says, and rewrapping it corrupts it; a line
+  whose length is a single type signature has no break point in it. These are exemptions
+  for text that **cannot** be wrapped, not for text that is merely inconvenient to wrap.
+  **Prose has no exemption.**
 
-- **The markdown step is placed with the other text-level checks, before anything compiles.**
-  It runs in tens of milliseconds over the whole repository, so it costs nothing and fails
-  fast.
+- **The gate checks and never writes.** The linter can rewrite documents in place and
+  offers to reflow prose; run across `spdd/**` that reflows tables and mermaid blocks into
+  a diff nobody can review. Auto-fix stays a deliberate developer action behind its own
+  recipe, and reflow stays off.
 
-- **The markdown gate gets a self-test fixture like every other rule family.** A linter whose
-  exclusion list has quietly grown to cover everything passes vacuously and is
-  indistinguishable from one finding nothing wrong — *this phase's founding failure, in a new
-  medium*. The tier split makes that risk concrete rather than theoretical: `spdd/**` already
-  has one rule switched off, and nothing but a fixture proves the rest are still on.
+- **The markdown step is placed with the other text-level checks, before anything
+  compiles.** It runs in tens of milliseconds over the whole repository, so it costs
+  nothing and fails fast.
+
+- **The markdown gate gets a self-test fixture like every other rule family.** A linter
+  whose exclusion list has quietly grown to cover everything passes vacuously and is
+  indistinguishable from one finding nothing wrong —
+  *this phase's founding failure, in a new medium*. The tier split makes that risk
+  concrete rather than theoretical: `spdd/**` already has one rule switched off, and
+  nothing but a fixture proves the rest are still on.
 
 ### Alternatives considered and rejected
 
@@ -580,29 +583,30 @@ anchor rollover. Write them where the reasoning is freshest.
   `[[constraints]]` block belongs to the engine that cannot see Rust; adding rules there
   adds rules to a run over zero files.
 - **Drop arch-lint and rely on the Cargo dependency graph alone.** Rejected: Cargo can
-  express crate-to-crate isolation but has no concept of a module layer inside a crate, and
-  the layers live inside crates. The link-graph gate is necessary but not sufficient.
+  express crate-to-crate isolation but has no concept of a module layer inside a crate,
+  and the layers live inside crates. The link-graph gate is necessary but not sufficient.
 - **One crate per layer so Cargo enforces layering too.** Rejected: triples crate count,
   slows builds, routes every intra-feature refactor through manifests.
 - **Defer the gates until there is code to gate.** Rejected: the lints in question change
   how the wire codec is *written*, not merely whether it passes review. Retrofitting them
   after phase 1 means rewriting the codec.
 - **Run arch-lint only in CI.** Rejected: see §5.
-- **Use `markdownlint-cli2` for the documentation gate.** Rejected: a Node runtime becomes a
-  build requirement of a Rust project, to lint prose. See §8.
+- **Use `markdownlint-cli2` for the documentation gate.** Rejected: a Node runtime becomes
+  a build requirement of a Rust project, to lint prose. See §8.
 - **Run a formatter in `--check` mode instead of a linter.** Rejected as the primary
   mechanism: it enforces one canonical shape, would reflow the SPDD contracts wholesale
   including tables and mermaid blocks, and does not report the structural defects that are
   actually worth catching. Auto-fix stays available as a convenience, deliberately outside
   the gate.
-- **Lint `spdd/**` under the full rule set and reflow the 26 generated documents to match.**
-  Rejected: it wins compliance once and loses it on the next `/spdd-generate` run. Fixing it
-  properly means teaching the five SPDD command templates a formatting contract — real work,
-  in a different part of the system, that this phase has no mandate to touch.
-- **Defer markdown linting to a later phase.** Rejected on this phase's own logic: the cost
-  is lowest now and rises with every document, the documentation set is already three times
-  the size of the code, and deferring means the ADRs written *in this phase* are the ones
-  that never get checked.
+- **Lint `spdd/**` under the full rule set and reflow the 26 generated documents to
+  match.** Rejected: it wins compliance once and loses it on the next `/spdd-generate`
+  run. Fixing it properly means teaching the five SPDD command templates a formatting
+  contract — real work, in a different part of the system, that this phase has no mandate
+  to touch.
+- **Defer markdown linting to a later phase.** Rejected on this phase's own logic: the
+  cost is lowest now and rises with every document, the documentation set is already three
+  times the size of the code, and deferring means the ADRs written *in this phase* are the
+  ones that never get checked.
 - **Trust `arch-lint check` exiting 0 as evidence the gate works.** Rejected: this is
   precisely the failure already recorded against the committed file.
 
@@ -663,7 +667,8 @@ styx/
 
 ### Dependency inventory (the whole of it, this phase)
 
-Declared once in `[workspace.dependencies]`; members reference them with `workspace = true`.
+Declared once in `[workspace.dependencies]`; members reference them with
+`workspace = true`.
 
 | Crate | Where | Why |
 |---|---|---|
@@ -719,19 +724,20 @@ Tasks are ordered by dependency. Each is independently verifiable.
 
 ### 1. Initialise the repository
 
-1. **Responsibility**: create version control and the ignore policy before anything else is
-   written.
+1. **Responsibility**: create version control and the ignore policy before anything else
+   is written.
 2. **Steps**:
    - `git init` at the repository root.
-   - `.gitignore` covering `/target`, `**/*.rs.bk`, fuzz artifacts, and local editor state.
+   - `.gitignore` covering `/target`, `**/*.rs.bk`, fuzz artifacts, and local editor
+     state.
    - Commit the existing design documents as the first commit, so the replacement of
      `arch-lint.toml` is visible as a change rather than as an origin.
 3. **Completion criterion**: `git status` is clean and `git log` has one commit.
 
 ### 2. Create the Cargo workspace skeleton
 
-1. **Responsibility**: express the crate-per-feature topology so that scopes, layer denials
-   and use-restrictions all have something real to bind to.
+1. **Responsibility**: express the crate-per-feature topology so that scopes, layer
+   denials and use-restrictions all have something real to bind to.
 2. **Root `Cargo.toml`**:
    - Virtual manifest (no `[package]`), `resolver = "2"`.
    - `members` listing the crates below.
@@ -746,15 +752,16 @@ Tasks are ordered by dependency. Each is independently verifiable.
      feature isolation.
    - `crates/styx-resolution` — a feature-crate skeleton with `src/domain/mod.rs`,
      `src/application/mod.rs`, `src/infrastructure/mod.rs`, each empty but present. Chosen
-     because it is the first feature crate the later phases fill and because it is the crate
-     that will declare the `FilterPolicy` port.
-   - `crates/styx-filtering` — a second feature-crate skeleton with the same three modules.
-     Its only job in phase 0 is to be the *other* crate in a cross-feature violation, so
-     `[[restrict-use]]` can be proven live.
+     because it is the first feature crate the later phases fill and because it is the
+     crate that will declare the `FilterPolicy` port.
+   - `crates/styx-filtering` — a second feature-crate skeleton with the same three
+     modules. Its only job in phase 0 is to be the *other* crate in a cross-feature
+     violation, so `[[restrict-use]]` can be proven live.
    - `crates/styx` — the composition-root binary. Declares `[features] default = ["web"]`
-     and `web = []`, so the `--no-default-features` build has a real feature to switch off.
-4. **Constraints**: no DNS type, no protocol code, no business logic. Modules exist and are
-   empty. Later phases add crates by following this shape; they do not reshape it.
+     and `web = []`, so the `--no-default-features` build has a real feature to switch
+     off.
+4. **Constraints**: no DNS type, no protocol code, no business logic. Modules exist and
+   are empty. Later phases add crates by following this shape; they do not reshape it.
 5. **Completion criterion**: `cargo build --workspace` and
    `cargo build --workspace --no-default-features` both succeed.
 
@@ -762,8 +769,8 @@ Tasks are ordered by dependency. Each is independently verifiable.
 
 1. **Responsibility**: make the lint names stable.
 2. **Steps**: `rust-toolchain.toml` with `channel` set to the exact rustc version against
-   which the 15 clippy lint names were verified (1.96.0), plus the components the gate needs
-   (`clippy`, `rustfmt`) and the two musl targets the release job publishes.
+   which the 15 clippy lint names were verified (1.96.0), plus the components the gate
+   needs (`clippy`, `rustfmt`) and the two musl targets the release job publishes.
 3. **Rationale to record in the commit message**: an unpinned toolchain can silently
    downgrade a denied lint to an ignored unknown-lint warning.
 4. **Completion criterion**: `rustc --version` inside the repo reports the pinned version.
@@ -773,30 +780,32 @@ Tasks are ordered by dependency. Each is independently verifiable.
 1. **Responsibility**: turn architecture enforcement from inert to live.
 2. **Steps**:
    - **Delete the existing file contents entirely.** Do not carry forward `[analyzer]`,
-     `[[layers]]`, `[dependencies]` or the commented `[[constraints]]` — all four belong to
-     the tree-sitter engine.
+     `[[layers]]`, `[dependencies]` or the commented `[[constraints]]` — all four belong
+     to the tree-sitter engine.
    - Write a syn-engine configuration with **no `[[layers]]` block**. Put a comment at the
      top of the file stating that the absence of `[[layers]]` is the engine selector, that
      adding one routes the tool to a Kotlin-only tree-sitter engine which discovers zero
      `.rs` files and exits 0, and that this silently disables AL001–AL013.
-   - **`[[scopes]]`** — one per feature crate × layer, keyed by the `paths` glob list
-     (the field is `paths`, not `paths_glob`): `styx-resolution-domain` →
+   - **`[[scopes]]`** — one per feature crate × layer, keyed by the `paths` glob list (the
+     field is `paths`, not `paths_glob`): `styx-resolution-domain` →
      `crates/styx-resolution/src/domain/**`, and likewise for `application` and
      `infrastructure`; the same triple for `styx-filtering`; a scope for `styx-proto`; a
-     scope for the `styx` binary. Scope names are validated `[a-z0-9-]`, so the separator is
-     a hyphen and never `::`.
-     **Each layer scope additionally carries the root-relative glob `src/<layer>/**`**, for
-     the reason recorded in Approach §2: `[[deny-scope-dep]]` resolves `crate::a::b` against
-     the *analysis root*, so without it the layering rule silently matches nothing.
+     scope for the `styx` binary. Scope names are validated `[a-z0-9-]`, so the separator
+     is a hyphen and never `::`.
+     **Each layer scope additionally carries the root-relative glob `src/<layer>/**`**,
+     for the reason recorded in Approach §2: `[[deny-scope-dep]]` resolves `crate::a::b`
+     against the *analysis root*, so without it the layering rule silently matches
+     nothing.
    - **`[[deny-scope-dep]]`** — encode the layering denials from Structure rules 1–3, each
-     with a `message` string (the field is `message`, not `reason`) that states the invariant
-     in prose, so the failure message teaches rather than merely rejects.
-   - **`[[restrict-use]]`** — encode Structure rules 4–7, one rule per feature crate naming
-     the *other* feature crates in `deny`. Each rule requires a `name` and a `message`;
-     exceptions are spelled `except`, not `allow`. `styx-proto` is exempt by never appearing
-     in any `deny` list, so everyone may name it. `styx-web` and the `styx` binary are exempt
-     **by construction**: the restriction's `scope` covers only feature-crate sources, so a
-     crate that is not a feature crate is unrestricted without needing an `except` entry.
+     with a `message` string (the field is `message`, not `reason`) that states the
+     invariant in prose, so the failure message teaches rather than merely rejects.
+   - **`[[restrict-use]]`** — encode Structure rules 4–7, one rule per feature crate
+     naming the *other* feature crates in `deny`. Each rule requires a `name` and a
+     `message`; exceptions are spelled `except`, not `allow`. `styx-proto` is exempt by
+     never appearing in any `deny` list, so everyone may name it. `styx-web` and the
+     `styx` binary are exempt **by construction**: the restriction's `scope` covers only
+     feature-crate sources, so a crate that is not a feature crate is unrestricted without
+     needing an `except` entry.
    - **Rules to enable**: `no-unwrap-expect` with `allow_in_tests = true`,
      `require-tracing`, `tracing-env-init`, `no-sync-io`, `require-thiserror`.
    - **Pin arch-lint to an exact 0.6.0 version**, not a range.
@@ -805,11 +814,12 @@ Tasks are ordered by dependency. Each is independently verifiable.
    - Confirm the 0.6.0 binary still selects the syn engine in the absence of `[[layers]]`.
    - Confirm the configuration keys `[[scopes]]`, `[[deny-scope-dep]]` and
      `[[restrict-use]]` are still accepted under those names.
-   - Confirm the five named rules exist under those names and that `allow_in_tests` is still
-     the spelling for the test exemption.
+   - Confirm the five named rules exist under those names and that `allow_in_tests` is
+     still the spelling for the test exemption.
    - Confirm AL001–AL013 are reported as active.
-   - Run `arch-lint check` with `--verbose` (or the 0.6.0 equivalent) and confirm it reports
-     a **non-zero file count**. A zero-file run is the failure mode this task exists to kill.
+   - Run `arch-lint check` with `--verbose` (or the 0.6.0 equivalent) and confirm it
+     reports a **non-zero file count**. A zero-file run is the failure mode this task
+     exists to kill.
 4. **Completion criterion**: `arch-lint check` passes on the clean workspace *and* reports
    having analysed a non-zero number of Rust files.
 
@@ -817,42 +827,42 @@ Tasks are ordered by dependency. Each is independently verifiable.
 
 1. **Responsibility**: catch what arch-lint cannot — a real link edge between two feature
    crates, regardless of what the source text says.
-2. **Implementation shape**: a small Rust `xtask` binary (preferred, so it is covered by the
-   same lints and toolchain) or a shell script, invoked by the `gate` target.
+2. **Implementation shape**: a small Rust `xtask` binary (preferred, so it is covered by
+   the same lints and toolchain) or a shell script, invoked by the `gate` target.
 3. **Logic**:
    - Read the resolved dependency graph from `cargo metadata --format-version 1`, whose
-     `resolve.nodes[].deps[].dep_kinds[]` gives each edge's kind (normal, `dev` or `build`)
-     exactly. This is the same resolved link graph `cargo tree --edges normal` renders, taken
-     as structured data rather than as an indentation-formatted tree — the property that
-     matters (the graph is what the build links, not what the source text says) is unchanged,
-     and the verdict no longer depends on parsing ASCII art.
+     `resolve.nodes[].deps[].dep_kinds[]` gives each edge's kind (normal, `dev` or
+     `build`) exactly. This is the same resolved link graph `cargo tree --edges normal`
+     renders, taken as structured data rather than as an indentation-formatted tree — the
+     property that matters (the graph is what the build links, not what the source text
+     says) is unchanged, and the verdict no longer depends on parsing ASCII art.
    - Build the set of workspace member crates and classify each as feature crate, shared
      foundation, presentation, or composition root.
    - **Violation**: a normal edge from one feature crate to another feature crate.
-   - **Not a violation**: any edge into `styx-proto`; an edge from `styx-web` into a feature
-     crate; any edge out of the `styx` binary; any dev edge.
+   - **Not a violation**: any edge into `styx-proto`; an edge from `styx-web` into a
+     feature crate; any edge out of the `styx` binary; any dev edge.
    - Exit non-zero on the first violation, printing the offending edge and naming the
      invariant it breaks.
-4. **Constraint**: the check must produce a **verdict**, not a report. Informational output
-   that nobody reads is not a gate.
-5. **Completion criterion**: passes on the clean workspace; fails when `styx-resolution` is
-   given a normal dependency on `styx-filtering`.
+4. **Constraint**: the check must produce a **verdict**, not a report. Informational
+   output that nobody reads is not a gate.
+5. **Completion criterion**: passes on the clean workspace; fails when `styx-resolution`
+   is given a normal dependency on `styx-filtering`.
 
 ### 6. Write the `hickory-dev-only` containment check
 
-1. **Responsibility**: keep the test oracle out of the shipping binary, so the from-scratch
-   rule stays observable rather than aspirational.
+1. **Responsibility**: keep the test oracle out of the shipping binary, so the
+   from-scratch rule stays observable rather than aspirational.
 2. **Logic**:
    - Inspect the **full transitive** normal and build dependency paths of every workspace
      member.
-   - **Violation**: `hickory-proto` (or any `hickory-*` crate) reachable through a normal or
-     build path.
+   - **Violation**: `hickory-proto` (or any `hickory-*` crate) reachable through a normal
+     or build path.
    - **Permitted**: presence under `[dev-dependencies]`, at any depth.
    - Exit non-zero with the offending path printed, so a transitive introduction is
      diagnosable.
 3. **Known limitation to document in the check's own output or comment**: in phase 0 the
-   dev-dependency does not yet exist, so the check passes vacuously. It becomes a real check
-   at phase 1 (fixtures) and phase 2 (fake root/TLD/authoritative servers).
+   dev-dependency does not yet exist, so the check passes vacuously. It becomes a real
+   check at phase 1 (fixtures) and phase 2 (fake root/TLD/authoritative servers).
 4. **Completion criterion**: passes on the clean workspace; fails when `hickory-proto` is
    temporarily moved from `[dev-dependencies]` to `[dependencies]`.
 
@@ -870,9 +880,9 @@ Tasks are ordered by dependency. Each is independently verifiable.
    unwrap/expect outside tests. **Every name must be confirmed to exist and to be
    non-deprecated under the pinned rustc 1.96.0 before it is committed**; an unrecognised
    lint name degrades to an ignored warning and the count becomes fiction.
-4. **The 4 `allow-*-in-tests` entries** go in `clippy.toml` and exist so that test code can
-   use the panicking constructs that production code is denied — the same exemption posture
-   as arch-lint's `no-unwrap-expect` with `allow_in_tests = true`.
+4. **The 4 `allow-*-in-tests` entries** go in `clippy.toml` and exist so that test code
+   can use the panicking constructs that production code is denied — the same exemption
+   posture as arch-lint's `no-unwrap-expect` with `allow_in_tests = true`.
 5. **Placement**: the denied set lives in `[workspace.lints]` in the root manifest; each
    member crate carries `[lints] workspace = true`. `clippy.toml` carries only the
    test-allowance configuration.
@@ -882,43 +892,52 @@ Tasks are ordered by dependency. Each is independently verifiable.
 ### 7a. Write the markdown lint policy *(amendment, 2026-09-22)*
 
 *Numbered 7a rather than 8 so that every existing task number, and the cross-references to
-them elsewhere in this canvas, stay valid. It executes here: after the lint policy it is the
-counterpart to, and before the `justfile` that invokes it.*
+them elsewhere in this canvas, stay valid. It executes here: after the lint policy it is
+the counterpart to, and before the `justfile` that invokes it.*
 
 1. **Responsibility**: one `rumdl.toml` at the repository root that gates the repository's
    prose, distinguishing the two tiers described in Approach §8.
 2. **Pin the tool to exactly `0.2.75`**, not a range, installed with
-   `cargo install rumdl --version 0.2.75 --locked`. Add it to the same `install-tools` recipe
-   and the same version-check preflight that already guard arch-lint, so an unexpected
-   version stops the gate rather than quietly changing what it means.
+   `cargo install rumdl --version 0.2.75 --locked`. Add it to the same `install-tools`
+   recipe and the same version-check preflight that already guard arch-lint, so an
+   unexpected version stops the gate rather than quietly changing what it means.
 3. **Global settings**:
-   - `respect_gitignore` on, so build output and untracked scratch files are never analysed.
+   - `respect_gitignore` on, so build output and untracked scratch files are never
+     analysed.
    - `exclude` covering `.claude/**` and `target/**`. `.claude/commands/*.md` are vendored
      tool definitions, not documents authored in this project.
 4. **Hand-written tier — the full rule set.** Set the line-length rule's `line-length` to
-   **90**, which is the width the ADRs and this canvas are already wrapped to. *Rationale for
-   not taking the default 80*: it would report about a dozen findings that are stylistic
-   disagreements rather than defects, and **a gate that starts red teaches people to ignore
-   it**. Leave the rule's table exemption at its default — a markdown table cannot be wrapped
-   and is not a defect for being wide.
-5. **Generated tier — structural rules only.** Through the per-file rule-ignore mechanism,
-   exempt `spdd/**` from the **line-length rule only**. Everything else stays enforced there.
-   Record in a comment *why*: those documents are emitted by the SPDD commands, which decide
-   their own wrapping and know nothing about this linter, so a wrapping rule there fails on
-   the next generated document through no author's fault.
-6. **The gate checks; it never writes.** The gate recipe runs the tool's *check* mode only.
-   Auto-fix lives behind its own separate recipe, is never invoked by `gate`, and reflow
-   stays off — reflowing `spdd/**` would rewrite tables and mermaid blocks into an
-   unreviewable diff.
-7. **Clear the backlog this creates.** Under the configuration above the repository reports
-   roughly **47 structural findings**, about four-fifths of them mechanically fixable by the
-   tool's fix mode; the remainder — emphasis used where a heading was meant, blank lines
-   inside blockquotes — are authoring choices inside generated documents and must be settled
-   by hand. **This is a one-off cost, paid in this phase, before the gate can go green.**
-   Applying the mechanical fixes to generated documents is acceptable here precisely because
-   it is done once and then held by the gate.
-8. **Completion criterion**: the check exits non-zero while any finding remains and zero once
-   the repository is clean; `just gate` is green with the markdown step wired in.
+   **90**, which is the width the ADRs and this canvas are already wrapped to.
+   *Rationale for not taking the default 80*: it would report about a dozen findings that
+   are stylistic disagreements rather than defects, and
+   **a gate that starts red teaches people to ignore it**. Leave the rule's table
+   exemption at its default — a markdown table cannot be wrapped and is not a defect for
+   being wide.
+5. **One policy over every document.** No per-path rule exemption. The line-length rule
+   exempts only what cannot be wrapped — tables, fenced code blocks and inline code spans
+   — and prose is exempt nowhere, `spdd/**` included. Record in a comment that the former
+   `spdd/**` exemption was retired by teaching the `/spdd-*` commands the norms and
+   reflowing the existing contracts, so a future reader reaches for that fix rather than
+   for a new exemption.
+6. **The gate checks; it never writes.** The gate recipe runs the tool's *check* mode
+   only. Auto-fix lives behind its own recipe (`md-fix`) and prose rewrapping behind
+   another (`md-reflow`); neither is ever invoked by `gate`. A gate that edits the working
+   tree is not a gate.
+7. **Clear the backlog this creates, twice.** The structural rules surface ~48 findings,
+   about four-fifths mechanically fixable; the remainder — emphasis used where a heading
+   was meant, blank lines inside blockquotes — are authoring choices in generated
+   documents and must be settled by hand. Retiring the `spdd/**` wrapping exemption
+   surfaces a further **1212** line-length findings, cleared by one reflow pass plus four
+   over-long headings shortened by hand. **This is a one-off cost, paid in this phase,
+   before the gate can go green.**
+   *Correction to an earlier assumption in this canvas*: reflowing `spdd/**` was expected
+   to rewrite tables and mermaid blocks into an unreviewable diff. **It does not** —
+   verified on a copy before the real run: tables and mermaid blocks came through
+   byte-identical, and only prose was rewrapped. The concern was real but the tool handles
+   it, which is why the exemption could be retired rather than merely documented.
+8. **Completion criterion**: the check exits non-zero while any finding remains and zero
+   once the repository is clean; `just gate` is green with the markdown step wired in, and
+   a deliberately over-long prose line in a `spdd/**` document turns it red.
 
 ### 8. Write the `justfile`
 
@@ -940,8 +959,8 @@ counterpart to, and before the `justfile` that invokes it.*
    - `gate-selftest` — runs the deliberate-violation fixtures and **asserts the gate
      rejects each one**.
 3. **Constraint**: `gate` must not invoke anything that touches the network. The
-   differential run against `unbound` is a per-phase gate and belongs nowhere in this file's
-   `gate` target.
+   differential run against `unbound` is a per-phase gate and belongs nowhere in this
+   file's `gate` target.
 4. **Completion criterion**: `just gate` is green on the clean workspace.
 
 ### 9. Wire the hooks
@@ -950,42 +969,43 @@ counterpart to, and before the `justfile` that invokes it.*
 2. **`lefthook.yml`**:
    - `pre-commit` → `just gate`.
    - `pre-push` → `just gate`.
-3. **Constraint**: both hooks invoke the `gate` target. They must not re-list its steps, or
-   the hooks and CI drift and the hooks become theatre.
+3. **Constraint**: both hooks invoke the `gate` target. They must not re-list its steps,
+   or the hooks and CI drift and the hooks become theatre.
 4. **Accepted limitation to note in the ADR**: hooks are bypassable with `--no-verify`. CI
    is the only non-bypassable gate. This is a deliberate position.
-5. **Completion criterion**: a commit carrying a deliberate `.unwrap()` in a `domain` module
-   is rejected by the pre-commit hook.
+5. **Completion criterion**: a commit carrying a deliberate `.unwrap()` in a `domain`
+   module is rejected by the pre-commit hook.
 
 ### 10. Write the CI workflows
 
 1. **Responsibility**: enforcement that cannot be bypassed, plus the release path phase 12
    consumes.
 2. **Quality workflow** — on every push and pull request:
-   - Check out, install the pinned toolchain, install `just`, the pinned arch-lint 0.6.0 and
-     the pinned rumdl 0.2.75.
+   - Check out, install the pinned toolchain, install `just`, the pinned arch-lint 0.6.0
+     and the pinned rumdl 0.2.75.
    - Run `just gate`.
-   - Run `just headless` explicitly as a separately-reported step, so a headless regression
-     is legible in the job list rather than buried inside an aggregate.
-   - Run `just gate-selftest`, so the "is the gate alive" question is answered on every push
-     rather than once at the end of phase 0.
+   - Run `just headless` explicitly as a separately-reported step, so a headless
+     regression is legible in the job list rather than buried inside an aggregate.
+   - Run `just gate-selftest`, so the "is the gate alive" question is answered on every
+     push rather than once at the end of phase 0.
 3. **Release workflow** — on `v*` tags:
    - Build release artifacts for `x86_64-unknown-linux-musl` and
      `aarch64-unknown-linux-musl` and publish them.
    - This is the path phase 12 uses for the cutover artifacts; it exists now so it is not
      written under pressure at the end.
 4. **Known limitation to state in the workflow comments**: `--no-default-features` passes
-   vacuously on an empty workspace and only becomes a real check at phase 11, when the `web`
-   feature actually gates code. It is added now because its cost is lowest now and rises
-   with every phase, and because an unexercised configuration rots within about a month.
+   vacuously on an empty workspace and only becomes a real check at phase 11, when the
+   `web` feature actually gates code. It is added now because its cost is lowest now and
+   rises with every phase, and because an unexercised configuration rots within about a
+   month.
 5. **Completion criterion**: a push to a branch runs all three jobs green.
 
 ### 11. Build the gate self-test
 
 1. **Responsibility**: prove each rule family rejects a real violation. **This is the
    deliverable of the phase — the empty workspace is not.**
-2. **Fixtures**, housed under **`gate-selftest/`** — *not* `tests/gate-selftest/* — and kept
-   out of the normal gate run by a Cargo workspace `exclude` plus arch-lint's
+2. **Fixtures**, housed under **`gate-selftest/`** — *not* under `tests/` — and kept out
+   of the normal gate run by a Cargo workspace `exclude` plus arch-lint's
    `analyzer.include` allowlist, so the clean gate stays green while the fixtures remain
    committed and reviewable.
 
@@ -994,14 +1014,14 @@ counterpart to, and before the `justfile` that invokes it.*
    - **No path component may be named `tests`.** arch-lint marks a file as test code when
      *any* component of its path is `tests`, `test` or `benches`
      (`arch-lint-core-0.6.0/src/context.rs:43`), and test code is exactly what
-     `allow_in_tests = true` exempts. Under `tests/gate-selftest/` **every fixture passes**
-     and the self-test certifies a gate that is proving nothing — the phase 0 failure mode,
-     reproduced inside the very thing built to detect it.
+     `allow_in_tests = true` exempts. Under `tests/gate-selftest/`
+     **every fixture passes** and the self-test certifies a gate that is proving nothing —
+     the phase 0 failure mode, reproduced inside the very thing built to detect it.
    - **The fixtures are hidden from the normal run by an `include` allowlist, not an
      `exclude`.** `analyzer.exclude` falls back to a plain substring match against the
      absolute path (`arch-lint-core-0.6.0/src/analyzer.rs:527`), so excluding the fixture
-     directory also hides the fixtures when `gate-selftest` points the analyser straight at
-     one, yielding a zero-file green run. `include` is matched relative to the analysis
+     directory also hides the fixtures when `gate-selftest` points the analyser straight
+     at one, yielding a zero-file green run. `include` is matched relative to the analysis
      root, so `crates/**` selects the workspace when rooted at the repo and selects the
      fixture when rooted at the fixture. One configuration, correct in both directions.
 
@@ -1010,52 +1030,55 @@ counterpart to, and before the `justfile` that invokes it.*
      crate. Must be rejected by arch-lint *and* by clippy.
    - **Fixture B — `[[deny-scope-dep]]`**: a cross-layer `use` — `domain` naming
      `infrastructure` in the same crate. Must be rejected by arch-lint.
-   - **Fixture C — `[[restrict-use]]`**: `styx-resolution` naming `styx-filtering`. Must be
-     rejected by arch-lint *and*, once the manifest edge is added, by the link-graph check.
+   - **Fixture C — `[[restrict-use]]`**: `styx-resolution` naming `styx-filtering`. Must
+     be rejected by arch-lint *and*, once the manifest edge is added, by the link-graph
+     check.
    - **Fixture D — `hickory-dev-only`**: `hickory-proto` moved into `[dependencies]`. Must
      be rejected by the containment check.
    - **Fixture E — markdown** *(amendment)*: a markdown document carrying structural
-     violations that are enforced in **both** tiers — an unlabelled code fence and a heading
-     ending in punctuation — plus an over-long prose line. Must be rejected by the markdown
-     check. The fixture is linted with the repository's own `rumdl.toml`, not a private one,
-     so it proves the shipped configuration rather than a copy of it.
-     **It must be placed so that the hand-written tier's rules apply to it**: a fixture that
-     accidentally lands under a `spdd/**`-style exemption, or inside an excluded directory,
-     passes while proving nothing — the same trap Fixtures A–C fell into when they were first
-     housed under `tests/`.
-3. **Runner logic** (`just gate-selftest`): for each fixture, run the gate step that should
-   reject it and **assert a non-zero exit**. A zero exit is a failure of the self-test.
+     violations that are enforced in **both** tiers — an unlabelled code fence and a
+     heading ending in punctuation — plus an over-long prose line. Must be rejected by the
+     markdown check. The fixture is linted with the repository's own `rumdl.toml`, not a
+     private one, so it proves the shipped configuration rather than a copy of it.
+     **It must be placed so that the hand-written tier's rules apply to it**: a fixture
+     that accidentally lands under a `spdd/**`-style exemption, or inside an excluded
+     directory, passes while proving nothing — the same trap Fixtures A–C fell into when
+     they were first housed under `tests/`.
+3. **Runner logic** (`just gate-selftest`): for each fixture, run the gate step that
+   should reject it and **assert a non-zero exit**. A zero exit is a failure of the
+   self-test.
 4. **Rationale to record**: the stated exit criteria name A and B. C is added because
-   `[[restrict-use]]` is a distinct rule family that a cross-layer `use` does not reach, and
-   it is the rule most likely to be silently wrong because of its `styx-proto` and
+   `[[restrict-use]]` is a distinct rule family that a cross-layer `use` does not reach,
+   and it is the rule most likely to be silently wrong because of its `styx-proto` and
    `styx-web` exemptions — a restriction written as "no crate may name another workspace
    crate" would break the whole build, and one written too loosely would never fire. D is
-   added because the containment check otherwise passes vacuously until phase 2 and would be
-   entirely unproven when it first matters. E is added because the markdown gate carries a
-   standing exemption — `spdd/**` has one rule switched off — and an over-broad exemption is
-   indistinguishable from a clean repository from an exit code.
+   added because the containment check otherwise passes vacuously until phase 2 and would
+   be entirely unproven when it first matters. E is added because the markdown gate
+   carries a standing exemption — `spdd/**` has one rule switched off — and an over-broad
+   exemption is indistinguishable from a clean repository from an exit code.
 5. **Completion criterion**: `just gate-selftest` passes, meaning every fixture was
    rejected; and `just gate` remains green on the workspace itself.
 
 ### 12. Write ADR — layering and the arch-lint mechanism
 
-1. **Context to record**: the crate-per-feature model with layers as modules; why layers are
-   not separate crates; why feature crates may not name each other and how a port in the
-   consumer's `domain` plus an adapter in the binary replaces a direct dependency; why
-   `styx-proto` is the single exemption; why `styx-web` is presentation rather than a peer.
+1. **Context to record**: the crate-per-feature model with layers as modules; why layers
+   are not separate crates; why feature crates may not name each other and how a port in
+   the consumer's `domain` plus an adapter in the binary replaces a direct dependency; why
+   `styx-proto` is the single exemption; why `styx-web` is presentation rather than a
+   peer.
 2. **The mechanism, recorded in full and in these terms**: arch-lint has two mutually
    exclusive engines selected by the presence of `[[layers]]`
-   (`arch-lint-cli-0.5.0/src/main.rs:144`); with it, the tree-sitter engine runs, ships only
-   `tree-sitter-kotlin-ng`, filters discovery to `.kt`/`.kts` (`check_ts.rs:122`), analyses
-   zero files on a Rust repo, exits 0, and silently disables AL001–AL013; without it, the
-   syn engine runs AL001–AL013 plus `[[scopes]]`, `[[deny-scope-dep]]` and
+   (`arch-lint-cli-0.5.0/src/main.rs:144`); with it, the tree-sitter engine runs, ships
+   only `tree-sitter-kotlin-ng`, filters discovery to `.kt`/`.kts` (`check_ts.rs:122`),
+   analyses zero files on a Rust repo, exits 0, and silently disables AL001–AL013; without
+   it, the syn engine runs AL001–AL013 plus `[[scopes]]`, `[[deny-scope-dep]]` and
    `[[restrict-use]]` (`arch-lint-core-0.5.0/src/declarative/config_dto.rs:27`), enforcing
    layering on Rust by path glob, with `alloy/arch-lint.toml` as a working proof on a real
    Rust workspace.
 3. **Decision**: no `[[layers]]` block, ever. Its absence is the engine selector.
 4. **Consequence to state explicitly**: the second, overlapping link-graph gate exists
-   because arch-lint reads source text and `cargo tree` reads the link graph, and because a
-   tool that fails open must be caught by a neighbour. The overlap is the point, not an
+   because arch-lint reads source text and `cargo tree` reads the link graph, and because
+   a tool that fails open must be caught by a neighbour. The overlap is the point, not an
    oversight to be tidied away.
 5. **Warning to future readers**: an inert config looks identical to a passing one. Do not
    "simplify" this file without re-running `just gate-selftest`.
@@ -1068,9 +1091,9 @@ counterpart to, and before the `justfile` that invokes it.*
 2. **Decision**: `hickory-proto` is permitted, in `[dev-dependencies]` only, as the test
    oracle.
 3. **Rationale, recorded in full**: the fake root/TLD/authoritative servers and the
-   expected-byte fixtures have to encode DNS wire format. If our own codec encodes them, the
-   resolver and its oracle share every bug and a green suite proves only self-consistency.
-   The from-scratch ban is on shipping code, not the test rig.
+   expected-byte fixtures have to encode DNS wire format. If our own codec encodes them,
+   the resolver and its oracle share every bug and a green suite proves only
+   self-consistency. The from-scratch ban is on shipping code, not the test rig.
 4. **Consequence**: the `hickory-dev-only` CI check exists because, without it, the
    exception rots into a real dependency.
 
@@ -1080,16 +1103,16 @@ counterpart to, and before the `justfile` that invokes it.*
    `trust-anchor` config override pointing at a file path, behind a `TrustAnchorSource`
    port.
 2. **Rationale**: RFC 5011 automated rollover needs state that survives restarts, which
-   would drag the storage layer into the validator phase for a rollover that is pre-announced
-   months ahead.
-3. **Accepted consequence, recorded verbatim in substance**: a KSK roll needs a release or a
-   file edit, and missing one SERVFAILs every lookup — this is a monitoring obligation, not
-   code.
+   would drag the storage layer into the validator phase for a rollover that is
+   pre-announced months ahead.
+3. **Accepted consequence, recorded verbatim in substance**: a KSK roll needs a release or
+   a file edit, and missing one SERVFAILs every lookup — this is a monitoring obligation,
+   not code.
 4. **Non-goal it justifies**: RFC 5011 automated trust anchor rollover is out of scope for
    v1; the `TrustAnchorSource` port is the seam it slots into later.
 5. **Why it is written in phase 0**: the code lands in phase 6, but a validator with no
-   automated rollover looks like an omission to anyone who does not know the reasoning, and
-   the seam that makes it recoverable is a design commitment made now.
+   automated rollover looks like an omission to anyone who does not know the reasoning,
+   and the seam that makes it recoverable is a design commitment made now.
 
 ---
 
@@ -1103,29 +1126,30 @@ counterpart to, and before the `justfile` that invokes it.*
    feature crate, and no async runtime type in its signature beyond what the trait itself
    requires. Adapters implement ports in `infrastructure` or in the `styx` binary.
 
-3. **Errors are `thiserror` enums**. Every fallible operation returns `Result<T, E>` with a
-   crate-owned error enum. No `Box<dyn Error>` on a public boundary, no stringly-typed
+3. **Errors are `thiserror` enums**. Every fallible operation returns `Result<T, E>` with
+   a crate-owned error enum. No `Box<dyn Error>` on a public boundary, no stringly-typed
    errors, no `anyhow` in library crates (the composition-root binary may use it for
    top-level startup errors only). This is what arch-lint's `require-thiserror` enforces.
 
-4. **No `unwrap`, no `expect`, no `panic!` outside tests**. Enforced twice — by arch-lint's
-   `no-unwrap-expect` with `allow_in_tests = true`, and by clippy's denied set. In a single
-   process a panic in a web handler takes DNS down for the whole house, and the real
-   mitigation is a phase away.
+4. **No `unwrap`, no `expect`, no `panic!` outside tests**. Enforced twice — by
+   arch-lint's `no-unwrap-expect` with `allow_in_tests = true`, and by clippy's denied
+   set. In a single process a panic in a web handler takes DNS down for the whole house,
+   and the real mitigation is a phase away.
 
 5. **No indexing, no unchecked arithmetic**. `indexing_slicing` and
    `arithmetic_side_effects` are denied workspace-wide. Use `get()`, `checked_*`,
-   `saturating_*` and explicit bounds handling. This is the intended tax and it is paid from
-   the first line of the wire codec.
+   `saturating_*` and explicit bounds handling. This is the intended tax and it is paid
+   from the first line of the wire codec.
 
-6. **No synchronous I/O in `domain` or `application`**. Enforced by arch-lint's `no-sync-io`.
-   This is an architectural invariant, not a style rule: the hot path touches no I/O, and a
-   database outage must degrade logging and admin while never touching resolution.
+6. **No synchronous I/O in `domain` or `application`**. Enforced by arch-lint's
+   `no-sync-io`. This is an architectural invariant, not a style rule: the hot path
+   touches no I/O, and a database outage must degrade logging and admin while never
+   touching resolution.
 
-7. **`tracing`, initialised from the environment**. Instrumentation uses `tracing` spans and
-   events; the binary initialises the subscriber from an environment filter. Enforced by
-   arch-lint's `require-tracing` and `tracing-env-init`. No `println!` or `eprintln!` as
-   logging.
+7. **`tracing`, initialised from the environment**. Instrumentation uses `tracing` spans
+   and events; the binary initialises the subscriber from an environment filter. Enforced
+   by arch-lint's `require-tracing` and `tracing-env-init`. No `println!` or `eprintln!`
+   as logging.
 
 8. **Dependency versions are declared once**, in `[workspace.dependencies]`; members
    reference them with `workspace = true`. Lints likewise: `[workspace.lints]` plus
@@ -1138,18 +1162,19 @@ counterpart to, and before the `justfile` that invokes it.*
 10. **The gate is a single target with three callers.** Developer, hooks and CI all run
     `just gate`. Neither `lefthook.yml` nor a CI workflow may re-list the gate's steps.
 
-11. **Nothing in `gate` touches the network.** Per-push acceptance is hermetic and fast. The
-    non-hermetic differential run against a local `unbound` — resolving a corpus of real
-    domains through both and diffing RCODE, AD bit and rrset contents — gates a phase and
-    never a push, because it depends on the live internet and is flaky by nature.
+11. **Nothing in `gate` touches the network.** Per-push acceptance is hermetic and fast.
+    The non-hermetic differential run against a local `unbound` — resolving a corpus of
+    real domains through both and diffing RCODE, AD bit and rrset contents — gates a phase
+    and never a push, because it depends on the live internet and is flaky by nature.
 
 12. **New crates come with their scopes.** Adding a crate to the workspace without adding
     its `[[scopes]]` entries is a defect, not an omission: the layering rules would simply
-    not apply to it and the gate would pass in silence. That is the inert-config failure in
-    a new dress.
+    not apply to it and the gate would pass in silence. That is the inert-config failure
+    in a new dress.
 
-13. **Every gate change is accompanied by a self-test run.** `just gate-selftest` is part of
-    CI, so a change that weakens enforcement fails the build rather than passing quietly.
+13. **Every gate change is accompanied by a self-test run.** `just gate-selftest` is part
+    of CI, so a change that weakens enforcement fails the build rather than passing
+    quietly.
 
 14. **ADRs record the *why*, including the consequence that was accepted.** An ADR that
     states a decision without the trade-off it purchased is not doing its job — the next
@@ -1157,10 +1182,11 @@ counterpart to, and before the `justfile` that invokes it.*
 
 15. **Prose is gated like code.** Markdown is linted by `just gate`, and hand-written
     documents — ADRs, READMEs, the roadmap — wrap at 90 columns, carry a language on every
-    code fence, and use headings where a heading is meant rather than bold text standing in
-    for one. The generated contracts under `spdd/` are exempt from the wrapping rule *only*,
-    because a command decides their width; every structural rule still applies to them. New
-    documentation arrives lint-clean, and the gate never rewrites a file to make it so.
+    code fence, and use headings where a heading is meant rather than bold text standing
+    in for one. The generated contracts under `spdd/` are exempt from the wrapping rule
+    *only*, because a command decides their width; every structural rule still applies to
+    them. New documentation arrives lint-clean, and the gate never rewrites a file to make
+    it so.
 
 ---
 
@@ -1182,21 +1208,22 @@ counterpart to, and before the `justfile` that invokes it.*
   failure, not a pass.
 - Fixture A (a `.unwrap()` in a `domain` module) turns the gate red.
 - Fixture B (a cross-layer `use`) turns the gate red.
-- Fixture C (one feature crate naming another) turns the gate red, via arch-lint and via the
-  link-graph check.
+- Fixture C (one feature crate naming another) turns the gate red, via arch-lint and via
+  the link-graph check.
 - Fixture D (`hickory-proto` in `[dependencies]`) turns the gate red.
 - Fixture E (a markdown document with structural violations) turns the gate red.
-- `just gate-selftest` asserts every one of these rejections and is run by CI on every push.
+- `just gate-selftest` asserts every one of these rejections and is run by CI on every
+  push.
 
 ### 2. Architectural constraints
 
 - `arch-lint.toml` contains **no `[[layers]]` block**. Its presence routes the tool to a
   Kotlin-only tree-sitter engine that discovers zero `.rs` files, exits 0, and disables
   AL001–AL013.
-- `arch-lint.toml` declares `[[scopes]]` per feature crate × layer, `[[deny-scope-dep]]` for
-  the layering rules, and `[[restrict-use]]` for feature isolation.
-- AL001–AL013 are active — **noting that `AL008` does not exist in 0.6.0**, so the real set
-  is `AL001`–`AL007` plus `AL009`–`AL013` — via `preset = "strict"`, plus
+- `arch-lint.toml` declares `[[scopes]]` per feature crate × layer, `[[deny-scope-dep]]`
+  for the layering rules, and `[[restrict-use]]` for feature isolation.
+- AL001–AL013 are active — **noting that `AL008` does not exist in 0.6.0**, so the real
+  set is `AL001`–`AL007` plus `AL009`–`AL013` — via `preset = "strict"`, plus
   `no-unwrap-expect` (`allow_in_tests = true`), `require-tracing`, `tracing-env-init`,
   `no-sync-io`, `require-thiserror`.
 - Every layer scope carries both its `crates/<crate>/src/<layer>/**` glob and the
@@ -1224,17 +1251,20 @@ counterpart to, and before the `justfile` that invokes it.*
   `arithmetic_side_effects = deny` and `panic = deny`.
 - 4 `allow-*-in-tests` entries in `clippy.toml`.
 - Every one of the 15 names is verified to exist and to be non-deprecated under the pinned
-  rustc 1.96.0 before it is committed. An unrecognised name degrades to an ignored warning.
+  rustc 1.96.0 before it is committed. An unrecognised name degrades to an ignored
+  warning.
 - The toolchain is pinned in `rust-toolchain.toml`.
 - Markdown is linted by `rumdl`, pinned to **exactly 0.2.75**, configured by a single
   `rumdl.toml` at the repository root.
-- The markdown line-length rule is set to **90** and is exempted for `spdd/**` **only**.
-  Every structural rule applies to `spdd/**`. Exempting a second rule there, or widening the
-  exemption to another path, is a change to the gate's meaning and needs the same scrutiny as
-  weakening a clippy lint.
-- `.claude/commands/**` is excluded: vendored tool definitions, not documents authored here.
-- **The gate never writes to a file.** The markdown auto-fix is a separate recipe, is not
-  invoked by `gate`, and prose reflow stays off.
+- The markdown line-length rule is set to **90** and applies to **every** document,
+  `spdd/**` included. It exempts only what cannot be wrapped: tables, fenced code blocks
+  and inline code spans. **There is no per-path rule exemption, and adding one is a change
+  to what the gate means** — the same scrutiny as weakening a clippy lint.
+- `.claude/commands/**` is excluded: vendored tool definitions. Note this exclusion is
+  weaker than it was — the `/spdd-*` files there are now maintained by this project.
+- **The gate never writes to a file.** Structural auto-fix lives in `md-fix` and prose
+  rewrapping in `md-reflow`; `gate` invokes neither. A gate that edits the working tree is
+  not a gate.
 
 ### 4. Dependency constraints
 
@@ -1246,14 +1276,14 @@ counterpart to, and before the `justfile` that invokes it.*
 
 ### 5. Enforcement constraints
 
-- arch-lint runs in lefthook (pre-commit and pre-push) **and** in GitHub Actions. A lint that
-  only runs locally is not enforcement.
+- arch-lint runs in lefthook (pre-commit and pre-push) **and** in GitHub Actions. A lint
+  that only runs locally is not enforcement.
 - Hooks and CI invoke `just gate`; neither re-lists its steps.
 - CI runs on every push and pull request, and additionally runs `just headless` and
   `just gate-selftest` as separately-reported steps.
-- CI installs the pinned `rumdl` alongside the pinned `arch-lint`; both versions are checked
-  by the gate before use, so a version drift fails loudly rather than changing what the gate
-  means.
+- CI installs the pinned `rumdl` alongside the pinned `arch-lint`; both versions are
+  checked by the gate before use, so a version drift fails loudly rather than changing
+  what the gate means.
 - Release artifacts for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` are
   published on `v*` tags.
 - Accepted limitation: hooks are bypassable with `--no-verify`, so CI is the only
@@ -1263,8 +1293,8 @@ counterpart to, and before the `justfile` that invokes it.*
 
 - `just gate` is hermetic: no network access, no external service, no live DNS.
 - The gate runs on every commit and every push and will grow — by phase 8 it carries
-  socket-level tests, fuzz targets and two full builds. A gate slow enough to be resented is
-  a gate that gets bypassed. Keep the ordering fail-fast (format, then lints, then
+  socket-level tests, fuzz targets and two full builds. A gate slow enough to be resented
+  is a gate that gets bypassed. Keep the ordering fail-fast (format, then lints, then
   architecture, then tests, then the second build) and revisit if it stops being fast.
 
 ### 7. Scope constraints
@@ -1280,47 +1310,52 @@ counterpart to, and before the `justfile` that invokes it.*
 
 - Three ADRs exist under `docs/adr/`: layering and the arch-lint mechanism; the
   `hickory-proto` exception to the from-scratch rule; the pinned trust anchor.
-- The arch-lint ADR records the two-engine selector, the Kotlin-only grammar, the zero-file
-  green run, and the explicit instruction not to reintroduce `[[layers]]`.
+- The arch-lint ADR records the two-engine selector, the Kotlin-only grammar, the
+  zero-file green run, and the explicit instruction not to reintroduce `[[layers]]`.
 - The `hickory-proto` ADR records the oracle argument: a self-encoded fixture shares every
   bug with the code it tests, so a green suite would prove only self-consistency.
 - The trust-anchor ADR records the accepted consequence: a KSK roll needs a release or a
   file edit, and missing one SERVFAILs every lookup — a monitoring obligation, not code.
-- Every markdown file in the repository is lint-clean under `rumdl.toml`, including the ADRs
-  this phase writes. A documentation gate that its own phase's documents do not pass is not a
-  gate.
+- Every markdown file in the repository is lint-clean under `rumdl.toml`, including the
+  ADRs this phase writes. A documentation gate that its own phase's documents do not pass
+  is not a gate.
 
 ### 9. Known limitations carried forward, to be re-verified in later phases
 
-- **The headless build passes vacuously** on an empty workspace. It becomes a real check at
-  **Phase 11 — Web UI**, when the `web` Cargo feature actually gates code. It is wired now
-  because its cost is lowest now and because an unexercised configuration rots within about
-  a month.
+- **The headless build passes vacuously** on an empty workspace. It becomes a real check
+  at **Phase 11 — Web UI**, when the `web` Cargo feature actually gates code. It is wired
+  now because its cost is lowest now and because an unexercised configuration rots within
+  about a month.
 - **The `hickory-dev-only` check passes vacuously** until **Phase 1 — Wire codec** adds
-  fixture generation and **Phase 2 — Server loop and test harness** adds the fake root, TLD
-  and authoritative servers. Fixture D is the only proof it works until then.
-- **Every rule in this phase is written against crates that barely exist.** Rules correct in
-  the abstract and wrong in practice will not surface until phase 1 or later. The self-test
-  is the only mitigation available, and it only proves the rules it exercises — which is
-  precisely why it exercises five rule families rather than the two the exit criteria name.
+  fixture generation and **Phase 2 — Server loop and test harness** adds the fake root,
+  TLD and authoritative servers. Fixture D is the only proof it works until then.
+- **Every rule in this phase is written against crates that barely exist.** Rules correct
+  in the abstract and wrong in practice will not surface until phase 1 or later. The
+  self-test is the only mitigation available, and it only proves the rules it exercises —
+  which is precisely why it exercises five rule families rather than the two the exit
+  criteria name.
 - ~~**The arch-lint 0.6.0 behaviour is unverified**~~ — **resolved 2026-09-22.** The
-  re-spike was run; the engine selector holds and five configuration details were corrected.
-  See Approach §2. The finding that `[[deny-scope-dep]]` resolves module paths against the
-  analysis root — and therefore matches nothing in a workspace without the synthetic
-  `src/<layer>/**` glob — is the one to re-check on any arch-lint upgrade.
-- **`rumdl` is pre-1.0 and its rule set will move.** A minor bump can rename a rule, change
-  a default, or introduce one that reports on documents which were clean the day before. The
-  exact pin and the gate's version check are the mitigation; an upgrade is a change to
-  verify, not to absorb. This is milder than the arch-lint hazard in one specific respect
-  worth remembering: a markdown rule change makes the gate **noisy**, not silently inert.
-- **The two-tier markdown policy is a standing invitation to widen the exemption.** The
-  moment a generated document trips a structural rule, the cheap fix is to add that rule to
-  the `spdd/**` ignore list, and nothing in the tooling will object. Fixture E is what
-  notices; the correct fix is almost always to change what the generator emits.
-- **The `spdd/**` wrapping exemption is a symptom, not a resolution.** The real fix is to
-  teach the SPDD command templates a wrap width, at which point the exemption can be dropped
-  and the tier split collapses back to one policy. That work belongs to whoever next changes
-  those templates, and is out of scope here.
+  re-spike was run; the engine selector holds and five configuration details were
+  corrected. See Approach §2. The finding that `[[deny-scope-dep]]` resolves module paths
+  against the analysis root — and therefore matches nothing in a workspace without the
+  synthetic `src/<layer>/**` glob — is the one to re-check on any arch-lint upgrade.
+- **`rumdl` is pre-1.0 and its rule set will move.** A minor bump can rename a rule,
+  change a default, or introduce one that reports on documents which were clean the day
+  before. The exact pin and the gate's version check are the mitigation; an upgrade is a
+  change to verify, not to absorb. This is milder than the arch-lint hazard in one
+  specific respect worth remembering: a markdown rule change makes the gate **noisy**, not
+  silently inert.
+- **A per-path rule exemption is the cheap fix whenever a generated document trips a
+  rule, and nothing in the tooling will object to one.** The `spdd/**` wrapping exemption
+  this canvas originally specified has been retired, so the config now has no exemption to
+  widen. Keeping it that way is a standing obligation: the correct fix is almost always to
+  change what the generator emits. Fixture E is what notices if it is not.
+- **The `/spdd-*` commands are instructions to a model, not a deterministic formatter.**
+  They now carry the wrapping norms, but nothing guarantees compliance the way `cargo fmt`
+  guarantees Rust layout. A generated document may still arrive over-width; that is an
+  ordinary gate failure for its author to fix, with `just md-reflow` available to do the
+  mechanical part.
 - **`panic = deny` is the only panic mitigation until phase 12.** The `catch_unwind`
-  boundary around the web layer and the supervised task model arrive in **Phase 12 — Cutover
-  hardening**. Weakening the lint before then removes the only protection there is.
+  boundary around the web layer and the supervised task model arrive in **Phase 12 —
+  Cutover hardening**. Weakening the lint before then removes the only protection there
+  is.

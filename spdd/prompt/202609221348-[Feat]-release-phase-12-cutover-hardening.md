@@ -929,8 +929,9 @@ passed.**
        2. Await the set of join handles (`FuturesUnordered` or `JoinSet`).
        3. On each completion, map `Result<Result<(), TaskError>, JoinError>` to a
           `TaskOutcome`: `Ok(Ok(()))` → `Completed`; `Ok(Err(e))` → `Failed(e)`;
-          `Err(join)` where `join.is_panic()` → `Panicked(PanicReport::from_box_any(join.into_panic()))`;
-          `Err(join)` where `is_cancelled()` → `Cancelled`.
+          `Err(join)` where `join.is_panic()` →
+          `Panicked(PanicReport::from_box_any(join.into_panic()))`; `Err(join)` where
+          `is_cancelled()` → `Cancelled`.
        4. Report to the `FailureObserver`.
        5. Compute a `RestartDecision` via `on_termination`.
        6. Act: sleep the backoff on the `Clock` then respawn; or shed; or trigger
@@ -1002,7 +1003,8 @@ passed.**
 
 1. Responsibility: be the catching frame for a panic raised at **any** poll of the inner
    future, including after an `await`.
-2. Structure: `#[pin_project] struct CatchPanicFuture<F> { #[pin] inner: F, owner: TaskId, observer: Arc<dyn FailureObserver>, route: Option<String> }`.
+2. Structure:
+   `#[pin_project] struct CatchPanicFuture<F> { #[pin] inner: F, owner: TaskId, observer: Arc<dyn FailureObserver>, route: Option<String> }`.
 3. `impl Future for CatchPanicFuture<F>`:
    - `type Output = Result<F::Output, CaughtPanic>`
    - `fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output>`
@@ -1095,7 +1097,8 @@ passed.**
 
 #### 12c.1 — Implement `ShutdownCoordinator`
 
-1. Attributes: `root: CancellationToken`, `drain_deadline: Duration`, `clock: Arc<dyn Clock>`.
+1. Attributes: `root: CancellationToken`, `drain_deadline: Duration`,
+   `clock: Arc<dyn Clock>`.
 2. Methods:
    - `token(&self) -> CancellationToken` — a child token per task.
    - `trigger(&self, reason: ExitReason)` — cancel the root, emit a `tracing` event

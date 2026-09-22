@@ -57,11 +57,13 @@ The phase's stated exit criteria name A and B. C and D are here because:
 - **D** exercises the containment check, which otherwise passes vacuously
   until phase 2 adds the fake root/TLD/authoritative servers — it would be
   entirely unproven at exactly the moment it first matters.
-- **E** exercises the markdown gate, which carries a standing exemption:
-  `spdd/**` has the line-length rule switched off. An exemption list that
-  quietly grows until it covers everything is indistinguishable from a clean
-  repository by exit code, and widening it is the cheap fix every time a
-  generated document trips a rule. E is what notices.
+- **E** exercises the markdown gate. That gate once carried a per-path
+  exemption — `spdd/**` had the line-length rule switched off — and it was
+  retired by teaching the `/spdd-*` commands the norms and reflowing the 26
+  existing contracts, rather than by widening it. Adding a new exemption is
+  still the cheap fix every time a generated document trips a rule, and an
+  exemption list that quietly grows until it covers everything is
+  indistinguishable from a clean repository by exit code. E is what notices.
 
 An inert config and a passing config emit the same exit code. This directory is
 the only thing that distinguishes them, which is why `just gate-selftest` runs

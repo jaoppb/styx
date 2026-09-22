@@ -73,9 +73,9 @@ The phase spec's numbered references are resolved here so this analysis stands a
    walked label-by-label right-to-left; a node flagged *wildcard* matches all descendants,
    so exact and wildcard lookups are the same operation rather than two code paths. All
    regex rules compile into one `RegexSet` automaton, so regex rule count is near-free at
-   query time — it is explicitly **not** a linear scan over compiled regexes. Sizing target
-   ~30–50MB per million domains (single-mask baseline), chosen so the resolver fits a
-   Raspberry Pi.
+   query time — it is explicitly **not** a linear scan over compiled regexes. Sizing
+   target ~30–50MB per million domains (single-mask baseline), chosen so the resolver fits
+   a Raspberry Pi.
 
 4. **Per-group is a bitmask on each terminal, not a matcher per group.** One lookup, then
    `mask & client_groups`. *Why:* a matcher per group multiplies both build time and
@@ -83,9 +83,10 @@ The phase spec's numbered references are resolved here so this analysis stands a
    structure whose contents are overwhelmingly shared between groups.
 
 5. **Reload is an explicit operation with an atomic swap.** The matcher is immutable and
-   replaced wholesale via `ArcSwap`. There is **no mutation under a lock on the hot path**.
-   *Why:* the hot path is a DNS response path with a latency budget; a writer lock held
-   during a rebuild of a million-entry structure would stall every concurrent query.
+   replaced wholesale via `ArcSwap`. There is
+   **no mutation under a lock on the hot path**. *Why:* the hot path is a DNS response
+   path with a latency budget; a writer lock held during a rebuild of a million-entry
+   structure would stall every concurrent query.
 
 6. **Allowlists are a second bitmask, and allow beats block unconditionally.** Each
    terminal carries an `allow` mask and a `block` mask; one walk returns both, and the
@@ -97,44 +98,44 @@ The phase spec's numbered references are resolved here so this analysis stands a
    figure becomes **~45–75MB**, and that revised figure is what the exit criteria measure
    against.
 
-7. **Blocked replies: five modes, NXDOMAIN by default.** The Pi-hole set —
-   `NXDOMAIN` (styx's default), `NULL` (`0.0.0.0`/`::`, Pi-hole's default), `NODATA`,
-   `IP`, `IP-NODATA-AAAA` — selectable in configuration. **Regardless of mode:** qtypes
-   other than A/AAAA get NODATA; blocked replies carry a short TTL so unblocking takes
-   effect quickly; **AD is always cleared and no RRSIG is ever forged**; and filtering is
-   applied *before* validation, because a block is not a validation verdict.
+7. **Blocked replies: five modes, NXDOMAIN by default.** The Pi-hole set — `NXDOMAIN`
+   (styx's default), `NULL` (`0.0.0.0`/`::`, Pi-hole's default), `NODATA`, `IP`,
+   `IP-NODATA-AAAA` — selectable in configuration. **Regardless of mode:** qtypes other
+   than A/AAAA get NODATA; blocked replies carry a short TTL so unblocking takes effect
+   quickly; **AD is always cleared and no RRSIG is ever forged**; and filtering is applied
+   *before* validation, because a block is not a validation verdict.
    *Why this matters here:* Pi-hole never resolved this interaction and ships the breakage
-   as bug reports, and because styx's validator **hard-fails** bogus answers with SERVFAIL,
-   vagueness about the block/validate interaction is unaffordable.
-   **Accepted consequence:** five response paths must each be tested against the validator,
-   and a client validating with CD=0 receives an unsigned answer for a signed name — a
-   deliberate lie, documented as one.
+   as bug reports, and because styx's validator **hard-fails** bogus answers with
+   SERVFAIL, vagueness about the block/validate interaction is unaffordable.
+   **Accepted consequence:** five response paths must each be tested against the
+   validator, and a client validating with CD=0 receives an unsigned answer for a signed
+   name — a deliberate lie, documented as one.
 
 8. **Adlist ingestion is staged, validated, and keeps the last known good.** Each list is
    fetched into a staging buffer and must pass sanity checks before it replaces anything:
    the content-type is not HTML, it parses to at least a minimum count of syntactically
-   valid domains, and the count has not collapsed against the previous ingest.
-   *Why:* the dangerous failure is not a 404 — it is a captive portal or an error page
-   served as HTTP 200, which parses as thousands of junk domains and blackholes real
-   traffic. Any failure leaves the previous good copy in place, marks the list stale in the
-   UI **with the reason**, and the matcher rebuild proceeds from the remaining lists. The
-   staleness badge and a manual "accept the shrink" override are therefore **required** UI,
-   not optional.
+   valid domains, and the count has not collapsed against the previous ingest. *Why:* the
+   dangerous failure is not a 404 — it is a captive portal or an error page served as HTTP
+   200, which parses as thousands of junk domains and blackholes real traffic. Any failure
+   leaves the previous good copy in place, marks the list stale in the UI
+   **with the reason**, and the matcher rebuild proceeds from the remaining lists. The
+   staleness badge and a manual "accept the shrink" override are therefore **required**
+   UI, not optional.
 
 9. **The hot path touches no I/O.** Matcher state is in memory, built at boot and on
-   reload. The database holds configuration, adlist definitions, clients/groups and history
-   only. A database outage degrades logging and admin, never resolution.
+   reload. The database holds configuration, adlist definitions, clients/groups and
+   history only. A database outage degrades logging and admin, never resolution.
 
 10. **Configuration has two stores with a hard boundary: the TOML file owns
     infrastructure, the database owns policy.** Clients, groups, adlists, allow/block
     rules, local records, privacy level and **blocking mode** are database-owned and
-    runtime-editable. Listen addresses, upstreams, pools, TLS material, trust anchor and DB
-    path are file-owned and need a restart. *Why:* no overlap means no precedence rule, and
-    it structurally guarantees that a dead database cannot touch resolution.
+    runtime-editable. Listen addresses, upstreams, pools, TLS material, trust anchor and
+    DB path are file-owned and need a restart. *Why:* no overlap means no precedence rule,
+    and it structurally guarantees that a dead database cannot touch resolution.
 
-11. **One crate per feature; `domain` / `application` / `infrastructure` are modules inside
-    it.** Cargo enforces feature-to-feature isolation; an architecture lint enforces
-    layering within a crate.
+11. **One crate per feature; `domain` / `application` / `infrastructure` are modules
+    inside it.** Cargo enforces feature-to-feature isolation; an architecture lint
+    enforces layering within a crate.
 
 12. **Feature crates never depend on each other.** Cross-feature needs are expressed as a
     port in the consumer's `domain`, implemented by an adapter in the binary — concretely,
@@ -142,8 +143,8 @@ The phase spec's numbered references are resolved here so this analysis stands a
     `styx-filtering` into it. The shared wire-codec crate (`styx-proto`) is the single
     explicit exception, because every crate parses through it.
 
-13. **The pipeline order is fixed and is a correctness property, not a detail:**
-    local records → **filter** → cache → upstream. Local records and blocks are both forged
+13. **The pipeline order is fixed and is a correctness property, not a detail:** local
+    records → **filter** → cache → upstream. Local records and blocks are both forged
     answers, so both clear AD, forge no signature, and **never enter the answer cache**.
 
 14. **Local records are answered before the cache and are always Insecure** — AD cleared,
@@ -183,13 +184,14 @@ The phase spec's numbered references are resolved here so this analysis stands a
 
 ### Open choices deliberately left to the keyboard
 
-- **Group mask width — `u64` versus a roaring bitmap.** Putting two masks on every terminal
-  instead of one doubles the memory cost of this choice: a `u64` pair is 16 bytes per
-  terminal, and the ~30–50MB/million estimate becomes ~45–75MB. Sixty-four groups is almost
-  certainly enough for a house. **This is the number to measure at the end of this phase
-  rather than guess now.**
+- **Group mask width — `u64` versus a roaring bitmap.** Putting two masks on every
+  terminal instead of one doubles the memory cost of this choice: a `u64` pair is 16 bytes
+  per terminal, and the ~30–50MB/million estimate becomes ~45–75MB. Sixty-four groups is
+  almost certainly enough for a house.
+  **This is the number to measure at the end of this phase rather than guess now.**
 - **The blocked-reply TTL value.**
-- **The adlist sanity thresholds** — the minimum valid-domain count and the collapse ratio.
+- **The adlist sanity thresholds** — the minimum valid-domain count and the collapse
+  ratio.
 
 ---
 
@@ -199,20 +201,20 @@ The phase spec's numbered references are resolved here so this analysis stands a
 
 - **`FilterPolicy` port** — the hot-path seam this phase implements. Declared in the
   resolution crate's `domain` during the server-loop phase with a no-op implementation, so
-  that the product half does not rewrite the hot path when it arrives. Owned by resolution,
-  satisfied by filtering, wired by the binary.
+  that the product half does not rewrite the hot path when it arrives. Owned by
+  resolution, satisfied by filtering, wired by the binary.
 - **Query / question** — `(qname, qtype, qclass)`. Produced by the wire codec phase. The
   matcher consumes the qname; the blocked-reply builder consumes the whole question plus
   the request header.
 - **Client** — identified by source IP, optionally manually named. Resolves to a set of
-  groups. Its lifecycle (auto-discovered on first query versus added by hand, what group an
-  unknown client lands in, what happens to history rows on deletion) is deliberately
+  groups. Its lifecycle (auto-discovered on first query versus added by hand, what group
+  an unknown client lands in, what happens to history rows on deletion) is deliberately
   **undecided here** and belongs to the storage phase's schema design. This phase must
   therefore consume a *group mask*, not a client record.
 - **Group** — the unit of policy. Blocklists, allowlists and clients all attach to groups.
   Represented on the hot path purely as a bit position.
-- **Answer cache** — global, keyed `(qname, qtype, qclass)`, sits *after* the filter in the
-  pipeline. Blocked replies never enter it.
+- **Answer cache** — global, keyed `(qname, qtype, qclass)`, sits *after* the filter in
+  the pipeline. Blocked replies never enter it.
 - **Local records** — matched ahead of the filter, always Insecure, never cached. The
   precedent for the blocked reply's honesty rule.
 - **Validator** — hard-fails bogus answers with SERVFAIL. Filtering runs *before* it; a
@@ -245,8 +247,8 @@ The phase spec's numbered references are resolved here so this analysis stands a
   log *why* (which rule form, which group). Derived as `!(allow & g) && (block & g)`.
 - **Blocking mode** — the five-valued, database-owned configuration selecting the shape of
   a blocked reply: `NXDOMAIN` (default), `NULL`, `NODATA`, `IP`, `IP-NODATA-AAAA`.
-- **Blocked-reply builder** — the component turning (question, request header, mode) into a
-  response message that honours the mode-independent invariants.
+- **Blocked-reply builder** — the component turning (question, request header, mode) into
+  a response message that honours the mode-independent invariants.
 - **Adlist definition** — a configured source: URL, enablement, the groups it feeds, its
   last successful ingest and its staleness state. Database-owned.
 - **Staging buffer** — the place a fetch lands *before* it is allowed to replace anything.
@@ -255,8 +257,9 @@ The phase spec's numbered references are resolved here so this analysis stands a
   buffer, and its result: accepted (with a count) or rejected (with a reason).
 - **Stale marker / stale reason** — the durable, human-readable record of why a list is
   running on a frozen copy. Required UI surface, not a log line.
-- **Accept-the-shrink override** — the manual escape hatch for a list that legitimately got
-  smaller, without which the collapse check becomes a permanent block on a valid update.
+- **Accept-the-shrink override** — the manual escape hatch for a list that legitimately
+  got smaller, without which the collapse check becomes a permanent block on a valid
+  update.
 
 ### Conceptual Relationships
 
@@ -279,29 +282,29 @@ The phase spec's numbered references are resolved here so this analysis stands a
 
 ### Key Business Rules
 
-- **Allow beats block, unconditionally and across all rule forms.** `!(allow & g) && (block & g)`.
-  An allow on an exact name defeats a wildcard block on its parent and defeats a regex
-  block. This exists because every blocklist over-blocks eventually and users need an
-  escape hatch that does not require editing a list.
+- **Allow beats block, unconditionally and across all rule forms.**
+  `!(allow & g) && (block & g)`. An allow on an exact name defeats a wildcard block on its
+  parent and defeats a regex block. This exists because every blocklist over-blocks
+  eventually and users need an escape hatch that does not require editing a list.
 - **A wildcard node matches all descendants**, so exact and wildcard are one lookup, not
   two.
-- **Policy is evaluated against the client's group mask**, not against a per-group matcher.
-  One walk, then a bitwise test.
+- **Policy is evaluated against the client's group mask**, not against a per-group
+  matcher. One walk, then a bitwise test.
 - **The matcher is immutable; reload replaces it wholesale.** No mutation under a lock on
   the hot path, ever.
 - **A block is not a validation verdict.** Filtering is applied before validation.
-- **AD is always cleared on a blocked reply and no RRSIG is ever forged** — in every one of
-  the five modes, with no exception.
+- **AD is always cleared on a blocked reply and no RRSIG is ever forged** — in every one
+  of the five modes, with no exception.
 - **Non-A/AAAA qtypes get NODATA** regardless of the configured mode.
 - **Blocked replies carry a short TTL**, so that unblocking takes effect quickly.
 - **Blocked replies never enter the answer cache** (they are forged, exactly like local
   records).
-- **A staged list replaces nothing until it passes every sanity check**: content-type is not
-  HTML, it parses to at least a minimum count of syntactically valid domains, and the count
-  has not collapsed against the previous ingest.
+- **A staged list replaces nothing until it passes every sanity check**: content-type is
+  not HTML, it parses to at least a minimum count of syntactically valid domains, and the
+  count has not collapsed against the previous ingest.
 - **Any ingest failure preserves the previous good copy**, records a stale marker carrying
-  the reason, and the rebuild proceeds from the remaining lists. One bad list does not fail
-  a reload.
+  the reason, and the rebuild proceeds from the remaining lists. One bad list does not
+  fail a reload.
 - **Staleness must be visible on the dashboard**, because "keep last known good" otherwise
   silently enforces a frozen list forever.
 - **The hot path performs no I/O.** No database read, no file read, no network call, on a
@@ -322,27 +325,27 @@ Split the crate along a hard **build-time / query-time** seam, because the two h
 opposite constraints:
 
 - The **query-time** half is pure, allocation-shy, I/O-free and immutable: take a snapshot
-  of the current matcher, walk the name right-to-left, run the regex automaton, combine the
-  two mask pairs, return a verdict. Everything it touches was computed before the query
-  arrived.
-- The **build-time** half is allowed to be slow, allocating and fallible: fetch adlists into
-  staging buffers, run sanity checks, parse accepted buffers into rules, merge with
-  hand-written rules and group assignments, compile the trie and the regex set, and publish
-  the result with one atomic pointer store.
+  of the current matcher, walk the name right-to-left, run the regex automaton, combine
+  the two mask pairs, return a verdict. Everything it touches was computed before the
+  query arrived.
+- The **build-time** half is allowed to be slow, allocating and fallible: fetch adlists
+  into staging buffers, run sanity checks, parse accepted buffers into rules, merge with
+  hand-written rules and group assignments, compile the trie and the regex set, and
+  publish the result with one atomic pointer store.
 
-Data flow on a query: request → local records → **`FilterPolicy` adapter → matcher snapshot
-lookup → verdict** → (blocked: blocked-reply builder → response, never cached, never
-validated as a resolution result) or (allowed: cache → upstream). Either way the verdict is
-handed to the query-log observer.
+Data flow on a query: request → local records →
+**`FilterPolicy` adapter → matcher snapshot lookup → verdict** → (blocked: blocked-reply
+builder → response, never cached, never validated as a resolution result) or (allowed:
+cache → upstream). Either way the verdict is handed to the query-log observer.
 
 Data flow on a reload: explicit trigger → per-list fetch into staging → per-list sanity
 verdict → accepted buffers plus last-known-good copies of rejected ones plus hand-written
 rules → compile snapshot → atomic publish → old snapshot dropped when the last in-flight
 query releases it.
 
-Treat the phase as **five separable work streams**, because the phase is already flagged as
-the most likely in the product half to want splitting, and a clean seam now is much cheaper
-than a split later:
+Treat the phase as **five separable work streams**, because the phase is already flagged
+as the most likely in the product half to want splitting, and a clean seam now is much
+cheaper than a split later:
 
 1. **Matcher** — trie, regex set, snapshot, lookup.
 2. **Allow/block precedence** — the dual mask pair and the verdict function.
@@ -351,42 +354,43 @@ than a split later:
 5. **Hot-path wiring** — the `ArcSwap` handle, the reload operation, and the binary-side
    adapter onto `FilterPolicy`.
 
-Streams 1–2 are one cohesive unit and should not be separated (the dual mask is part of the
-terminal's shape, not an addition to it). Stream 3 depends on the wire codec and the
-validator's AD contract but not on the matcher. Stream 4 depends on nothing on the hot path
-and is the most naturally severable. Stream 5 is the integration point and must come last.
+Streams 1–2 are one cohesive unit and should not be separated (the dual mask is part of
+the terminal's shape, not an addition to it). Stream 3 depends on the wire codec and the
+validator's AD contract but not on the matcher. Stream 4 depends on nothing on the hot
+path and is the most naturally severable. Stream 5 is the integration point and must come
+last.
 
 ### Key Design Decisions
 
-- **Two masks per terminal, not a separate allowlist structure.** *Trade-off:* per-terminal
-  memory doubles (~30–50MB/million → ~45–75MB per million) against a second full walk and a
-  second structure to keep coherent. → **Recommended: two masks.** One walk returning both
-  masks makes "allow wins" a property of the data rather than of the ordering of two
-  lookups, which is exactly the class of bug that would otherwise surface as "the allow
-  worked for exact rules but not for regex". The doubled memory is an accepted, budgeted
-  consequence and the exit criteria measure against the revised figure.
+- **Two masks per terminal, not a separate allowlist structure.** *Trade-off:*
+  per-terminal memory doubles (~30–50MB/million → ~45–75MB per million) against a second
+  full walk and a second structure to keep coherent. → **Recommended: two masks.** One
+  walk returning both masks makes "allow wins" a property of the data rather than of the
+  ordering of two lookups, which is exactly the class of bug that would otherwise surface
+  as "the allow worked for exact rules but not for regex". The doubled memory is an
+  accepted, budgeted consequence and the exit criteria measure against the revised figure.
 
 - **One `RegexSet` automaton rather than a vector of compiled regexes.** *Trade-off:* a
-  slower, all-or-nothing compile at build time and a pattern-index→mask side table, against
-  query cost that grows with rule count. → **Recommended: the single automaton.** Regex
-  rules are a user-facing feature; if their cost is linear per query, the feature becomes a
-  performance footgun and the honest answer would be to cap it. Near-free query cost is what
-  makes it safe to expose at all.
+  slower, all-or-nothing compile at build time and a pattern-index→mask side table,
+  against query cost that grows with rule count. → **Recommended: the single automaton.**
+  Regex rules are a user-facing feature; if their cost is linear per query, the feature
+  becomes a performance footgun and the honest answer would be to cap it. Near-free query
+  cost is what makes it safe to expose at all.
 
 - **`ArcSwap` wholesale replacement rather than any in-place mutation.** *Trade-off:*
   transient double memory during a rebuild (two snapshots resident) against a guaranteed
-  stall-free hot path. → **Recommended: wholesale replacement.** On a Raspberry Pi the peak
-  is the binding constraint and must be sized for, but a lock held across a million-entry
-  rebuild is a latency outage for the whole house. The exit criterion — a reload under load
-  causes no hot-path stall — is the acceptance test for this choice.
+  stall-free hot path. → **Recommended: wholesale replacement.** On a Raspberry Pi the
+  peak is the binding constraint and must be sized for, but a lock held across a
+  million-entry rebuild is a latency outage for the whole house. The exit criterion — a
+  reload under load causes no hot-path stall — is the acceptance test for this choice.
 
-- **Mask width: fix `u64` now, measure at the end of the phase.** *Trade-off:* a hard cap of
-  64 groups against a roaring bitmap's unbounded groups at higher per-terminal cost and
+- **Mask width: fix `u64` now, measure at the end of the phase.** *Trade-off:* a hard cap
+  of 64 groups against a roaring bitmap's unbounded groups at higher per-terminal cost and
   pointer-chasing on the hot path. → **Recommended: build against a narrow, swappable mask
   abstraction, ship `u64`, and take the measurement the exit criteria require before
-  declaring the phase done.** Sixty-four groups is almost certainly enough for a house; the
-  point of the measurement is to know rather than to assume, and the abstraction is what
-  keeps the answer cheap if the measurement surprises.
+  declaring the phase done.** Sixty-four groups is almost certainly enough for a house;
+  the point of the measurement is to know rather than to assume, and the abstraction is
+  what keeps the answer cheap if the measurement surprises.
 
 - **Blocking mode is database-owned, runtime-editable configuration; the blocked-reply
   builder is a pure function of (question, request header, mode).** *Trade-off:* five
@@ -405,34 +409,36 @@ and is the most naturally severable. Stream 5 is the integration point and must 
 
 - **Ingest failure is a per-list condition, never a reload failure.** *Trade-off:* the
   system keeps running with known-stale data, versus loudly refusing to reload. →
-  **Recommended: degrade per list, and make the staleness loud instead.** Refusing the whole
-  reload because one URL 404'd would mean an unrelated list's legitimate update is blocked
-  by someone else's dead host. The cost is the recorded "dead adlist blocks forever" risk,
-  whose mitigation is a dashboard-level staleness surface and the manual accept-the-shrink
-  override — both of which must be *produced* by this phase as data even though they are
-  *rendered* two phases later.
+  **Recommended: degrade per list, and make the staleness loud instead.** Refusing the
+  whole reload because one URL 404'd would mean an unrelated list's legitimate update is
+  blocked by someone else's dead host. The cost is the recorded "dead adlist blocks
+  forever" risk, whose mitigation is a dashboard-level staleness surface and the manual
+  accept-the-shrink override — both of which must be *produced* by this phase as data even
+  though they are *rendered* two phases later.
 
 - **The verdict carries provenance, not just a boolean.** *Trade-off:* a slightly wider
-  return type on the hot path against a query log that can say which rule blocked a domain.
-  → **Recommended: carry it.** Without provenance the allowlist escape hatch is unusable in
-  practice — a user who cannot see *which* rule blocked a name cannot write the allow.
+  return type on the hot path against a query log that can say which rule blocked a
+  domain. → **Recommended: carry it.** Without provenance the allowlist escape hatch is
+  unusable in practice — a user who cannot see *which* rule blocked a name cannot write
+  the allow.
 
 ### Alternatives Considered
 
-- **Per-group matcher instances.** Rejected: multiplies memory and rebuild time by the group
-  count for structures that overwhelmingly share content, and makes reload N times more
-  expensive on the device least able to afford it.
+- **Per-group matcher instances.** Rejected: multiplies memory and rebuild time by the
+  group count for structures that overwhelmingly share content, and makes reload N times
+  more expensive on the device least able to afford it.
 - **Per-group answer-cache namespaces (filtering by cache partition).** Rejected: N groups
-  would multiply cache memory and shred the hit rate the cache exists to provide. Filtering
-  as an outbound filter over a globally-keyed cache is the deliberate alternative.
+  would multiply cache memory and shred the hit rate the cache exists to provide.
+  Filtering as an outbound filter over a globally-keyed cache is the deliberate
+  alternative.
 - **Allowlist as a separate structure consulted first.** Rejected: two lookups and two
   structures to keep coherent, and "allow wins" becomes a property of call ordering rather
-  than of the data — which is precisely how it ends up holding for exact rules and silently
-  failing for regex ones.
+  than of the data — which is precisely how it ends up holding for exact rules and
+  silently failing for regex ones.
 - **A single blocking mode (NXDOMAIN only).** Rejected: the project explicitly targets
   replacing Pi-hole on a real household, and Pi-hole's mode set is part of what users have
-  tuned around. The cost — five validator-interaction paths — is accepted and is called out
-  as a recorded risk rather than wished away.
+  tuned around. The cost — five validator-interaction paths — is accepted and is called
+  out as a recorded risk rather than wished away.
 - **A hickory-dns or `domain`-crate DNS stack.** Rejected project-wide: the entire DNS
   stack is written from scratch. The wire-format oracle used in tests is a dev-dependency
   only, with a CI check asserting it appears in no normal or build dependency path.
@@ -448,58 +454,59 @@ and is the most naturally severable. Stream 5 is the integration point and must 
 
 ### Requirement Ambiguities
 
-- **The blocked-reply TTL value is unspecified.** "Short" is the requirement; the number is
-  explicitly left to implementation. Needs a concrete default and a decision on whether it
-  is configurable at all.
+- **The blocked-reply TTL value is unspecified.** "Short" is the requirement; the number
+  is explicitly left to implementation. Needs a concrete default and a decision on whether
+  it is configurable at all.
 - **The adlist sanity thresholds are unspecified.** The minimum valid-domain count and the
   collapse ratio are both explicitly open. A too-low minimum defeats the captive-portal
   check; a too-tight collapse ratio turns every legitimate list shrink into a manual
   override.
-- **Reload trigger surface is undefined.** "Explicit reload" is settled; *what* triggers it
-  — a UI action, a scheduled ingest, a signal, a CLI subcommand — is not stated by this
+- **Reload trigger surface is undefined.** "Explicit reload" is settled; *what* triggers
+  it — a UI action, a scheduled ingest, a signal, a CLI subcommand — is not stated by this
   phase, and the UI phase that would own the button is three phases later.
-- **Group-mask provenance is undefined here.** How a source IP becomes a group mask (lookup
-  table, default group for unknown clients) is deliberately a storage-phase schema question.
-  This phase must accept the mask as an input and must not invent the lookup.
+- **Group-mask provenance is undefined here.** How a source IP becomes a group mask
+  (lookup table, default group for unknown clients) is deliberately a storage-phase schema
+  question. This phase must accept the mask as an input and must not invent the lookup.
 - **The `IP` and `IP-NODATA-AAAA` modes need an address source.** The mode implies a
   configured address to return; where it lives (file-owned infrastructure config versus
   database-owned policy) is not stated. The file/database boundary rule says policy is
   database-owned, which points at the database, but this is an inference, not a recorded
   decision.
-- **Rule-form precedence *within* the same verdict side is unstated.** Allow-beats-block is
-  settled across all three forms; whether a more-specific block beats a less-specific block
-  is moot under a bitmask union (they OR together), but this should be stated explicitly so
-  nobody later "fixes" it into a specificity ordering.
+- **Rule-form precedence *within* the same verdict side is unstated.** Allow-beats-block
+  is settled across all three forms; whether a more-specific block beats a less-specific
+  block is moot under a bitmask union (they OR together), but this should be stated
+  explicitly so nobody later "fixes" it into a specificity ordering.
 - **Whether hand-written allow/block rules are ingested through the same staging path** as
-  adlists is not stated. They come from the database rather than the network, so the sanity
-  checks are meaningless for them, but the rebuild has to combine both sources.
+  adlists is not stated. They come from the database rather than the network, so the
+  sanity checks are meaningless for them, but the rebuild has to combine both sources.
 
 ### Edge Cases
 
-- **The root and single-label names.** A right-to-left walk needs defined behaviour for the
-  root label and for a query with one label; a wildcard at the root would block everything.
-- **Trailing dots, case, and IDN/punycode.** Two spellings of the same name must not produce
-  two terminals, or an allow written in one spelling will fail to defeat a block written in
-  the other.
-- **A wildcard block and an exact allow on the same node.** The canonical escape-hatch case;
-  must be a test, not an assumption.
+- **The root and single-label names.** A right-to-left walk needs defined behaviour for
+  the root label and for a query with one label; a wildcard at the root would block
+  everything.
+- **Trailing dots, case, and IDN/punycode.** Two spellings of the same name must not
+  produce two terminals, or an allow written in one spelling will fail to defeat a block
+  written in the other.
+- **A wildcard block and an exact allow on the same node.** The canonical escape-hatch
+  case; must be a test, not an assumption.
 - **A regex that matches nothing, or everything.** A catastrophically broad user regex is
-  functionally a global block; the single automaton makes it cheap to evaluate, which means
-  nothing stops it at query time. Validation belongs at rule-entry time.
+  functionally a global block; the single automaton makes it cheap to evaluate, which
+  means nothing stops it at query time. Validation belongs at rule-entry time.
 - **An invalid regex from user input.** Must fail the rule, not the rebuild.
 - **A reload that produces an empty matcher** (every list rejected on first ever ingest,
-  with no last-known-good to fall back to). Blocking silently becomes a no-op; this needs a
-  distinct, visible state rather than looking like "nothing is blocked".
+  with no last-known-good to fall back to). Blocking silently becomes a no-op; this needs
+  a distinct, visible state rather than looking like "nothing is blocked".
 - **First ingest of a new list.** The collapse check has no previous count to compare
   against; the rule must be defined rather than inferred.
 - **A list that legitimately shrinks** (upstream cleaned it up). Rejected by the collapse
-  check forever without the manual accept-the-shrink override — which makes that override a
-  functional requirement, not UI polish.
+  check forever without the manual accept-the-shrink override — which makes that override
+  a functional requirement, not UI polish.
 - **A non-A/AAAA qtype for a blocked name** — NODATA in every mode, including the modes
   whose whole purpose is returning an address.
 - **A blocked name under a DNSSEC-signed zone, queried with CD=0 by a validating client.**
-  The client gets an unsigned answer for a signed name and may fail it. This is the accepted
-  deliberate lie and must be documented as such, not silently emitted.
+  The client gets an unsigned answer for a signed name and may fail it. This is the
+  accepted deliberate lie and must be documented as such, not silently emitted.
 - **A blocked name with DO=1 set.** The reply must carry no RRSIG and must not set AD.
 - **Reload while queries are in flight.** In-flight lookups must keep their old snapshot
   alive and complete against it; nothing may observe a half-built matcher.
@@ -511,49 +518,53 @@ and is the most naturally severable. Stream 5 is the integration point and must 
   which is the intended behaviour and should be asserted so a later dedup "optimisation"
   does not break it.
 - **An adlist served as HTTP 200 with an HTML body** — the named, must-reject case.
-- **A very large adlist, or one that never terminates.** Staging needs bounds; an unbounded
-  fetch on a Pi is a memory failure, and a rebuild is exactly when memory is tightest.
+- **A very large adlist, or one that never terminates.** Staging needs bounds; an
+  unbounded fetch on a Pi is a memory failure, and a rebuild is exactly when memory is
+  tightest.
 
 ### Technical Risks
 
-- **Reload memory peak versus the Raspberry Pi target.** Two snapshots plus staging buffers
-  at ~45–75MB per million domains per snapshot. *Mitigation direction:* stage and parse
-  per-list rather than all at once, drop staging buffers before compiling, and make the
-  measurement required by the exit criteria cover the *peak*, not just the steady state.
+- **Reload memory peak versus the Raspberry Pi target.** Two snapshots plus staging
+  buffers at ~45–75MB per million domains per snapshot. *Mitigation direction:* stage and
+  parse per-list rather than all at once, drop staging buffers before compiling, and make
+  the measurement required by the exit criteria cover the *peak*, not just the steady
+  state.
 - **The five-mode validator interaction surface hides an untested combination** — the
   explicitly recorded risk. *Mitigation direction:* factor the invariants (AD cleared, no
-  RRSIG, short TTL, non-A/AAAA → NODATA) so they are applied once and structurally cannot be
-  skipped per mode, and drive the assertion as a matrix over {five modes} × {A, AAAA, other
-  qtype} × {DO=0, DO=1} × {signed zone, unsigned zone} rather than as five hand-written
-  tests.
-- **A dead adlist enforces a frozen copy indefinitely**, with a staleness badge as the only
-  signal — the explicitly recorded risk. *Mitigation direction:* this phase must produce
-  staleness as first-class, queryable state carrying a reason and an age, so that the UI
-  phase can put it on the dashboard rather than on a settings page. If staleness is only a
-  log line, the mitigation is impossible downstream.
+  RRSIG, short TTL, non-A/AAAA → NODATA) so they are applied once and structurally cannot
+  be skipped per mode, and drive the assertion as a matrix over {five modes} × {A, AAAA,
+  other qtype} × {DO=0, DO=1} × {signed zone, unsigned zone} rather than as five
+  hand-written tests.
+- **A dead adlist enforces a frozen copy indefinitely**, with a staleness badge as the
+  only signal — the explicitly recorded risk. *Mitigation direction:* this phase must
+  produce staleness as first-class, queryable state carrying a reason and an age, so that
+  the UI phase can put it on the dashboard rather than on a settings page. If staleness is
+  only a log line, the mitigation is impossible downstream.
 - **The hot path must perform no I/O, and that is easy to violate by accident** — one
-  database read for a group lookup or one lazy load of a rule would do it. *Mitigation
-  direction:* the crate's layering and the architecture lint should make the hot-path types
-  structurally incapable of reaching infrastructure.
+  database read for a group lookup or one lazy load of a rule would do it.
+  *Mitigation direction:* the crate's layering and the architecture lint should make the
+  hot-path types structurally incapable of reaching infrastructure.
 - **Project-wide lint policy makes this code verbose**: index/slice operations and
   arithmetic are denied lints, and the trie walk is nothing but label offsets and index
-  arithmetic. *Mitigation direction:* expect checked operations throughout and budget for it
-  rather than fighting it; fuzzing the rule parser and the label walk is the complement.
+  arithmetic. *Mitigation direction:* expect checked operations throughout and budget for
+  it rather than fighting it; fuzzing the rule parser and the label walk is the
+  complement.
 - **Panics are denied and the process is shared** — a panic in the matcher takes DNS down
   for the whole house, and the `catch_unwind` boundary does not arrive until the final
   phase. *Mitigation direction:* fallible parsing everywhere, no unwrap/expect outside
-  tests, and fuzz the adlist parser specifically since it consumes untrusted network bytes.
+  tests, and fuzz the adlist parser specifically since it consumes untrusted network
+  bytes.
 - **Client identity is unreliable by construction** (no DHCP ownership). A lease change
   silently misattributes a group mask and therefore a filtering verdict. *Mitigation
   direction:* nothing in this phase can fix it; the verdict's provenance and the query log
   are what make it diagnosable.
 - **Regex rules are user input compiled into a shared automaton.** A pathological pattern
-  costs build time, and a broad one silently blocks widely. *Mitigation direction:* validate
-  and size-bound patterns at rule-entry time, and surface the matched pattern in the
-  verdict's provenance.
-- **Phase size.** The phase carries five substantial concerns and is flagged as the one most
-  likely to want splitting. *Mitigation direction:* keep the five work streams separable
-  with explicit seams so a split is a clean cut rather than a refactor.
+  costs build time, and a broad one silently blocks widely. *Mitigation direction:*
+  validate and size-bound patterns at rule-entry time, and surface the matched pattern in
+  the verdict's provenance.
+- **Phase size.** The phase carries five substantial concerns and is flagged as the one
+  most likely to want splitting. *Mitigation direction:* keep the five work streams
+  separable with explicit seams so a split is a clean cut rather than a refactor.
 - **No operational feedback until the very end.** The household stays on the existing
   resolver until the whole build is complete, so this phase's behaviour under real traffic
   and real client churn is unknown until the cutover, when it is most expensive to act on.
@@ -585,8 +596,9 @@ Dependencies satisfied before this phase can start, by number and title:
   target)
 - **Phase 1 — Wire codec** (`styx-proto`; the blocked-reply builder constructs messages
   through it)
-- **Phase 2 — Server loop and test harness** (the `FilterPolicy` port this phase implements,
-  the fixed pipeline order, the injectable `Clock`, the socket-level test harness)
+- **Phase 2 — Server loop and test harness** (the `FilterPolicy` port this phase
+  implements, the fixed pipeline order, the injectable `Clock`, the socket-level test
+  harness)
 - **Phase 4 — Answer cache** (the cache this phase must never pollute, sitting after the
   filter)
 - **Phase 6 — DNSSEC** (the validator whose AD contract the five blocked-reply modes must

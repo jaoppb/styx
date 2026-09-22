@@ -69,10 +69,10 @@ of any upstream. **They never enter the answer cache** and never reach the valid
 cleared, no forged signature, the same honesty rule as a blocked reply.
 
 **Blocked replies: five modes, NXDOMAIN by default** (`NXDOMAIN`, `NULL` = `0.0.0.0`/`::`,
-`NODATA`, `IP`, `IP-NODATA-AAAA`). Regardless of mode: qtypes other than A/AAAA get NODATA,
-blocked replies carry a short TTL so unblocking takes effect quickly, **AD is always
-cleared and no RRSIG is ever forged**, and filtering is applied *before* validation — a
-block is not a validation verdict.
+`NODATA`, `IP`, `IP-NODATA-AAAA`). Regardless of mode: qtypes other than A/AAAA get
+NODATA, blocked replies carry a short TTL so unblocking takes effect quickly,
+**AD is always cleared and no RRSIG is ever forged**, and filtering is applied *before*
+validation — a block is not a validation verdict.
 
 **Consequence for this phase: neither local records nor blocked replies ever enter the
 answer cache, because both are forged answers.** Caching a forged answer would let one
@@ -96,8 +96,8 @@ needed it, and it is what makes this phase's TTL and expiry behaviour testable a
 
 **The entire DNS stack is written from scratch** — wire codec, server loop, caches,
 recursion algorithm, DNSSEC validation. No `hickory-dns`, no `domain` crate for the
-protocol. `hickory-proto` is a `[dev-dependencies]`-only test oracle, because the fakes and
-expected-byte fixtures must not share bugs with our own codec; a CI check asserts it
+protocol. `hickory-proto` is a `[dev-dependencies]`-only test oracle, because the fakes
+and expected-byte fixtures must not share bugs with our own codec; a CI check asserts it
 appears in no normal or build dependency path.
 
 **One crate per feature; `domain`/`application`/`infrastructure` are modules inside it.**
@@ -107,10 +107,11 @@ port in the consumer's `domain`, implemented by an adapter in the `styx` binary.
 `styx-proto` is the single explicit exception: it is shared foundation, not a feature,
 because every crate parses through the wire codec.
 
-**Lint policy**: 15 denied clippy lints workspace-wide, including `indexing_slicing = deny`
-and `arithmetic_side_effects = deny` — **every label offset and TTL decrement becomes a
-checked operation**; plus `no-unwrap-expect`, `require-thiserror`, `require-tracing` and
-`no-sync-io` enforced by arch-lint.
+**Lint policy**: 15 denied clippy lints workspace-wide, including
+`indexing_slicing = deny` and `arithmetic_side_effects = deny` —
+**every label offset and TTL decrement becomes a checked operation**; plus
+`no-unwrap-expect`, `require-thiserror`, `require-tracing` and `no-sync-io` enforced by
+arch-lint.
 
 **`panic = "deny"` is load-bearing.** In a single process, a panic anywhere takes DNS down
 for the whole house.
@@ -196,25 +197,26 @@ by an earlier phase, and is the context this phase builds on.)*
 - **RRset entry**: a set of records sharing owner name, type and class, held together with
   the TTL that governs them and the time they were admitted. The RRset is the unit of TTL
   and the unit at which DNSSEC signs, so it is the natural unit of storage.
-- **Message entry**: a whole cached response — its RCODE, its flags, and the content of its
-  answer, authority and additional sections — for the cases where an answer is not
+- **Message entry**: a whole cached response — its RCODE, its flags, and the content of
+  its answer, authority and additional sections — for the cases where an answer is not
   reducible to one RRset of the queried type (a CNAME chain, a referral-shaped response, a
   negative answer carrying a SOA).
-- **Negative-cache entry (RFC 2308)**: a cached *absence*. Two distinct kinds — a name that
-  does not exist (NXDOMAIN) and a name that exists with no data of the requested type
+- **Negative-cache entry (RFC 2308)**: a cached *absence*. Two distinct kinds — a name
+  that does not exist (NXDOMAIN) and a name that exists with no data of the requested type
   (NODATA) — whose lifetime is derived from the SOA record accompanying the denial rather
   than from any answer TTL, because there is no answer record to carry one.
 - **TTL machinery**: the conversion from a record's relative TTL, at admission time, into
-  an absolute expiry instant read from the `Clock`; the computation of the remaining TTL to
-  serve on a hit; and the rule that an entry whose remaining TTL has reached zero is not a
-  hit. Under `arithmetic_side_effects = deny` every one of these is a checked operation.
-- **Eviction policy**: the bounded-capacity discipline that keeps the cache inside a memory
-  budget on a Raspberry Pi-class machine, distinct from expiry (which removes entries
-  because they are stale) — eviction removes entries that are still fresh because there is
-  no room.
-- **Bailiwick rule**: the predicate deciding whether a record in a response may be admitted
-  at all, based on whether the responding server has authority over the record's owner
-  name. It is the cache's security boundary.
+  an absolute expiry instant read from the `Clock`; the computation of the remaining TTL
+  to serve on a hit; and the rule that an entry whose remaining TTL has reached zero is
+  not a hit. Under `arithmetic_side_effects = deny` every one of these is a checked
+  operation.
+- **Eviction policy**: the bounded-capacity discipline that keeps the cache inside a
+  memory budget on a Raspberry Pi-class machine, distinct from expiry (which removes
+  entries because they are stale) — eviction removes entries that are still fresh because
+  there is no room.
+- **Bailiwick rule**: the predicate deciding whether a record in a response may be
+  admitted at all, based on whether the responding server has authority over the record's
+  owner name. It is the cache's security boundary.
 - **Cacheability policy**: the broader admission decision of which the bailiwick rule is
   one clause — also excluding forged answers (local records, blocked replies) and any
   response whose shape makes it unsafe or meaningless to store.
@@ -227,9 +229,9 @@ by an earlier phase, and is the context this phase builds on.)*
   in the single process. It is keyed by **cache key**, which is derived purely from the
   client's **question**.
 - A **cache key** resolves to either an **RRset entry**, a **message entry**, or a
-  **negative-cache entry**. All three carry **TTL machinery** state; all three were subject
-  to the **cacheability policy**, of which the **bailiwick rule** is the security-critical
-  clause, before being admitted.
+  **negative-cache entry**. All three carry **TTL machinery** state; all three were
+  subject to the **cacheability policy**, of which the **bailiwick rule** is the
+  security-critical clause, before being admitted.
 - **Local records** and **blocked replies** relate to the cache only by exclusion: they
   short-circuit ahead of it and are never written into it.
 - **Group policy** relates to the cache as a transformation applied *after* lookup, never
@@ -252,14 +254,15 @@ by an earlier phase, and is the context this phase builds on.)*
 - **Group policy filters the result, it does not partition the store.** Governs: the
   relationship between the cache and filtering.
 - **Forged answers are never cached.** Local records and blocked replies both bypass the
-  cache on write. Governs: cacheability policy. Rationale: the cache is global, so a cached
-  forgery would leak across groups; and a short-TTL block exists precisely so that
+  cache on write. Governs: cacheability policy. Rationale: the cache is global, so a
+  cached forgery would leak across groups; and a short-TTL block exists precisely so that
   unblocking takes effect quickly, which caching would defeat.
 - **Out-of-bailiwick data is never admitted.** A server may only teach the cache about
   names it has authority over. Governs: bailiwick rule. This is the cache-poisoning
   defence, and the exit criterion states it absolutely — *ever*, not *usually*.
-- **TTL is counted down against injected time.** An entry's life is measured from admission
-  using the `Clock`; an expired entry is a miss, not a stale hit. Governs: TTL machinery.
+- **TTL is counted down against injected time.** An entry's life is measured from
+  admission using the `Clock`; an expired entry is a miss, not a stale hit. Governs: TTL
+  machinery.
 - **Negative answers are cached with a lifetime derived from the SOA**, per RFC 2308, and
   NXDOMAIN and NODATA are distinguishable on retrieval because they produce different
   responses. Governs: negative-cache entry.
@@ -287,8 +290,8 @@ Build the answer cache as a new set of modules **inside the `styx-resolution` cr
 following the project's rule that a crate is a feature and `domain`/`application`/
 `infrastructure` are modules within it:
 
-- **`domain`** holds the *policy*: the cache key and its canonicalisation, the entry shapes,
-  the TTL arithmetic, the negative-caching rules, and — most importantly — the
+- **`domain`** holds the *policy*: the cache key and its canonicalisation, the entry
+  shapes, the TTL arithmetic, the negative-caching rules, and — most importantly — the
   **cacheability predicate including the bailiwick rule**. This is pure, deterministic
   logic parameterised by the `Clock`, with no storage concerns and no I/O. It is where the
   security-critical decision lives, and it is testable in isolation, which matters because
@@ -301,11 +304,11 @@ following the project's rule that a crate is a feature and `domain`/`application
   stage of the resolution pipeline, and the emission of hit/miss outcomes toward the
   query-log observer.
 
-The store is expressed as a **trait (port)** so that the pipeline depends on the capability
-rather than the concrete structure, and so that Phase 5's `styx-recursion` — a separate
-feature crate that may not name `styx-resolution` — can declare its own port for the same
-capability and have the `styx` binary wire the single shared instance into both. There is
-one cache instance per process, shared by `Arc`, exactly as the single-process,
+The store is expressed as a **trait (port)** so that the pipeline depends on the
+capability rather than the concrete structure, and so that Phase 5's `styx-recursion` — a
+separate feature crate that may not name `styx-resolution` — can declare its own port for
+the same capability and have the `styx` binary wire the single shared instance into both.
+There is one cache instance per process, shared by `Arc`, exactly as the single-process,
 single-binary architecture intends.
 
 The general data flow: *question arrives at the cache stage → canonicalise to a key → look
@@ -316,21 +319,22 @@ return the response.* The result then continues out through group-policy filteri
 
 ### Key Design Decisions
 
-- **RRset-granular storage as the primary unit, with message entries for the shapes that do
-  not reduce to one RRset.** *Trade-offs*: whole-message caching is simpler and preserves
-  the exact response, but it stores the same RRset repeatedly under different questions,
-  cannot share data between a query for `A` and a chased CNAME, and gives Phase 5's descent
-  and Phase 6's per-RRset signature verification nothing they can address. RRset granularity
-  costs response assembly on every hit. → **Recommend RRset-primary.** The phase spec names
-  both ("RRset and message cache"), the RRset is the unit at which DNS assigns TTLs and at
-  which DNSSEC signs, and the two consuming phases both work per-RRset. Message entries are
-  the narrower case, used where the response is not one RRset of the queried type.
+- **RRset-granular storage as the primary unit, with message entries for the shapes that
+  do not reduce to one RRset.** *Trade-offs*: whole-message caching is simpler and
+  preserves the exact response, but it stores the same RRset repeatedly under different
+  questions, cannot share data between a query for `A` and a chased CNAME, and gives Phase
+  5's descent and Phase 6's per-RRset signature verification nothing they can address.
+  RRset granularity costs response assembly on every hit. → **Recommend RRset-primary.**
+  The phase spec names both ("RRset and message cache"), the RRset is the unit at which
+  DNS assigns TTLs and at which DNSSEC signs, and the two consuming phases both work
+  per-RRset. Message entries are the narrower case, used where the response is not one
+  RRset of the queried type.
 - **Absolute expiry instants computed at admission, rather than stored relative TTLs
   decremented over time.** *Trade-offs*: storing a deadline means one `Clock` read and one
   checked subtraction per lookup, and no background work; storing a countdown means either
-  a sweeper mutating every entry or the same subtraction anyway. → **Recommend absolute
-  deadlines**, which also makes the injected-`Clock` tests read naturally: advance time, assert
-  the entry is gone.
+  a sweeper mutating every entry or the same subtraction anyway. →
+  **Recommend absolute deadlines**, which also makes the injected-`Clock` tests read
+  naturally: advance time, assert the entry is gone.
 - **Lazy expiry on lookup, with eviction driven by the capacity bound.** *Trade-offs*: a
   background sweeper task reclaims memory from entries nobody asks for again, but it is a
   second concurrent writer on the hot-path structure and another thing that can panic in a
@@ -339,45 +343,46 @@ return the response.* The result then continues out through group-policy filteri
   for this phase; expired entries are reclaimable by the eviction pass, so no separate
   sweeper is required to hold the memory bound. Revisit only if measurement shows
   otherwise.
-- **The bailiwick check runs at admission, not at retrieval.** *Trade-offs*: checking on the
-  way out would let poisoned data sit in the store and rely on every read path
+- **The bailiwick check runs at admission, not at retrieval.** *Trade-offs*: checking on
+  the way out would let poisoned data sit in the store and rely on every read path
   re-validating it. Checking on the way in means one place to get right and one place to
   test. → **Recommend admission-time**, which is also what the exit criterion literally
   requires: *no out-of-bailiwick data is ever cached*, not *never served*.
 - **Concurrency via a sharded concurrent map, not the `ArcSwap` whole-replacement pattern
-  used for the filtering matcher.** *Trade-offs*: `ArcSwap` is ideal for the matcher because
-  it is immutable between explicit reloads; the cache is mutated on the hot path by every
-  miss, so wholesale replacement is wrong for it. A single lock over one map would serialise
-  every query in a process that serves a whole house. → **Recommend sharding**, with the
-  invariant that no lock is ever held across an `await`.
+  used for the filtering matcher.** *Trade-offs*: `ArcSwap` is ideal for the matcher
+  because it is immutable between explicit reloads; the cache is mutated on the hot path
+  by every miss, so wholesale replacement is wrong for it. A single lock over one map
+  would serialise every query in a process that serves a whole house. →
+  **Recommend sharding**, with the invariant that no lock is ever held across an `await`.
 - **A bounded, configurable capacity rather than an unbounded cache.** *Trade-offs*: an
   unbounded cache has a better hit rate right up to the point where it takes the box down;
   the deployment target is a Raspberry Pi that must also hold a filtering matcher sized at
   roughly 45–75MB per million domains. → **Recommend a hard bound** with the specific
   value left to configuration and measurement, consistent with the project's habit of
   deferring tuning constants to the keyboard.
-- **The cache stage emits an explicit hit/miss outcome into the existing query-log observer
-  hook rather than logging on its own.** *Trade-offs*: none material; the hook already
-  exists from Phase 2 precisely so the product half does not rewrite the hot path later. →
-  **Recommend reusing it.**
+- **The cache stage emits an explicit hit/miss outcome into the existing query-log
+  observer hook rather than logging on its own.** *Trade-offs*: none material; the hook
+  already exists from Phase 2 precisely so the product half does not rewrite the hot path
+  later. → **Recommend reusing it.**
 
 ### Alternatives Considered
 
 - **Per-group cache namespaces.** Rejected by explicit project decision: with N groups,
   memory multiplies and the hit rate — the entire reason the cache exists — is shredded.
-  Group policy is cheap to evaluate per query (a bitmask test); duplicated DNS data is not.
-- **Caching local records and blocked replies.** Rejected: both are forged answers. Because
-  the cache is global, a cached forgery would be served to clients in groups where the
-  block does not apply; and blocked replies deliberately carry a short TTL so that
-  unblocking takes effect quickly, which caching would defeat. Both also clear AD and forge
-  no signature, so they must never be mistaken later for validated data.
-- **Persisting the cache to the database for a warm start after restart.** Rejected: the hot
-  path touches no I/O, and a database outage must degrade only logging and admin. A warm
-  cache is not worth coupling resolution to storage.
+  Group policy is cheap to evaluate per query (a bitmask test); duplicated DNS data is
+  not.
+- **Caching local records and blocked replies.** Rejected: both are forged answers.
+  Because the cache is global, a cached forgery would be served to clients in groups where
+  the block does not apply; and blocked replies deliberately carry a short TTL so that
+  unblocking takes effect quickly, which caching would defeat. Both also clear AD and
+  forge no signature, so they must never be mistaken later for validated data.
+- **Persisting the cache to the database for a warm start after restart.** Rejected: the
+  hot path touches no I/O, and a database outage must degrade only logging and admin. A
+  warm cache is not worth coupling resolution to storage.
 - **Keying on client identity or client subnet to support per-client answers.** Rejected:
-  EDNS Client Subnet is a deliberate non-goal because it leaks client topology, so there is
-  no per-client variation in upstream answers to preserve, and per-client keying would have
-  the same memory and hit-rate problem as per-group namespaces.
+  EDNS Client Subnet is a deliberate non-goal because it leaks client topology, so there
+  is no per-client variation in upstream answers to preserve, and per-client keying would
+  have the same memory and hit-rate problem as per-group namespaces.
 - **A single unified cache also holding delegations, NS sets, RTT and EDNS capability.**
   Rejected by explicit project decision: the answer cache and the infrastructure cache are
   *structurally* different — different keys, different consumers, different lifetimes. The
@@ -387,16 +392,16 @@ return the response.* The result then continues out through group-policy filteri
   wire codec, server loop, **caches**, recursion, validation — is written from scratch by
   decision, and `hickory-proto` is admissible only as a `[dev-dependencies]` test oracle,
   enforced by a CI check.
-- **Reading the system clock directly for TTL decisions.** Rejected: the injectable `Clock`
-  exists precisely so time-dependent behaviour is testable, it was built in an earlier phase
-  because it could not have been retrofitted, and this phase's exit criteria are stated
-  "under injected time". Bypassing it would make the exit criteria untestable and would
-  poison the DNSSEC phase, whose signature fixtures carry fixed inception and expiration
-  timestamps.
-- **A background expiry sweeper task from day one.** Deferred rather than rejected outright:
-  it adds a second concurrent mutator and another task that can fail in a process where a
-  panic takes DNS down for the whole house, for a benefit that capacity-bounded eviction
-  already delivers.
+- **Reading the system clock directly for TTL decisions.** Rejected: the injectable
+  `Clock` exists precisely so time-dependent behaviour is testable, it was built in an
+  earlier phase because it could not have been retrofitted, and this phase's exit criteria
+  are stated "under injected time". Bypassing it would make the exit criteria untestable
+  and would poison the DNSSEC phase, whose signature fixtures carry fixed inception and
+  expiration timestamps.
+- **A background expiry sweeper task from day one.** Deferred rather than rejected
+  outright: it adds a second concurrent mutator and another task that can fail in a
+  process where a panic takes DNS down for the whole house, for a benefit that
+  capacity-bounded eviction already delivers.
 
 ---
 
@@ -404,10 +409,10 @@ return the response.* The result then continues out through group-policy filteri
 
 ### Requirement Ambiguities
 
-- **Which specific bailiwick rule.** The phase spec says "bailiwick rules governing what is
-  cacheable at all" without stating them. The relevant standard concept — a server may only
-  supply data at or below the zone it is authoritative for, and records outside that are
-  discarded — needs pinning down precisely for the answer, authority and additional
+- **Which specific bailiwick rule.** The phase spec says "bailiwick rules governing what
+  is cacheable at all" without stating them. The relevant standard concept — a server may
+  only supply data at or below the zone it is authoritative for, and records outside that
+  are discarded — needs pinning down precisely for the answer, authority and additional
   sections separately, since the additional section is the classic poisoning vector.
   **Needs a written rule per section before implementation.**
 - **TTL clamping.** Nothing states whether a minimum or maximum TTL is imposed, or how a
@@ -421,17 +426,17 @@ return the response.* The result then continues out through group-policy filteri
 - **Serve-stale behaviour.** Nothing states whether an expired entry may be served while a
   refresh is in flight. The exit criterion "TTL expiry ... under injected time" reads as
   *expired means gone*. **Assume no serve-stale unless decided otherwise, and record it.**
-- **Request coalescing for concurrent identical misses.** Nothing says whether N simultaneous
-  misses for the same key produce N upstream queries or one. This materially affects
-  outbound query volume and interacts with the `race` selection strategy, which is already
-  flagged as a privacy hazard because it fans one query out to every provider in a pool.
-  **Needs a decision, or an explicit deferral.**
+- **Request coalescing for concurrent identical misses.** Nothing says whether N
+  simultaneous misses for the same key produce N upstream queries or one. This materially
+  affects outbound query volume and interacts with the `race` selection strategy, which is
+  already flagged as a privacy hazard because it fans one query out to every provider in a
+  pool. **Needs a decision, or an explicit deferral.**
 - **Cache flush / purge.** The admin UI arrives in Phase 11 and will plausibly want a
   "flush cache" button. Nothing specifies it. **Note the seam now, build it later.**
 - **How a CNAME chain is cached and served.** Phase 5 lists CNAME chasing as its own work,
-  but a forwarded response can contain a chain too, and it is exactly the case that does not
-  reduce to one RRset of the queried type. **Needs the message-entry shape to account for
-  it.**
+  but a forwarded response can contain a chain too, and it is exactly the case that does
+  not reduce to one RRset of the queried type.
+  **Needs the message-entry shape to account for it.**
 - **Eviction policy specifics.** "Eviction" is an exit criterion but no policy is named
   (LRU, LFU, random, TTL-ordered). **Needs a choice, and the exit criterion needs an
   observable definition to test against.**
@@ -462,55 +467,57 @@ return the response.* The result then continues out through group-policy filteri
   on the hot path.
 - **Concurrent admission of the same key by two tasks**, which must not corrupt the store
   and must leave exactly one entry.
-- **A block applied to a name that is already in the cache from before the rule existed** —
-  correct by construction, since filtering runs *before* the cache stage, but worth an
+- **A block applied to a name that is already in the cache from before the rule existed**
+  — correct by construction, since filtering runs *before* the cache stage, but worth an
   explicit test because getting the pipeline order wrong here would be silent.
-- **Unblocking a name**: because blocked replies were never cached, the next query resolves
-  normally with no flush required. Also worth an explicit test, as it is the observable
-  payoff of the never-cache-forgeries rule.
+- **Unblocking a name**: because blocked replies were never cached, the next query
+  resolves normally with no flush required. Also worth an explicit test, as it is the
+  observable payoff of the never-cache-forgeries rule.
 
 ### Technical Risks
 
-- **The bailiwick rule is a security boundary, and "ever" is a strong word.** A gap here is a
-  cache-poisoning vulnerability in a resolver serving a household. *Mitigation*: put the
-  predicate in `domain` as pure logic, test it exhaustively in isolation *and* at socket
-  level against the in-process fake root/TLD/authoritative servers, and make the
+- **The bailiwick rule is a security boundary, and "ever" is a strong word.** A gap here
+  is a cache-poisoning vulnerability in a resolver serving a household. *Mitigation*: put
+  the predicate in `domain` as pure logic, test it exhaustively in isolation *and* at
+  socket level against the in-process fake root/TLD/authoritative servers, and make the
   admission path the only way into the store.
 - **TTL arithmetic under `arithmetic_side_effects = deny`.** Every decrement and elapsed
   computation is a checked operation, and the near-expiry boundary is where an
-  underflow-shaped bug would otherwise hide. *Mitigation*: centralise all TTL arithmetic in
-  one small `domain` module with property-style tests around the boundaries; the lint is
-  the intended tax, not an obstacle to route around.
+  underflow-shaped bug would otherwise hide. *Mitigation*: centralise all TTL arithmetic
+  in one small `domain` module with property-style tests around the boundaries; the lint
+  is the intended tax, not an obstacle to route around.
 - **Memory budget on a Raspberry Pi.** The filtering matcher alone is projected at roughly
-  45–75MB per million domains, and the cache must coexist with it, the query-log ring and a
-  Leptos SSR web layer in one process. An unbounded cache is a denial of service against the
-  box it runs on. *Mitigation*: hard capacity bound from the start, with accounting that can
-  actually be measured.
-- **Hot-path contention.** The cache is read on every query and written on every miss, shared
-  across all listener tasks. A coarse lock makes the cache the bottleneck it was meant to
-  remove. *Mitigation*: shard, and never hold a lock across an `await`.
-- **`panic = "deny"` in a single process.** A panic in the cache takes DNS down for the whole
-  house, and the `catch_unwind` boundary is not built until the final hardening phase.
-  *Mitigation*: no unwrap, no expect, no unchecked indexing; `thiserror` enums through
-  `Result`; the lint gate runs on every push.
-- **Conflating the two caches.** The strongest structural risk to the project's design, since
-  the infrastructure cache arrives one phase later and is superficially "also a cache".
-  *Mitigation*: distinct names, distinct crates, distinct keys, and an explicit statement in
-  the code's own documentation that this cache is keyed by question and knows nothing about
-  zones or nameservers.
-- **Cross-crate access from `styx-recursion`.** Feature crates may not depend on each other,
-  so Phase 5 cannot simply reach into `styx-resolution`. If the cache is not exposed behind a
-  port now, Phase 5 either violates the layering rule or forces a refactor. *Mitigation*:
-  define the capability as a trait in this phase and let the binary wire it.
-- **DNSSEC coupling deferred by one phase.** If entries cannot carry signature material and a
-  validation verdict, Phase 6 must either re-validate every hit or reshape this phase's
-  entries. *Mitigation*: resolve the ambiguity above before the entry shapes are frozen.
+  45–75MB per million domains, and the cache must coexist with it, the query-log ring and
+  a Leptos SSR web layer in one process. An unbounded cache is a denial of service against
+  the box it runs on. *Mitigation*: hard capacity bound from the start, with accounting
+  that can actually be measured.
+- **Hot-path contention.** The cache is read on every query and written on every miss,
+  shared across all listener tasks. A coarse lock makes the cache the bottleneck it was
+  meant to remove. *Mitigation*: shard, and never hold a lock across an `await`.
+- **`panic = "deny"` in a single process.** A panic in the cache takes DNS down for the
+  whole house, and the `catch_unwind` boundary is not built until the final hardening
+  phase. *Mitigation*: no unwrap, no expect, no unchecked indexing; `thiserror` enums
+  through `Result`; the lint gate runs on every push.
+- **Conflating the two caches.** The strongest structural risk to the project's design,
+  since the infrastructure cache arrives one phase later and is superficially "also a
+  cache". *Mitigation*: distinct names, distinct crates, distinct keys, and an explicit
+  statement in the code's own documentation that this cache is keyed by question and knows
+  nothing about zones or nameservers.
+- **Cross-crate access from `styx-recursion`.** Feature crates may not depend on each
+  other, so Phase 5 cannot simply reach into `styx-resolution`. If the cache is not
+  exposed behind a port now, Phase 5 either violates the layering rule or forces a
+  refactor. *Mitigation*: define the capability as a trait in this phase and let the
+  binary wire it.
+- **DNSSEC coupling deferred by one phase.** If entries cannot carry signature material
+  and a validation verdict, Phase 6 must either re-validate every hit or reshape this
+  phase's entries. *Mitigation*: resolve the ambiguity above before the entry shapes are
+  frozen.
 - **No operational feedback until cutover.** Cache behaviour is named explicitly among the
-  things that will not be observed until the household is migrated, which is the last phase.
-  Hit rate, memory growth and eviction pressure under a real query mix are all invisible
-  until then. *Mitigation*: instrument counters and expose them from day one, so that when
-  the cutover happens the data is already being collected; and lean on the socket-level
-  harness with synthetic query mixes in the meantime.
+  things that will not be observed until the household is migrated, which is the last
+  phase. Hit rate, memory growth and eviction pressure under a real query mix are all
+  invisible until then. *Mitigation*: instrument counters and expose them from day one, so
+  that when the cutover happens the data is already being collected; and lean on the
+  socket-level harness with synthetic query mixes in the meantime.
 - **The differential acceptance run touches the live internet.** Phase-gating runs compare
   styx against a local `unbound` over a corpus of real domains. Cached answers with
   differing TTL remainders are a plausible source of spurious diffs. *Mitigation*: the

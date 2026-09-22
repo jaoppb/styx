@@ -270,7 +270,10 @@ last-cutover decision deferred to this phase.
 
 ## Domain Concept Identification
 
-### Existing Concepts (from prior phases — greenfield, so "existing" means "specified and built by phases 0–11, not yet written")
+### Existing Concepts
+
+From prior phases. The project is greenfield, so "existing" here means
+"specified and built by phases 0–11, not yet written".
 
 - **The single process** — one binary containing DNS listeners, Leptos SSR and
   background workers, sharing state via `Arc`. It is the unit of failure this

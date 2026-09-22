@@ -374,25 +374,25 @@ validator to pull from, and diagnostics updated as a side effect.
 
 ### Key Design Decisions
 
-- **QNAME minimisation is built into the first test, not added later.**
-  *Trade-off:* it makes the very first descent harder — the question on the wire is never
-  simply the client's question, and every response classification has an extra "was this a
+- **QNAME minimisation is built into the first test, not added later.** *Trade-off:* it
+  makes the very first descent harder — the question on the wire is never simply the
+  client's question, and every response classification has an extra "was this a
   minimisation failure?" branch. Adding it afterwards would be cheaper *today*.
   *Recommendation:* build it in. It changes what is asked at every step, so retrofitting
   it means rewriting the descent's core loop and every test fixture that encodes an
   expected outbound query. The privacy rationale is the same one behind refusing EDNS
-  Client Subnet: do not hand out more than the answer requires. Relaxed, not strict, mode —
-  because strict mode fails outright on the nontrivial population of authoritative servers
-  that mishandle minimised queries, and a resolver that cannot resolve is not private, it
-  is broken.
+  Client Subnet: do not hand out more than the answer requires. Relaxed, not strict, mode
+  — because strict mode fails outright on the nontrivial population of authoritative
+  servers that mishandle minimised queries, and a resolver that cannot resolve is not
+  private, it is broken.
 
 - **The infrastructure cache is a separate store, not a namespace in the answer cache.**
   *Trade-off:* two caches to size, evict, instrument and reason about, instead of one.
   *Recommendation:* separate. The key spaces differ (zone + nameserver vs
   `(qname, qtype, qclass)`), the contents differ (delegations, NS sets, RTT, EDNS
   capability vs RRsets and messages), the consumers differ (recursion alone vs the whole
-  resolution path), and the lifetime rules differ (observed behaviour and NS TTLs vs record
-  TTLs and RFC 2308 negative caching). It also keeps the crate boundary honest: the
+  resolution path), and the lifetime rules differ (observed behaviour and NS TTLs vs
+  record TTLs and RFC 2308 negative caching). It also keeps the crate boundary honest: the
   infrastructure cache is private to `styx-recursion`, so no other crate can grow a
   dependency on recursion's internal topology model.
 
@@ -408,13 +408,13 @@ validator to pull from, and diagnostics updated as a side effect.
   answer different questions and must never be conflated in code, in the UI, or in a
   conversation about an outage.
 
-- **The recursor's health probe is a full descent.**
-  *Trade-off:* an expensive probe.
-  *Recommendation:* keep it. It is the only probe that actually tests what a recursor does,
-  and probes are rare by construction — they run only against members idle beyond a window
-  (the ordered-failover standby case, where passive health is structurally blind because
-  the upstream receives zero traffic) and against members currently marked down, to decide
-  when to restore them. Healthy, actively-used upstreams generate no probe traffic at all.
+- **The recursor's health probe is a full descent.** *Trade-off:* an expensive probe.
+  *Recommendation:* keep it. It is the only probe that actually tests what a recursor
+  does, and probes are rare by construction — they run only against members idle beyond a
+  window (the ordered-failover standby case, where passive health is structurally blind
+  because the upstream receives zero traffic) and against members currently marked down,
+  to decide when to restore them. Healthy, actively-used upstreams generate no probe
+  traffic at all.
 
 - **DO=1 during descent, with DS material retained, before there is a validator.**
   *Trade-off:* this phase carries work whose consumer does not exist yet, and the retained
@@ -433,12 +433,12 @@ validator to pull from, and diagnostics updated as a side effect.
 
 - **The differential run against a local `unbound` is the phase gate, not a nicety.**
   *Trade-off:* it needs the live internet, and real DNS changes underneath the corpus, so
-  it will sometimes fail for reasons that are not a bug here.
-  *Recommendation:* keep it as the gate, and keep it out of the per-push gate. In-process
-  fakes only prove the resolver does what *we think* delegation means; a fake built from
-  the same misreading as the resolver will agree with it enthusiastically. The differential
-  run is the only check that catches a shared misreading, because `unbound` was written by
-  other people reading the same RFCs independently.
+  it will sometimes fail for reasons that are not a bug here. *Recommendation:* keep it as
+  the gate, and keep it out of the per-push gate. In-process fakes only prove the resolver
+  does what *we think* delegation means; a fake built from the same misreading as the
+  resolver will agree with it enthusiastically. The differential run is the only check
+  that catches a shared misreading, because `unbound` was written by other people reading
+  the same RFCs independently.
 
 ### Alternatives Considered
 
@@ -457,10 +457,10 @@ validator to pull from, and diagnostics updated as a side effect.
 - **Diagnostics folded into `HealthState`.** Rejected: permanently-empty fields on the
   forwarder side, and two different questions answered by one conflated type.
 - **Using an existing DNS library for the descent.** Rejected by the project's founding
-  constraint: the entire stack is written from scratch. `hickory-proto` appears only as the
-  test oracle in `[dev-dependencies]`, precisely so that the resolver and its fakes do not
-  share every bug — and a CI check asserts it never appears in a normal or build dependency
-  path.
+  constraint: the entire stack is written from scratch. `hickory-proto` appears only as
+  the test oracle in `[dev-dependencies]`, precisely so that the resolver and its fakes do
+  not share every bug — and a CI check asserts it never appears in a normal or build
+  dependency path.
 - **Deferring DO=1 to the DNSSEC phase.** Rejected: re-querying for DS material later is
   strictly worse than keeping what arrives unasked.
 
@@ -470,22 +470,22 @@ validator to pull from, and diagnostics updated as a side effect.
 
 ### Requirement Ambiguities
 
-- **"Loop and depth limits" is unquantified.** The phase spec names the concern but not the
-  numbers — maximum delegation depth, maximum outbound queries per client question, maximum
-  CNAME chain length, per-query and whole-descent timeouts. These are implementation-level
-  choices to settle at the keyboard, consistent with how the design record treats SRTT decay
-  constants, circuit thresholds and the canary question per upstream kind; but they must be
-  named constants with a written rationale, not scattered literals, because they are the
-  denial-of-service boundary.
+- **"Loop and depth limits" is unquantified.** The phase spec names the concern but not
+  the numbers — maximum delegation depth, maximum outbound queries per client question,
+  maximum CNAME chain length, per-query and whole-descent timeouts. These are
+  implementation-level choices to settle at the keyboard, consistent with how the design
+  record treats SRTT decay constants, circuit thresholds and the canary question per
+  upstream kind; but they must be named constants with a written rationale, not scattered
+  literals, because they are the denial-of-service boundary.
 - **The minimisation fallback trigger set is not enumerated.** Which response conditions
-  count as "responds badly"? At minimum: FORMERR, NOTIMP, REFUSED, SERVFAIL, an NXDOMAIN at
-  an intermediate label, an empty NOERROR that is neither referral nor answer, and timeout.
-  Each needs an explicit verdict, and the boundary between "broken server" and "genuine
-  absence" is the whole difficulty.
+  count as "responds badly"? At minimum: FORMERR, NOTIMP, REFUSED, SERVFAIL, an NXDOMAIN
+  at an intermediate label, an empty NOERROR that is neither referral nor answer, and
+  timeout. Each needs an explicit verdict, and the boundary between "broken server" and
+  "genuine absence" is the whole difficulty.
 - **Fallback scope and memory are unstated.** Does a fallback apply to that one query, the
   rest of that descent, or that nameserver for a cached period? The infrastructure cache
-  holding per-nameserver EDNS capability strongly implies per-nameserver memory with a TTL,
-  but the requirement does not say so outright.
+  holding per-nameserver EDNS capability strongly implies per-nameserver memory with a
+  TTL, but the requirement does not say so outright.
 - **`RecursionDiagnostics` contents are named only as "root/TLD reachability".** The exact
   read model — which roots, which TLDs, last-success timestamps, priming state, descent
   failure counts — is undetermined. Its *routing* (direct to admin/web, never through the
@@ -501,15 +501,15 @@ validator to pull from, and diagnostics updated as a side effect.
 
 - **Glue-less delegation.** The NS set names servers under a zone that is not a descendant
   of the delegated zone, so no glue can be provided; their addresses must be resolved by a
-  sub-descent — which can recurse into the same situation. This needs its own budget, or it
-  is an unbounded loop.
+  sub-descent — which can recurse into the same situation. This needs its own budget, or
+  it is an unbounded loop.
 - **Circular glue dependency.** `a.example.` is served by `ns.b.example.` and vice versa,
   with no usable glue on either side. Must terminate.
-- **Out-of-bailiwick glue offered anyway.** A classic cache-poisoning vector: the record must
-  be discarded, not merely deprioritised.
-- **Lame delegation.** The parent delegates to a server that answers non-authoritatively, or
-  refuses. The descent must try the rest of the NS set and record the lameness rather than
-  concluding SERVFAIL for the name.
+- **Out-of-bailiwick glue offered anyway.** A classic cache-poisoning vector: the record
+  must be discarded, not merely deprioritised.
+- **Lame delegation.** The parent delegates to a server that answers non-authoritatively,
+  or refuses. The descent must try the rest of the NS set and record the lameness rather
+  than concluding SERVFAIL for the name.
 - **Empty non-terminal.** A name with no records but with descendants must yield NOERROR/
   NODATA, not NXDOMAIN — and a minimised query at exactly that label is the textbook case
   where a naive implementation manufactures a false NXDOMAIN.
@@ -534,55 +534,55 @@ validator to pull from, and diagnostics updated as a side effect.
 
 ### Technical Risks
 
-- **This is one of the two hand-written security-critical subsystems.** A bug in the descent
-  is a cache-poisoning or downgrade vector, not a cosmetic defect. Mitigation direction:
-  keep the descent's decision logic in an I/O-free `domain` state machine that can be tested
-  exhaustively, and gate the phase on the differential run.
+- **This is one of the two hand-written security-critical subsystems.** A bug in the
+  descent is a cache-poisoning or downgrade vector, not a cosmetic defect. Mitigation
+  direction: keep the descent's decision logic in an I/O-free `domain` state machine that
+  can be tested exhaustively, and gate the phase on the differential run.
 - **The differential gate depends on the live internet and is flaky by nature.** Real DNS
   changes underneath the corpus, so the job will sometimes fail for reasons that are not a
-  bug in styx — and that is exactly why it gates a phase and never a push. **The recorded
-  consequence is that a genuine regression can hide behind a shrug.** Mitigation direction:
-  every differential failure must be triaged to a named cause before the phase is called
-  done; a disagreement is never dismissed on the strength of "DNS moved". Curate the corpus
-  toward names with stable delegation structure so that movement is rare enough for a
-  failure to be notable.
+  bug in styx — and that is exactly why it gates a phase and never a push.
+  **The recorded consequence is that a genuine regression can hide behind a shrug.**
+  Mitigation direction: every differential failure must be triaged to a named cause before
+  the phase is called done; a disagreement is never dismissed on the strength of "DNS
+  moved". Curate the corpus toward names with stable delegation structure so that movement
+  is rare enough for a failure to be notable.
 - **Hermetic fakes can only confirm a shared misreading.** The in-process root/TLD/auth
   servers are built by the same people reading the same RFCs as the resolver. Mitigation
   direction: the fakes encode wire format with `hickory-proto` rather than with our own
   codec, so at least the *encoding* is independently derived; and the differential run is
   the gate for the *semantics*.
 - **Hand-written wire parsing under `indexing_slicing = deny` and
-  `arithmetic_side_effects = deny`.** Every label offset and TTL decrement becomes a checked
-  operation. That is the intended tax, but it makes the codec verbose and
+  `arithmetic_side_effects = deny`.** Every label offset and TTL decrement becomes a
+  checked operation. That is the intended tax, but it makes the codec verbose and
   compression-pointer loop detection fiddly — and the descent handles attacker-influenced
   referrals all day. Fuzzing is not optional.
-- **`panic = "deny"` is load-bearing.** In a single process, a panic anywhere takes DNS down
-  for the whole house; the `catch_unwind` boundary and supervised task model are the real
-  mitigation and they do not arrive until the final phase. Until then the lint is the only
-  guard, so the descent must contain no unchecked indexing, no unwrap on parsed data, and no
-  arithmetic that can overflow on hostile TTLs or counts.
+- **`panic = "deny"` is load-bearing.** In a single process, a panic anywhere takes DNS
+  down for the whole house; the `catch_unwind` boundary and supervised task model are the
+  real mitigation and they do not arrive until the final phase. Until then the lint is the
+  only guard, so the descent must contain no unchecked indexing, no unwrap on parsed data,
+  and no arithmetic that can overflow on hostile TTLs or counts.
 - **Resolution-first plus a last cutover removes every feedback loop.** Phases 1 through 7
   produce nothing a human can look at except `dig` output, and no one is waiting on it
   either. This phase sits in the middle of that stretch: no operational feedback on cache
-  behaviour, no real client traffic, no external pressure. The accepted cost of not doing a
-  live migration under two hand-written security-critical subsystems.
+  behaviour, no real client traffic, no external pressure. The accepted cost of not doing
+  a live migration under two hand-written security-critical subsystems.
 - **The committed `arch-lint.toml` enforces nothing** until the foundation phase replaces
-  it. The file contains `[[layers]]`, which routes arch-lint to its tree-sitter engine; that
-  engine ships only a Kotlin grammar and discovers zero `.rs` files, so the run exits green
-  having checked nothing. If that fix has not landed, the `domain`/`application`/
+  it. The file contains `[[layers]]`, which routes arch-lint to its tree-sitter engine;
+  that engine ships only a Kotlin grammar and discovers zero `.rs` files, so the run exits
+  green having checked nothing. If that fix has not landed, the `domain`/`application`/
   `infrastructure` separation inside `styx-recursion` is unenforced and will drift. Verify
   with a deliberate violation — an inert config looks identical to a passing one.
 - **Infrastructure-cache memory on a Raspberry Pi.** The delegation and nameserver-metric
   store grows with the breadth of names resolved and has no stated budget.
-- **Descent amplification.** Glue-less delegations and CNAME chains can multiply one client
-  query into many outbound queries; without hard budgets styx becomes a reflector.
+- **Descent amplification.** Glue-less delegations and CNAME chains can multiply one
+  client query into many outbound queries; without hard budgets styx becomes a reflector.
 - **The privacy property is testable only by observing outbound traffic.** Nothing in an
   answer reveals whether the full qname leaked to the root. Tests must assert on what the
   fakes *received*, not only on what came back — otherwise minimisation can silently
   regress to full-qname behaviour while every functional test stays green.
-- **`hickory-proto` leaking out of `[dev-dependencies]`.** The CI check asserting it appears
-  in no normal or build dependency path must be in place before this phase writes its test
-  rig, or the exception rots into a real dependency.
+- **`hickory-proto` leaking out of `[dev-dependencies]`.** The CI check asserting it
+  appears in no normal or build dependency path must be in place before this phase writes
+  its test rig, or the exception rots into a real dependency.
 
 ### Acceptance Criteria Coverage
 

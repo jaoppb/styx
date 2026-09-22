@@ -455,8 +455,8 @@ revisitable inside this phase.
 **The rule it is exempt from**: *feature crates never depend on each other. Cross-feature
 needs are expressed as a port in the consumer's `domain`, implemented by an adapter in the
 binary — e.g. `styx-resolution` declares a `FilterPolicy` port and `styx` wires
-`styx-filtering` into it. `styx-web` may depend on a feature's `application` layer, because
-it is presentation, not a peer.*
+`styx-filtering` into it. `styx-web` may depend on a feature's `application` layer,
+because it is presentation, not a peer.*
 
 **The exemption, in full**: *`styx-proto` is shared foundation, not a feature crate. Every
 crate parses through the wire codec, so the "feature crates never depend on each other"
@@ -476,10 +476,10 @@ same bytes, with no isolation gained and a great deal of ceremony added.
 
 **The decision, in full**: *`hickory-proto` is the test oracle, `[dev-dependencies]` only.
 The fake root/TLD/authoritative servers and the expected-byte fixtures have to encode DNS
-wire format; if our own codec encodes them, the resolver and its oracle share every bug and
-a green suite proves only self-consistency. The from-scratch ban is on shipping code, not
-the test rig. A CI check asserts `hickory-proto` appears in no normal or build dependency
-path, or the exception rots into a real dependency.*
+wire format; if our own codec encodes them, the resolver and its oracle share every bug
+and a green suite proves only self-consistency. The from-scratch ban is on shipping code,
+not the test rig. A CI check asserts `hickory-proto` appears in no normal or build
+dependency path, or the exception rots into a real dependency.*
 
 **Why a self-encoded fixture proves only self-consistency** — this is the load-bearing
 argument of the entire phase, and it must not be lost:
@@ -502,8 +502,8 @@ reads the real link graph, and they catch different mistakes. Both run on every 
 
 The workspace convention is *one crate per feature; `domain`/`application`/
 `infrastructure` are modules inside it. Cargo enforces feature-to-feature isolation;
-arch-lint enforces layering within a crate.* `styx-proto` is exempt from the crate-isolation
-half of that rule, **not** from the layering half.
+arch-lint enforces layering within a crate.* `styx-proto` is exempt from the
+crate-isolation half of that rule, **not** from the layering half.
 
 - **`domain`** — the protocol vocabulary and its invariants: `Message`, `Header` and its
   flags, `Question`, `ResourceRecord`, `RData` and its variants, `Name`/`Label` with their
@@ -525,16 +525,16 @@ container and no runtime wiring in this crate: it is a library of pure functions
 
 ### 5. EDNS(0) ships now, not with DNSSEC
 
-**Why it cannot wait**: the DNSSEC design reads *"`styx-recursion` pushes chain material it
-already collected during descent (DS RRsets arrive unasked in DO=1 referrals, per RFC 4035
-§3.1.4), while forwarder paths pull DS/DNSKEY on demand. One validator, two feeding
+**Why it cannot wait**: the DNSSEC design reads *"`styx-recursion` pushes chain material
+it already collected during descent (DS RRsets arrive unasked in DO=1 referrals, per RFC
+4035 §3.1.4), while forwarder paths pull DS/DNSKEY on demand. One validator, two feeding
 strategies. This avoids widening the `Upstream` port with a 'chain material observed en
 route' field that would be permanently empty for forwarders."* The **push** half of that
-design exists only because DO=1 causes referrals to carry DS records unasked. If the DO bit
-does not round-trip correctly, the push path receives nothing, and the failure presents as
-a validator bug five phases later. Additionally, the EDNS payload size is what Phase 2
-budgets truncation against, and *per-nameserver EDNS capability* is a field in Phase 5's
-infrastructure cache.
+design exists only because DO=1 causes referrals to carry DS records unasked. If the DO
+bit does not round-trip correctly, the push path receives nothing, and the failure
+presents as a validator bug five phases later. Additionally, the EDNS payload size is what
+Phase 2 budgets truncation against, and *per-nameserver EDNS capability* is a field in
+Phase 5's infrastructure cache.
 
 ### 6. Canonical encoding ships now, as a mode of the same encoder
 
@@ -565,14 +565,14 @@ posture is correctness first. Revisit only if measurement in a later phase deman
 ### 8. `Name` preserves case, compares case-insensitively, canonicalises explicitly
 
 **Trade-off**: the question section must be echoed back with the client's original case.
-But DNSSEC canonical form requires lowercase owner names, and Phase 4's cache and Phase 8's
-reversed-label radix trie both want a single canonical key. Two representations of "the
-same name" is exactly the subtlety that produces a cache-poisoning bug.
+But DNSSEC canonical form requires lowercase owner names, and Phase 4's cache and Phase
+8's reversed-label radix trie both want a single canonical key. Two representations of
+"the same name" is exactly the subtlety that produces a cache-poisoning bug.
 
-**Decision**: preserve the original octets in the type; expose case-insensitive `Eq`/`Hash`
-as the *only* comparison; provide `to_canonical()` (lowercased) as a separate, explicit
-operation. Four downstream consumers — cache key, matcher key, bailiwick comparison,
-DNSSEC canonical form — inherit this and none of them has to decide it again.
+**Decision**: preserve the original octets in the type; expose case-insensitive
+`Eq`/`Hash` as the *only* comparison; provide `to_canonical()` (lowercased) as a separate,
+explicit operation. Four downstream consumers — cache key, matcher key, bailiwick
+comparison, DNSSEC canonical form — inherit this and none of them has to decide it again.
 
 ### 9. Truncation is computed here, decided in Phase 2
 
@@ -668,9 +668,11 @@ styx-proto/
 1. `trait Decodable` — `fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError>`;
    implemented by `Header`, `Question`, `ResourceRecord`, each `RData` variant, `Name`,
    `Opt`.
-2. `trait Encodable` — `fn encode(&self, enc: &mut Encoder<'_>) -> Result<(), EncodeError>`;
-   implemented by the same set.
-3. `trait CanonicalEncodable` — `fn encode_canonical(&self, enc: &mut Encoder<'_>) -> Result<(), EncodeError>`;
+2. `trait Encodable` —
+   `fn encode(&self, enc: &mut Encoder<'_>) -> Result<(), EncodeError>`; implemented by
+   the same set.
+3. `trait CanonicalEncodable` —
+   `fn encode_canonical(&self, enc: &mut Encoder<'_>) -> Result<(), EncodeError>`;
    implemented by `Name`, `ResourceRecord` and every `RData` variant. Default
    implementation delegates to `Encodable` with compression disabled and lowercasing on;
    variants containing names that RFC 4034 requires lowercased override it.
@@ -684,9 +686,9 @@ styx-proto/
 1. `application::decoder` and `application::encoder` depend on `domain::*`.
 2. `domain::*` depends on nothing in `application` or `infrastructure`. A `domain` type
    knows its own invariants; it does not know how bytes are laid out.
-3. `application::cursor` is the **only** module permitted to touch raw slice offsets. Every
-   other read goes through it. This is what makes `indexing_slicing = deny` survivable and
-   auditable rather than a hundred scattered `get()` calls.
+3. `application::cursor` is the **only** module permitted to touch raw slice offsets.
+   Every other read goes through it. This is what makes `indexing_slicing = deny`
+   survivable and auditable rather than a hundred scattered `get()` calls.
 4. `infrastructure` depends on `domain` and `application`; nothing depends on
    `infrastructure` from inside this crate.
 5. `lib.rs` re-exports the public surface. Consumers see `domain` types and the two
@@ -754,10 +756,11 @@ Tasks are ordered by dependency. Each is independently verifiable.
 1. **Responsibility**: the single audited primitive for bounds-checked reads. Every other
    module reads through it; no other module indexes a slice.
 2. **State**: the backing buffer, the current position, the buffer length.
-3. **Behaviour**: `advance(n) -> Result<usize, DecodeError>`, `seek(offset) -> Result<(), DecodeError>`,
-   `read_u8/u16/u32`, `read_slice(len) -> Result<&[u8], DecodeError>`, `remaining() -> usize`.
-   Every method returns `DecodeError::UnexpectedEof` rather than panicking; every offset
-   computation uses `checked_add`.
+3. **Behaviour**: `advance(n) -> Result<usize, DecodeError>`,
+   `seek(offset) -> Result<(), DecodeError>`, `read_u8/u16/u32`,
+   `read_slice(len) -> Result<&[u8], DecodeError>`, `remaining() -> usize`. Every method
+   returns `DecodeError::UnexpectedEof` rather than panicking; every offset computation
+   uses `checked_add`.
 4. **Constraints**: no `unwrap`, no `expect`, no `[..]` indexing, no unchecked arithmetic.
    This module is the reason the rest of the codec can be read.
 5. **Completion criterion**: a dedicated unit test asserts that every method returns a
@@ -804,9 +807,9 @@ Tasks are ordered by dependency. Each is independently verifiable.
      may be compressed on the wire for the legacy types and must **not** be compressed in
      canonical form.
    - `SOA.minimum`: consumed by Phase 4's RFC 2308 negative caching.
-   - `TXT`: a **sequence** of length-prefixed character-strings. Zero character-strings and
-     one empty character-string are distinct on the wire and must stay distinct; flattening
-     them into a single `String` loses information consumers need.
+   - `TXT`: a **sequence** of length-prefixed character-strings. Zero character-strings
+     and one empty character-string are distinct on the wire and must stay distinct;
+     flattening them into a single `String` loses information consumers need.
    - `UnknownRdata`: opaque octets plus the numeric type. **Never** parsed for names — RFC
      3597 forbids compression in unknown RDATA, and treating those bytes as a name is a
      vulnerability.
@@ -850,11 +853,12 @@ Tasks are ordered by dependency. Each is independently verifiable.
    - `MalformedOpt` must be **distinguishable** from a generic decode failure: Phase 5's
      infrastructure cache records *per-nameserver EDNS capability*, and "this server does
      not do EDNS" is a different fact from "this server sent garbage".
-4. **EDNS Client Subnet**: ECS is a standing v1 non-goal — *"deliberately omitted; it leaks
-   client topology"* — so styx never **originates** it. The codec represents it as an
-   ordinary unknown `EdnsOption` so that whether an inbound ECS option is preserved,
-   stripped on forward, or refused remains a **policy decision for a later phase**, not
-   something forced here. See *Safeguards → Open questions*.
+4. **EDNS Client Subnet**: ECS is a standing v1 non-goal —
+   *"deliberately omitted; it leaks client topology"* — so styx never **originates** it.
+   The codec represents it as an ordinary unknown `EdnsOption` so that whether an inbound
+   ECS option is preserved, stripped on forward, or refused remains a
+   **policy decision for a later phase**, not something forced here. See
+   *Safeguards → Open questions*.
 
 ### 9. Implement `application::decoder` — `Decoder`
 
@@ -868,16 +872,17 @@ Tasks are ordered by dependency. Each is independently verifiable.
    - Section parsing — parse **exactly** the counts the header declares. A disagreement
      between declared counts and available bytes is `SectionCountMismatch`, not a silent
      truncation.
-   - **Bounded pre-allocation** — a header may claim 65535 records inside a 12-byte packet.
-     Reserve capacity from `min(declared_count, remaining_bytes / MIN_RECORD_BYTES)`, never
-     from the attacker-supplied count alone. This is memory amplification on a Raspberry
-     Pi-class target.
+   - **Bounded pre-allocation** — a header may claim 65535 records inside a 12-byte
+     packet. Reserve capacity from
+     `min(declared_count, remaining_bytes / MIN_RECORD_BYTES)`, never from the
+     attacker-supplied count alone. This is memory amplification on a Raspberry Pi-class
+     target.
    - Lift the OPT record out of the additional section into `Message::opt`.
 3. **Constraints**: **never panics** on any input, including adversarial input. Returns
    `Ok(Message)` or a typed `DecodeError`. No recursion in name resolution — an iterative
    loop with an explicit bound, because deep recursion is itself a stack-overflow vector.
-4. **Instrumentation**: `tracing` at `debug` for decode failures with the error variant and
-   byte offset; **never** log full packet contents at default levels — the query-log
+4. **Instrumentation**: `tracing` at `debug` for decode failures with the error variant
+   and byte offset; **never** log full packet contents at default levels — the query-log
    privacy modes exist because qnames are sensitive.
 
 ### 10. Implement `application::encoder` — `Encoder`
@@ -943,8 +948,8 @@ Tasks are ordered by dependency. Each is independently verifiable.
    **decoded structures**.
 3. **Constraint**: do **not** assert byte-for-byte equality of the two encoders' output.
    Name compression admits choices, so two correct encoders legitimately differ. Byte
-   equality is reserved for the hand-assembled fixtures where the expected bytes are pinned
-   deliberately.
+   equality is reserved for the hand-assembled fixtures where the expected bytes are
+   pinned deliberately.
 
 ### 15. Build the pathological suite — `tests/pathological.rs`
 
@@ -971,9 +976,9 @@ Tasks are ordered by dependency. Each is independently verifiable.
 ### 16. Build the fuzz targets — `fuzz/fuzz_targets/`
 
 1. **`decode_arbitrary.rs`** — feed arbitrary bytes to `Message::decode`. Assert only that
-   it returns `Ok` or a typed `DecodeError`. This is a **panic-freedom proof**, not a crash
-   hunt: between now and Phase 12 the `panic = "deny"` lint is the only thing standing
-   between a malformed LAN packet and a dead resolver for the whole house.
+   it returns `Ok` or a typed `DecodeError`. This is a **panic-freedom proof**, not a
+   crash hunt: between now and Phase 12 the `panic = "deny"` lint is the only thing
+   standing between a malformed LAN packet and a dead resolver for the whole house.
 2. **`decode_encode_roundtrip.rs`** — decode arbitrary bytes; on success, encode, decode
    again, and assert the two decoded structures are equal (a stable fixpoint). The first
    encode may legitimately differ in bytes from the input because of compression choices.
@@ -1002,8 +1007,9 @@ Tasks are ordered by dependency. Each is independently verifiable.
    - `indexing_slicing = deny` and `arithmetic_side_effects = deny` are workspace-wide.
      The project states plainly: *"every label offset and TTL decrement becomes a checked
      operation … that is the intended tax."*
-   - All slice access routes through `application::cursor::Cursor`. That module is the only
-     place permitted to compute a raw offset, and it is small enough to audit line by line.
+   - All slice access routes through `application::cursor::Cursor`. That module is the
+     only place permitted to compute a raw offset, and it is small enough to audit line by
+     line.
    - `checked_add` / `checked_sub` / `checked_mul` for offsets and lengths;
      `saturating_*` only where saturation is the semantically correct answer and is
      documented as such (TTL decrement below zero).
@@ -1014,8 +1020,8 @@ Tasks are ordered by dependency. Each is independently verifiable.
    - `infrastructure` may `use` both; nothing in-crate depends on `infrastructure`.
    - `styx-proto` may not `use` any `styx-*` crate. Enforced by `arch-lint`'s
      `[[deny-scope-dep]]` and `[[restrict-use]]`, and independently by the
-     `cargo tree --edges normal` gate — arch-lint reads source text, `cargo tree` reads the
-     real link graph, and they catch different mistakes.
+     `cargo tree --edges normal` gate — arch-lint reads source text, `cargo tree` reads
+     the real link graph, and they catch different mistakes.
 
 4. **Dependencies**
    - `hickory-proto` appears **only** under `[dev-dependencies]`. The `hickory-dev-only`
@@ -1072,8 +1078,8 @@ below — but they are non-negotiable.
 - The codec decodes and encodes: header, question, resource records and RDATA for every
   v1 rrtype, with **name compression on both encode and decode** and
   **compression-pointer loop detection**, plus **EDNS(0) OPT**.
-- `RData::Unknown` round-trips opaque bytes byte-exact. A forwarder that drops what it does
-  not understand is a broken forwarder.
+- `RData::Unknown` round-trips opaque bytes byte-exact. A forwarder that drops what it
+  does not understand is a broken forwarder.
 - Unknown EDNS option codes round-trip byte-exact.
 - Exactly zero or one OPT record per message; two is a typed error.
 - Extended RCODE is 12 bits, so `BADVERS` is representable.
@@ -1105,10 +1111,11 @@ below — but they are non-negotiable.
   does not reach it. This is the one explicit exception, and `[[restrict-use]]` must be
   written so as not to forbid it."*
 - The rule it is exempt from, in full: *"Feature crates never depend on each other.
-  Cross-feature needs are expressed as a port in the consumer's `domain`, implemented by an
-  adapter in the binary — e.g. `styx-resolution` declares a `FilterPolicy` port and `styx`
-  wires `styx-filtering` into it. `styx-web` may depend on a feature's `application` layer,
-  because it is presentation, not a peer."* The exemption is one-directional.
+  Cross-feature needs are expressed as a port in the consumer's `domain`, implemented by
+  an adapter in the binary — e.g. `styx-resolution` declares a `FilterPolicy` port and
+  `styx` wires `styx-filtering` into it. `styx-web` may depend on a feature's
+  `application` layer, because it is presentation, not a peer."* The exemption is
+  one-directional.
 - Within the crate, `domain` → nothing, `application` → `domain`, `infrastructure` → both.
 - **Both directions of the `[[restrict-use]]` rule must be proven with a deliberate
   violation.** A rule written loosely enough to permit `styx-proto` can stop enforcing
@@ -1120,16 +1127,16 @@ below — but they are non-negotiable.
   must survive: *"the fake root/TLD/authoritative servers and the expected-byte fixtures
   have to encode DNS wire format; if our own codec encodes them, the resolver and its
   oracle share every bug and a green suite proves only self-consistency."*
-- **A self-encoded fixture proves only self-consistency.** It shows the encoder and decoder
-  are inverses. It cannot show either matches the protocol: one misread field layout yields
-  an encoder and decoder that are both wrong in the same direction and agree perfectly —
-  green suite, dead resolver. An independent implementation is the only cheap source of
-  disagreement.
-- **No `hickory-dns` and no `domain` crate in shipping code**, per the from-scratch mandate:
-  *"the entire DNS stack is written from scratch — wire codec, server loop, caches,
-  recursion algorithm, DNSSEC validation."*
-- The `hickory-dev-only` check plus `cargo tree --edges normal` run on every push, *"or the
-  exception rots into a real dependency."*
+- **A self-encoded fixture proves only self-consistency.** It shows the encoder and
+  decoder are inverses. It cannot show either matches the protocol: one misread field
+  layout yields an encoder and decoder that are both wrong in the same direction and agree
+  perfectly — green suite, dead resolver. An independent implementation is the only cheap
+  source of disagreement.
+- **No `hickory-dns` and no `domain` crate in shipping code**, per the from-scratch
+  mandate: *"the entire DNS stack is written from scratch — wire codec, server loop,
+  caches, recursion algorithm, DNSSEC validation."*
+- The `hickory-dev-only` check plus `cargo tree --edges normal` run on every push,
+  *"or the exception rots into a real dependency."*
 
 ### 5. Lint and gate constraints
 
@@ -1140,12 +1147,12 @@ below — but they are non-negotiable.
   spiked 2026-09-21 against arch-lint 0.5.0.** arch-lint has two mutually exclusive
   engines, selected by whether the config contains `[[layers]]`. With `[[layers]]`, the
   tree-sitter engine runs — and that engine ships exactly one grammar,
-  `tree-sitter-kotlin-ng`, filtering discovery to `.kt`/`.kts`. **On a Rust repo it
-  analyses zero files and exits 0**, silently disabling AL001–AL013 as well. Without
-  `[[layers]]`, the **syn** engine runs AL001–AL013 plus `[[scopes]]`,
+  `tree-sitter-kotlin-ng`, filtering discovery to `.kt`/`.kts`.
+  **On a Rust repo it analyses zero files and exits 0**, silently disabling AL001–AL013 as
+  well. Without `[[layers]]`, the **syn** engine runs AL001–AL013 plus `[[scopes]]`,
   `[[deny-scope-dep]]` and `[[restrict-use]]`, which do enforce layering on Rust by path
-  glob. **Phase 1 must not begin until Phase 0 has replaced the config and proven it with a
-  deliberate violation — an inert config looks identical to a passing one.**
+  glob. **Phase 1 must not begin until Phase 0 has replaced the config and proven it with
+  a deliberate violation — an inert config looks identical to a passing one.**
 - `--no-default-features` must build, because *"CI builds and tests
   `--no-default-features` on every commit, or the headless build rots within a month."*
 
@@ -1163,9 +1170,9 @@ error-prone, so they constrain the API now.
 - **Local records**: *"Local records are answered before the cache and are always Insecure
   … They never enter the answer cache and never reach the validator: AD cleared, no forged
   signature, same honesty rule as a blocked reply."* Accepted consequence: *"a local name
-  under a signed public zone (`nas.example.com` where `example.com` is signed) is unprovable
-  and validating clients may SERVFAIL it — the documented guidance is to keep local names
-  under an unsigned or internal suffix."*
+  under a signed public zone (`nas.example.com` where `example.com` is signed) is
+  unprovable and validating clients may SERVFAIL it — the documented guidance is to keep
+  local names under an unsigned or internal suffix."*
 - **Therefore**: `Header` exposes `clear_authentic_data()`, response construction never
   propagates AD implicitly, and **no API exists that fabricates an RRSIG**.
 
@@ -1190,10 +1197,11 @@ error-prone, so they constrain the API now.
   well-behaved oracle produces a compression loop.
 - Fuzzing is continuous from this phase onward, not a one-off gate.
 - Any disagreement with `hickory-proto` is treated as a defect in **styx** until proven
-  otherwise. The reason this matters: *"Phases 1 through 7 produce nothing a human can look
-  at except `dig` output"*, and because the cutover is last there is neither visible
-  progress nor external pressure — a subtle misparse here surfaces as an inexplicable
-  recursion or validation failure several phases downstream.
+  otherwise. The reason this matters:
+  *"Phases 1 through 7 produce nothing a human can look at except `dig` output"*, and
+  because the cutover is last there is neither visible progress nor external pressure — a
+  subtle misparse here surfaces as an inexplicable recursion or validation failure several
+  phases downstream.
 
 ### 9. Non-goals that bear on this phase
 
@@ -1203,13 +1211,13 @@ error-prone, so they constrain the API now.
 - **Authoritative zone serving** — no zone-file parsing, no AXFR/IXFR, no zone transfer
   rrtypes. *"Local records and per-zone overrides are resolution/filtering concerns, not a
   zone-file server."*
-- **RFC 5011 automated trust anchor rollover** — no rollover state, no anchor management in
-  this crate. The root anchor is compiled in with a `trust-anchor` config override behind a
-  `TrustAnchorSource` port, because *"RFC 5011 automated rollover needs state that survives
-  restarts, which would drag the storage layer into the validator phase for a rollover that
-  is pre-announced months ahead."* Accepted consequence: *"a KSK roll needs a release or a
-  file edit, and missing one SERVFAILs every lookup — this is a monitoring obligation, not
-  code."*
+- **RFC 5011 automated trust anchor rollover** — no rollover state, no anchor management
+  in this crate. The root anchor is compiled in with a `trust-anchor` config override
+  behind a `TrustAnchorSource` port, because *"RFC 5011 automated rollover needs state
+  that survives restarts, which would drag the storage layer into the validator phase for
+  a rollover that is pre-announced months ahead."* Accepted consequence: *"a KSK roll
+  needs a release or a file edit, and missing one SERVFAILs every lookup — this is a
+  monitoring obligation, not code."*
 - **Multi-node or replicated deployment** — no serialisation format for cross-node message
   exchange.
 
@@ -1233,8 +1241,8 @@ following passes the gate silently if not separately gated:
 These are genuinely undecided and must be settled at the keyboard rather than assumed:
 
 - **The exact v1 rrtype set.** The scope says *"every v1 rrtype"* without enumerating.
-  Derived here from downstream need: `A`, `AAAA`, `CNAME`, `NS`, `SOA`, `PTR`, `MX`, `TXT`,
-  `SRV`, `DNSKEY`, `DS`, `RRSIG`, `NSEC`, `NSEC3`, `NSEC3PARAM`, `OPT`, plus opaque
+  Derived here from downstream need: `A`, `AAAA`, `CNAME`, `NS`, `SOA`, `PTR`, `MX`,
+  `TXT`, `SRV`, `DNSKEY`, `DS`, `RRSIG`, `NSEC`, `NSEC3`, `NSEC3PARAM`, `OPT`, plus opaque
   unknown. `CAA`, `DNAME`, `SVCB`/`HTTPS`, `NAPTR` and `TLSA` are required by no named
   phase and fall safely through `RData::Unknown`, which is what makes this survivable.
 - **Inbound ECS handling** — preserve in the decoded message and drop on re-encode, strip
@@ -1246,6 +1254,6 @@ These are genuinely undecided and must be settled at the keyboard rather than as
 - **"Fuzz clean overnight" has no defined duration, corpus or machine.** As written it is
   unfalsifiable. Fix a wall-clock figure, a seeded corpus and a location (CI or local)
   before claiming the gate.
-- **The differential agreement predicate** when the two implementations legitimately differ
-  (compression choices being the obvious case). The recommendation above is semantic
-  comparison via double decode; record it as the decision.
+- **The differential agreement predicate** when the two implementations legitimately
+  differ (compression choices being the obvious case). The recommendation above is
+  semantic comparison via double decode; record it as the decision.

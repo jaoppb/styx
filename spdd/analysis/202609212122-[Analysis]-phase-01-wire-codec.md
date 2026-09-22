@@ -411,29 +411,28 @@ Testing strategy, which is the substance of this phase rather than an afterthoug
   what did", and the server loop (Phase 2, which owns *"TC bit and TCP fallback"*) sets
   TC.** The codec supplies the fact; policy stays in the phase that owns policy.
 
-- **How much of DNSSEC canonical form belongs in Phase 1.**
-  *Trade-offs:* RRSIG verification in Phase 6 requires re-encoding an RRset in RFC 4034
-  canonical form — names uncompressed and lowercased, records sorted by canonical RDATA
-  ordering, original TTL substituted. If Phase 1 ships only a compressing encoder,
-  Phase 6 must either reach back into this crate or grow a second, divergent encoder — and
-  two encoders that must agree byte-for-byte on a security boundary is a bug factory.
-  → **Recommendation: Phase 1 ships an explicit *uncompressed, canonical* encode mode for
-  names and RDATA alongside the normal compressing encode, even though the phase spec does
-  not name it.** It is cheap now, it is the same code path with compression disabled and
-  names lowercased, and it is precisely the kind of thing the project's own warning covers:
+- **How much of DNSSEC canonical form belongs in Phase 1.** *Trade-offs:* RRSIG
+  verification in Phase 6 requires re-encoding an RRset in RFC 4034 canonical form — names
+  uncompressed and lowercased, records sorted by canonical RDATA ordering, original TTL
+  substituted. If Phase 1 ships only a compressing encoder, Phase 6 must either reach back
+  into this crate or grow a second, divergent encoder — and two encoders that must agree
+  byte-for-byte on a security boundary is a bug factory. → **Recommendation: Phase 1 ships
+  an explicit *uncompressed, canonical* encode mode for names and RDATA alongside the
+  normal compressing encode, even though the phase spec does not name it.** It is cheap
+  now, it is the same code path with compression disabled and names lowercased, and it is
+  precisely the kind of thing the project's own warning covers:
   *"Time injection cannot be retrofitted into a validator; it is a rewrite."* The same
   logic applies to canonical form. This is flagged again under Gaps, because it is the one
   scope judgement in this analysis that goes beyond the literal phase spec.
 
-- **Error granularity.**
-  *Trade-offs:* one coarse `MalformedMessage` is simpler; a fine-grained enum is more code
-  but carries information the resolver actually branches on.
-  → **Recommendation: fine-grained, `thiserror`-derived, with truncation, compression-loop
-  and malformed-OPT as *distinct* variants.** Phase 3's forwarder needs truncation to mean
-  "retry over TCP", Phase 5's infrastructure cache records *"per-nameserver EDNS
-  capability"* and needs malformed-OPT to mean "this server does not do EDNS", and Phase 10's
-  query log wants to count decode failures by reason. Collapsing them now costs three
-  later phases the signal they need.
+- **Error granularity.** *Trade-offs:* one coarse `MalformedMessage` is simpler; a
+  fine-grained enum is more code but carries information the resolver actually branches
+  on. → **Recommendation: fine-grained, `thiserror`-derived, with truncation,
+  compression-loop and malformed-OPT as *distinct* variants.** Phase 3's forwarder needs
+  truncation to mean "retry over TCP", Phase 5's infrastructure cache records
+  *"per-nameserver EDNS capability"* and needs malformed-OPT to mean "this server does not
+  do EDNS", and Phase 10's query log wants to count decode failures by reason. Collapsing
+  them now costs three later phases the signal they need.
 
 - **Section representation.**
   *Trade-offs:* trusting the header's count fields is simpler; treating them as a hint and
@@ -502,8 +501,8 @@ Testing strategy, which is the substance of this phase rather than an afterthoug
   argues for strip-on-forward at minimum; the codec should at least represent it so the
   decision can be made in a policy layer rather than forced here.
 
-- **Case-sensitivity policy on `Name` is not stated anywhere.** Four later phases depend on
-  it (cache key, matcher trie key, bailiwick comparison, DNSSEC canonical form). A
+- **Case-sensitivity policy on `Name` is not stated anywhere.** Four later phases depend
+  on it (cache key, matcher trie key, bailiwick comparison, DNSSEC canonical form). A
   recommendation is given above, but it is a recommendation, not a recorded decision.
 
 - **Whether the message type retains the original bytes.** DNSSEC verification and any
@@ -514,8 +513,8 @@ Testing strategy, which is the substance of this phase rather than an afterthoug
 - **TTL decrement is named in scope without saying who owns it.** The phase spec says
   *"every label offset and TTL decrement"* must be checked, but TTL decrement is a *cache*
   behaviour (Phase 4: *"TTL handling, RFC 2308 negative caching"*), not a codec behaviour.
-  *Needs clarification:* whether `styx-proto` exposes a checked TTL-adjustment operation on
-  its TTL type (recommended — it keeps the arithmetic tax paid in one place and gives
+  *Needs clarification:* whether `styx-proto` exposes a checked TTL-adjustment operation
+  on its TTL type (recommended — it keeps the arithmetic tax paid in one place and gives
   Phase 4 a saturating primitive) or whether the phrase is simply pointing at the lint
   regime rather than assigning ownership.
 
@@ -583,14 +582,14 @@ Testing strategy, which is the substance of this phase rather than an afterthoug
   than checked arithmetic sprinkled at each call site; plus the fuzz targets named in the
   requirement.
 
-- **`panic = "deny"` is load-bearing and its real mitigation arrives eleven phases later.**
-  *"In a single process, a panic in a Leptos request handler takes DNS down for the whole
-  house. The lint helps; a `catch_unwind` boundary around the web layer and a supervised
-  task model are the real mitigation."* Those land in Phase 12 — Cutover hardening.
-  *Impact:* between Phase 1 and Phase 12, the lint is the only thing standing between a
-  malformed packet from the LAN and a dead resolver. *Mitigation direction:* treat the
-  decode-arbitrary-bytes fuzz target as a panic-freedom proof, not a crash hunt; forbid
-  `unwrap`/`expect` outside tests via the `no-unwrap-expect` rule Phase 0 enables.
+- **`panic = "deny"` is load-bearing and its real mitigation arrives eleven phases
+  later.** *"In a single process, a panic in a Leptos request handler takes DNS down for
+  the whole house. The lint helps; a `catch_unwind` boundary around the web layer and a
+  supervised task model are the real mitigation."* Those land in Phase 12 — Cutover
+  hardening. *Impact:* between Phase 1 and Phase 12, the lint is the only thing standing
+  between a malformed packet from the LAN and a dead resolver. *Mitigation direction:*
+  treat the decode-arbitrary-bytes fuzz target as a panic-freedom proof, not a crash hunt;
+  forbid `unwrap`/`expect` outside tests via the `no-unwrap-expect` rule Phase 0 enables.
 
 - **The oracle can rot into a real dependency.** If `hickory-proto` ever migrates from
   `[dev-dependencies]` to `[dependencies]` — through a transitive path, a feature flag, or
@@ -600,11 +599,11 @@ Testing strategy, which is the substance of this phase rather than an afterthoug
   `just gate`, both run on every push.
 
 - **The architecture gate may be silently inert.** A recorded project risk, spiked
-  2026-09-21 against arch-lint 0.5.0: the committed `arch-lint.toml` contains `[[layers]]`,
-  which routes arch-lint to its tree-sitter engine; that engine ships exactly one grammar,
-  `tree-sitter-kotlin-ng`, and filters discovery to `.kt`/`.kts`. On a Rust repo it
-  analyses **zero files and exits 0** — including the AL001–AL013 rules. Without
-  `[[layers]]`, the **syn** engine runs AL001–AL013 plus `[[scopes]]`,
+  2026-09-21 against arch-lint 0.5.0: the committed `arch-lint.toml` contains
+  `[[layers]]`, which routes arch-lint to its tree-sitter engine; that engine ships
+  exactly one grammar, `tree-sitter-kotlin-ng`, and filters discovery to `.kt`/`.kts`. On
+  a Rust repo it analyses **zero files and exits 0** — including the AL001–AL013 rules.
+  Without `[[layers]]`, the **syn** engine runs AL001–AL013 plus `[[scopes]]`,
   `[[deny-scope-dep]]` and `[[restrict-use]]`, which do enforce layering on Rust by path
   glob. *Impact on Phase 1:* if Phase 0's replacement is incomplete, this phase's layering
   and its `no-unwrap-expect` enforcement are theatre, and an inert config looks identical
@@ -619,14 +618,14 @@ Testing strategy, which is the substance of this phase rather than an afterthoug
   feature isolation at all. *Mitigation direction:* assert both directions with deliberate
   violations, as Phase 0 does for layering.
 
-- **A codec bug is invisible and compounds.** Phases 1 through 7 *"produce nothing a human
-  can look at except `dig` output"*, and because the cutover is last there is no
-  operational feedback and *"no one is waiting on it either"* — the project records this as
-  concentrating scope risk *"into one long stretch with neither visible progress nor
-  external pressure."* A subtle misparse here surfaces as an inexplicable recursion or
-  validation failure several phases downstream. *Mitigation direction:* the differential
-  oracle is the entire answer; treat any disagreement with `hickory-proto` as a defect in
-  styx until proven otherwise.
+- **A codec bug is invisible and compounds.** Phases 1 through 7
+  *"produce nothing a human can look at except `dig` output"*, and because the cutover is
+  last there is no operational feedback and *"no one is waiting on it either"* — the
+  project records this as concentrating scope risk
+  *"into one long stretch with neither visible progress nor external pressure."* A subtle
+  misparse here surfaces as an inexplicable recursion or validation failure several phases
+  downstream. *Mitigation direction:* the differential oracle is the entire answer; treat
+  any disagreement with `hickory-proto` as a defect in styx until proven otherwise.
 
 - **Two correct encoders can emit different bytes.** Name compression admits choices, so
   byte-for-byte equality against the oracle is too strong a predicate for the encode
@@ -636,8 +635,9 @@ Testing strategy, which is the substance of this phase rather than an afterthoug
 
 - **DNSSEC canonical form retrofitted later becomes a second encoder.** See the
   corresponding design decision. Two encoders that must agree on a security boundary is a
-  structural hazard; the project's own precedent for this class of problem is the injectable
-  `Clock` — *"Time injection cannot be retrofitted into a validator; it is a rewrite."*
+  structural hazard; the project's own precedent for this class of problem is the
+  injectable `Clock` —
+  *"Time injection cannot be retrofitted into a validator; it is a rewrite."*
 
 - **Memory amplification from attacker-controlled counts and lengths.** Header counts,
   RDLENGTH, and EDNS option lengths are all attacker-supplied numbers that could drive

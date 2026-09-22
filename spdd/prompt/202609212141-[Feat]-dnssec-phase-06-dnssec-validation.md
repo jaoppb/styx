@@ -485,7 +485,9 @@ proven NXDOMAIN travel the same path.
 
 ---
 
-### GROUP 6a — Positive chain (warn-only). Do not merge with 6b, 6c or 6d
+### GROUP 6a — Positive chain (warn-only)
+
+**Do not merge with 6b, 6c or 6d.**
 
 #### 6a.1 — Create the crate `styx-dnssec`
 
@@ -633,7 +635,9 @@ proven NXDOMAIN travel the same path.
 
 ---
 
-### GROUP 6b — NSEC denial of existence (warn-only). Do not merge with 6a, 6c or 6d
+### GROUP 6b — NSEC denial of existence (warn-only)
+
+**Do not merge with 6a, 6c or 6d.**
 
 #### 6b.1 — Define `DenialProof` and `NsecProof`
 
@@ -691,7 +695,9 @@ proven NXDOMAIN travel the same path.
 
 ---
 
-### GROUP 6c — NSEC3, opt-out, and the mandatory iterations cap (warn-only). Do not merge with 6a, 6b or 6d
+### GROUP 6c — NSEC3, opt-out, and the mandatory iterations cap (warn-only)
+
+**Do not merge with 6a, 6b or 6d.**
 
 #### 6c.1 — Define `Nsec3Params` and the cap check
 
@@ -766,7 +772,9 @@ proven NXDOMAIN travel the same path.
 
 ---
 
-### GROUP 6d — `ChainSource`, both feeding strategies, then the hard-fail flip. Do not merge with 6a, 6b or 6c
+### GROUP 6d — `ChainSource`, both feeding strategies, then the hard-fail flip
+
+**Do not merge with 6a, 6b or 6c.**
 
 #### 6d.1 — Define `ChainSource`, `ChainMaterial`, `ZoneCutMaterial`
 

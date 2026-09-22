@@ -47,9 +47,20 @@ md: _rumdl-version
     @echo "── markdown ───────────────────────────────────────────────────────"
     rumdl check .
 
-[doc("Apply markdown auto-fixes. NOT part of the gate — it writes to files.")]
+[doc("Apply structural markdown auto-fixes. NOT part of the gate — it writes to files.")]
 md-fix: _rumdl-version
     rumdl fmt .
+
+# Rewraps prose to the configured width. Separate from md-fix because it is a
+# bigger hammer and should be named as one: it rewrites paragraphs wholesale.
+#
+# Verified safe on the 26 SPDD contracts before the one-off reflow that retired
+# the spdd/** exemption: tables and mermaid blocks came through byte-identical,
+# and only prose was rewrapped. Still not part of `gate` — a gate that edits the
+# working tree is not a gate.
+[doc("Rewrap markdown prose to the configured width. NOT part of the gate.")]
+md-reflow: _rumdl-version
+    rumdl fmt . --config 'MD013.reflow = true'
 
 _rumdl-version:
     #!/usr/bin/env bash

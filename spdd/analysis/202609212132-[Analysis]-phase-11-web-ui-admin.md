@@ -166,7 +166,10 @@ rebuild proceeds from the remaining lists. The staleness badge and a manual
 
 ## Domain Concept Identification
 
-### Existing Concepts (from prior phases — greenfield, so "existing" means "specified and built by phases 0–10, not yet written")
+### Existing Concepts
+
+From prior phases. The project is greenfield, so "existing" here means
+"specified and built by phases 0–10, not yet written".
 
 - **Admin credential**: the single Argon2id password hash persisted in Turso.
   Business purpose: gate every mutation and every view of the admin surface.

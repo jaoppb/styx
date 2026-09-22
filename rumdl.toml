@@ -6,21 +6,25 @@
 # surviving record of why the gate has the shape it has. Documentation is a
 # deliverable here, not a by-product, so it is gated like one.
 #
-# TWO TIERS, because the repository has two authors:
+# ONE POLICY, applied to every document.
 #
-#   Hand-written prose  (docs/adr/**, ROADMAP.md, gate-selftest/README.md)
-#       A person chooses every line break. Full rule set, line length included.
+# This file used to carry a [per-file-ignores] block exempting spdd/** from the
+# line-length rule, because those documents are emitted by the /spdd-* commands
+# and a wrapping rule those commands did not implement would have failed on the
+# next generated document through no author's fault.
 #
-#   Generated contracts (spdd/**)
-#       Emitted by the /spdd-* commands, which decide their own wrapping and
-#       have never heard of this linter. Structural rules apply; the
-#       line-length rule does NOT — see [per-file-ignores] below.
+# That exemption is gone, and it was retired the way it was always supposed to
+# be — by removing the reason for it, not by widening it:
 #
-# Measured against this repository before any of this was written: at the
-# default width of 80 the hand-written prose reported ~12 findings and spdd/
-# reported 7336 — over 99% of everything found, all of it one rule. At width 90
-# the hand-written tier reports ZERO and spdd/ still reports ~1190. No single
-# threshold serves both populations.
+#   1. The five /spdd-* command definitions in .claude/commands/ were given a
+#      "Markdown Output Norms" block, so generated documents are now written to
+#      this policy in the first place.
+#   2. The 26 existing contracts were reflowed to 90 columns in one pass, and
+#      the handful of over-long headings that no reflow can fix were shortened
+#      by moving their qualifiers into the body.
+#
+# If a generated document ever fails this gate again, the fix is to correct
+# what the command emits — not to reintroduce an exemption here.
 # ===========================================================================
 
 [global]
@@ -29,8 +33,9 @@ respect_gitignore = true
 
 exclude = [
     "target/**",
-    # Vendored tool definitions. Not authored in this project, so the
-    # repository's gate has no business holding an opinion about them.
+    # Vendored tool definitions. Note that the /spdd-* files here ARE now
+    # maintained by this project, so this exclusion is weaker than it was;
+    # bringing them under the gate costs ~271 fixes and has not been done.
     ".claude/**",
     # Fixture E is a DELIBERATE violation and must not fail the normal run.
     #
@@ -46,36 +51,21 @@ exclude = [
 ]
 
 [MD013]
-# 90, not the default 80, because 90 is the width the ADRs and the SPDD canvas
-# are already wrapped to. At 80 this gate would start red with ~12 findings
-# that are stylistic disagreements rather than defects, and a gate that starts
-# red teaches people to ignore it.
-#
-# `tables` is left at its default (exempt): a markdown table cannot be wrapped
-# and is not a defect for being wide.
+# 90, not the default 80, because 90 is the width the ADRs and the SPDD canvases
+# are wrapped to. At 80 this gate would have started red with findings that are
+# stylistic disagreements rather than defects, and a gate that starts red
+# teaches people to ignore it.
 line-length = 90
 
-# ===========================================================================
-# The generated tier.
+# Three things this rule cannot meaningfully ask anyone to wrap, and so does not:
 #
-# spdd/** is exempt from the LINE-LENGTH RULE ONLY. Every structural rule —
-# unlabelled code fences, headings ending in punctuation, emphasis standing in
-# for a heading, stray blank lines in blockquotes — still applies there, and
-# those are the findings that indicate a real defect in a generated document.
+#   tables       (default: exempt) — a column cannot be broken across lines.
+#   code-blocks  — a directory tree, a console transcript or a code sample means
+#                  exactly what its layout says. Rewrapping one corrupts it.
+#   code-spans   — a line whose length is driven by a single inline code span,
+#                  such as a full type signature, has no break point in it.
 #
-# Why the exemption exists: those documents are emitted by the /spdd-* command
-# templates, which choose their own wrapping. A wrapping rule they do not
-# implement makes this gate go red on the next generated document through no
-# author's fault, and a gate that fails for reasons nobody caused is a gate
-# that gets bypassed.
-#
-# THIS EXEMPTION IS A SYMPTOM, NOT A RESOLUTION. The real fix is to teach the
-# SPDD command templates a wrap width, after which this block can be deleted
-# and the two tiers collapse back into one policy.
-#
-# Adding a second rule to this list is a change to what the gate MEANS, and
-# deserves the same scrutiny as weakening a clippy lint. Fixture E is what
-# notices if the list quietly grows.
-# ===========================================================================
-[per-file-ignores]
-"spdd/**" = ["MD013"]
+# These are exemptions for text that *cannot* be wrapped, not for text that is
+# merely inconvenient to wrap. Prose has no exemption.
+code-blocks = false
+code-spans = false

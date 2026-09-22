@@ -5,8 +5,8 @@
 > a Leptos admin UI. Single process, single binary, one box.
 >
 > This document is **self-contained**. The design record it was derived from is being
-> retired, so every decision, rationale, accepted consequence, non-goal and risk that bears
-> on this phase is written out in full here rather than cited.
+> retired, so every decision, rationale, accepted consequence, non-goal and risk that
+> bears on this phase is written out in full here rather than cited.
 >
 > **Codebase state: greenfield, no existing implementation.** No git repository, no Cargo
 > workspace, no `.rs` file. Everything below is grounded in the settled design record, not
@@ -23,11 +23,11 @@ delegation chain from the root to an authoritative answer, and expose it behind 
 - **Create** a descent that is private by construction — **relaxed QNAME minimisation
   (RFC 9156) is present from the first recursion test**, not added later.
 - **Create** an infrastructure cache holding delegations, NS sets, and per-nameserver RTT
-  and EDNS capability, keyed by zone and nameserver, private to this crate and structurally
-  separate from the global answer cache.
+  and EDNS capability, keyed by zone and nameserver, private to this crate and
+  structurally separate from the global answer cache.
 - **Create** the `RecursionDiagnostics` read model, published by this crate and consumed
-  directly by the admin/web layer, never routed through the pool, and named distinctly from
-  the pool's `HealthState` so the two are never conflated.
+  directly by the admin/web layer, never routed through the pool, and named distinctly
+  from the pool's `HealthState` so the two are never conflated.
 - **Preserve** the hot path's I/O-free property: the descent speaks DNS and nothing else —
   no database, no disk.
 - **Collect** DNSSEC chain material en route (DS RRsets that arrive unasked in DO=1
@@ -39,8 +39,8 @@ that is an explicit v1 non-goal; local records and per-zone overrides are resolu
 filtering concerns, not a zone-file server, so the recursor only ever *follows*
 delegations. No EDNS Client Subnet, ever — an explicit v1 non-goal because it leaks client
 topology. No DNS-over-QUIC outbound — also an explicit v1 non-goal — so the descent speaks
-Do53 over UDP with TCP fallback only. No multi-node deployment, so the infrastructure cache
-is process-local and needs no coherence protocol.
+Do53 over UDP with TCP fallback only. No multi-node deployment, so the infrastructure
+cache is process-local and needs no coherence protocol.
 
 **Value.** This is the first of the two hand-written security-critical subsystems in v1.
 Its correctness is the difference between a resolver and a cache-poisoning vector, and its
@@ -301,17 +301,17 @@ Descent --> RecursionError : fails with
 ### Entity notes
 
 - **`Descent` is I/O-free.** It is a pure state machine: fed a parsed response, it returns
-  the next `DescentAction`. The socket lives in the `application`/`infrastructure` modules.
-  This is what makes the correctness of the resolver testable without a network.
-- **`MinimisationState` wraps *every* outbound question.** There is no code path that sends
-  the client's original qname without going through it. That is the structural guarantee
-  behind the privacy property.
+  the next `DescentAction`. The socket lives in the `application`/`infrastructure`
+  modules. This is what makes the correctness of the resolver testable without a network.
+- **`MinimisationState` wraps *every* outbound question.** There is no code path that
+  sends the client's original qname without going through it. That is the structural
+  guarantee behind the privacy property.
 - **`InfraCache` and the global answer cache share nothing** — not a key space, not an
   eviction policy, not a type. See Approach for why.
 - **`RecursionDiagnostics` and `HealthState` are deliberately different types with
   deliberately different names.** `HealthState` (owned by the pool, from phase 3) carries
-  SRTT EWMA, consecutive failures, circuit state and last-probe-at, and answers "should the
-  pool send the next query here?". `RecursionDiagnostics` answers "is the internet's
+  SRTT EWMA, consecutive failures, circuit state and last-probe-at, and answers "should
+  the pool send the next query here?". `RecursionDiagnostics` answers "is the internet's
   delegation infrastructure reachable from this box?". Different question, different
   consumer, different lifetime.
 - **No new entity wraps something a plain Rust type already expresses.** `Name`, `Ttl`,
@@ -323,15 +323,15 @@ Descent --> RecursionError : fails with
 
 ### 1. Crate shape and layering
 
-- `styx-recursion` is a **feature crate**: `domain`, `application` and `infrastructure` are
-  **modules inside it**, not separate crates. Cargo enforces feature-to-feature isolation;
-  arch-lint enforces layering *within* the crate.
+- `styx-recursion` is a **feature crate**: `domain`, `application` and `infrastructure`
+  are **modules inside it**, not separate crates. Cargo enforces feature-to-feature
+  isolation; arch-lint enforces layering *within* the crate.
 - **Feature crates never depend on each other.** Cross-feature needs are expressed as a
   trait (a port) in the consumer's `domain` module and implemented by an adapter in the
   `styx` binary. `styx-recursion` therefore depends on **no other feature crate**.
 - **`styx-proto` is the single exception**: it is shared foundation, not a feature crate,
-  because every crate parses through the wire codec. The arch-lint `[[restrict-use]]` rules
-  must be written so as not to forbid it.
+  because every crate parses through the wire codec. The arch-lint `[[restrict-use]]`
+  rules must be written so as not to forbid it.
 - `domain` — the `Descent` state machine, `MinimisationState`, `ZoneCut`, `Delegation`,
   `NsSet`, bailiwick predicates, `DescentBudget`, `RecursionError`. Zero I/O, zero
   `async`, zero clock reads (time arrives as a parameter).
@@ -347,11 +347,11 @@ Descent --> RecursionError : fails with
 a pool holds upstreams of mixed kinds each with its own health and behaviour config, and
 **recursion is an implementation of the same port, not a separate server mode**.
 
-*Why:* making recursion "a mode" would fork the pool, the four selection strategies and the
-health model into two shapes, and would make a mixed pool — a recursor sitting alongside a
-forwarder with a selection strategy choosing between them — impossible to express. The
-server loop, the pipeline order and the pool therefore change **not at all** to accommodate
-this phase.
+*Why:* making recursion "a mode" would fork the pool, the four selection strategies and
+the health model into two shapes, and would make a mixed pool — a recursor sitting
+alongside a forwarder with a selection strategy choosing between them — impossible to
+express. The server loop, the pipeline order and the pool therefore change **not at all**
+to accommodate this phase.
 
 A corollary carried from the health design: **there is no health-check trait.** The pool
 owns a concrete `HealthState` per member, fed by the outcomes of real traffic it already
@@ -367,32 +367,32 @@ generate no probe traffic at all.
 **This is the load-bearing design commitment of the phase.**
 
 - **The leak it prevents.** A naive recursor sends the full qname to the root and to every
-  TLD server on the way down. To resolve `secret-project.internal.example.com`, the root is
-  told the whole string when it only needs to know `com`, and the `com` servers are told the
-  whole string when they only need `example.com`. **This is the same leak that the EDNS
-  Client Subnet non-goal exists to prevent, one layer up**: ECS is deliberately omitted from
-  v1 because it leaks client topology to upstreams; QNAME minimisation stops styx leaking
-  *what is being asked* to every server on the path down. Refusing one while shipping the
-  other would be incoherent.
-- **The mechanism.** The descent **sends only the next label** below the current zone cut —
-  as an `NS` query for the intermediate steps, and as the client's original qtype only at
-  the final step, once the descent has reached the zone that actually holds the name.
+  TLD server on the way down. To resolve `secret-project.internal.example.com`, the root
+  is told the whole string when it only needs to know `com`, and the `com` servers are
+  told the whole string when they only need `example.com`. **This is the same leak that
+  the EDNS Client Subnet non-goal exists to prevent, one layer up**: ECS is deliberately
+  omitted from v1 because it leaks client topology to upstreams; QNAME minimisation stops
+  styx leaking *what is being asked* to every server on the path down. Refusing one while
+  shipping the other would be incoherent.
+- **The mechanism.** The descent **sends only the next label** below the current zone cut
+  — as an `NS` query for the intermediate steps, and as the client's original qtype only
+  at the final step, once the descent has reached the zone that actually holds the name.
 - **Why relaxed and not strict.** It **falls back to the full qname when a server responds
   badly, because a nontrivial number of real authoritative servers mishandle minimised
   queries.** Strict mode turns a privacy win into outright resolution failure on those
   names, and a resolver that cannot resolve is not private — it is broken. Relaxed mode
   keeps minimisation as the default and degrades **per-server, on evidence**.
 - **Why now and not later.** **It changes what the descent asks at every step**, so it is
-  designed in from the first recursion test; it is not a bolt-on. Every descent test encodes
-  an expected outbound question; retrofitting minimisation means rewriting the core loop and
-  every fixture together. Build it into the first test.
-- **The hardest part is classification.** A server that answers NXDOMAIN, an empty NOERROR,
-  FORMERR, NOTIMP, REFUSED or SERVFAIL to a minimised *intermediate* query may be broken
-  rather than authoritative for that absence. `MinimisationState::on_bad_response` must
-  return `RetryFullQnameSameServer`, `TryNextServer` or `AcceptAsGenuine` — and the
-  **empty non-terminal** case (a name with no records but with descendants, which must yield
-  NOERROR/NODATA rather than NXDOMAIN) is the textbook case where a naive implementation
-  manufactures a false NXDOMAIN.
+  designed in from the first recursion test; it is not a bolt-on. Every descent test
+  encodes an expected outbound question; retrofitting minimisation means rewriting the
+  core loop and every fixture together. Build it into the first test.
+- **The hardest part is classification.** A server that answers NXDOMAIN, an empty
+  NOERROR, FORMERR, NOTIMP, REFUSED or SERVFAIL to a minimised *intermediate* query may be
+  broken rather than authoritative for that absence. `MinimisationState::on_bad_response`
+  must return `RetryFullQnameSameServer`, `TryNextServer` or `AcceptAsGenuine` — and the
+  **empty non-terminal** case (a name with no records but with descendants, which must
+  yield NOERROR/NODATA rather than NXDOMAIN) is the textbook case where a naive
+  implementation manufactures a false NXDOMAIN.
 - **The lesson outlives the descent.** A `MishandlesMinimised` verdict is written to that
   nameserver's `NameserverMetrics` in the infrastructure cache with an expiry, so the next
   descent does not re-learn it — and so the fallback stays scoped to the broken server
@@ -401,9 +401,9 @@ generate no probe traffic at all.
 ### 4. The infrastructure cache is a separate store
 
 **Two structurally different caches.** The *answer cache* (RRsets and messages, keyed by
-question) is global and lives in `styx-resolution`. The *infrastructure cache* (delegations,
-NS sets, per-nameserver RTT and EDNS capability, keyed by zone and nameserver) **lives in
-`styx-recursion` and is used only by recursion**.
+question) is global and lives in `styx-resolution`. The *infrastructure cache*
+(delegations, NS sets, per-nameserver RTT and EDNS capability, keyed by zone and
+nameserver) **lives in `styx-recursion` and is used only by recursion**.
 
 *Why separate rather than a namespace inside the answer cache:*
 
@@ -416,9 +416,9 @@ NS sets, per-nameserver RTT and EDNS capability, keyed by zone and nameserver) *
 | Visibility | global | private to this crate |
 
 Merging them would mean either polluting a question-keyed global cache with topology and
-performance data, or subjecting a performance store to answer-cache eviction policy. It also
-keeps the crate boundary honest: because the infrastructure cache is private, no other crate
-can grow a dependency on recursion's internal topology model.
+performance data, or subjecting a performance store to answer-cache eviction policy. It
+also keeps the crate boundary honest: because the infrastructure cache is private, no
+other crate can grow a dependency on recursion's internal topology model.
 
 ### 5. Diagnostics travel their own path
 
@@ -431,58 +431,59 @@ vs `HealthState` — so they are never conflated.**
 fields that are permanently meaningless for a forwarder. That is the same shape of mistake
 the DNSSEC `ChainSource` port exists to avoid on the other side — widening the `Upstream`
 port with a "chain material observed en route" field that would be permanently empty for
-forwarders. The distinct naming is deliberate and must survive into the UI: conflating "the
-pool should stop sending here" with "the root servers are unreachable from this box" makes
-an outage undiagnosable.
+forwarders. The distinct naming is deliberate and must survive into the UI: conflating
+"the pool should stop sending here" with "the root servers are unreachable from this box"
+makes an outage undiagnosable.
 
 Publication is a read model — an `ArcSwap`-style snapshot replaced wholesale, so the
 admin/web layer reads without contending with the hot path.
 
 ### 6. DO=1 during descent, and chain material retained now
 
-DNSSEC validation is its own crate behind a `ChainSource` port: **`styx-recursion` *pushes*
-chain material it already collected during descent (DS RRsets arrive unasked in DO=1
-referrals, per RFC 4035 §3.1.4), while forwarder paths *pull* DS/DNSKEY on demand. One
-validator, two feeding strategies.**
+DNSSEC validation is its own crate behind a `ChainSource` port: **`styx-recursion`
+*pushes* chain material it already collected during descent (DS RRsets arrive unasked in
+DO=1 referrals, per RFC 4035 §3.1.4), while forwarder paths *pull* DS/DNSKEY on demand.
+One validator, two feeding strategies.**
 
 This phase therefore sets DO=1 and **retains** the DS RRsets it receives, even though the
 validator does not exist yet. *Why carry work for a consumer that does not exist:* the
 material arrives unasked, so collecting it costs nothing on the wire. The alternatives are
-re-querying later — doubling descent traffic, and possibly reaching a different server with
-a different view — or redesigning the descent one phase later.
+re-querying later — doubling descent traffic, and possibly reaching a different server
+with a different view — or redesigning the descent one phase later.
 
 ### 7. Configuration
 
 **Config has two stores with a hard boundary: file owns infrastructure, DB owns policy.**
 Root hints, the recursor's presence in a pool, its budgets and timeouts all come from the
 **TOML file**, because they are needed before the database exists or in order to reach it.
-No overlap means no precedence rule, and it is what makes "the hot path touches no I/O" and
-"a DB outage degrades logging and admin, never resolution" true: a dead DB cannot touch
-resolution because nothing resolution needs lives there. **Accepted consequence: changing an
-upstream requires SSH and a restart, which is the thing people most want to do from the UI.**
+No overlap means no precedence rule, and it is what makes "the hot path touches no I/O"
+and "a DB outage degrades logging and admin, never resolution" true: a dead DB cannot
+touch resolution because nothing resolution needs lives there. **Accepted consequence:
+changing an upstream requires SSH and a restart, which is the thing people most want to do
+from the UI.**
 
 ### 8. Errors and observability
 
 - Errors are `thiserror` enums returned through `Result<T, E>`. There is no exception
-  hierarchy, no global handler, no ambient error mapping — a descent failure is a value that
-  the `Upstream` implementation converts into an RCODE at the crate boundary.
-- **No panic path.** `panic = "deny"` is load-bearing: in a single process, a panic anywhere
-  takes DNS down for the whole house, and the `catch_unwind` boundary that really mitigates
-  it does not arrive until the cutover-hardening phase. Until then the lint is the only
-  guard, so the descent must contain no unchecked indexing, no `unwrap` on parsed data, and
-  no arithmetic that can overflow on hostile TTLs or counts.
+  hierarchy, no global handler, no ambient error mapping — a descent failure is a value
+  that the `Upstream` implementation converts into an RCODE at the crate boundary.
+- **No panic path.** `panic = "deny"` is load-bearing: in a single process, a panic
+  anywhere takes DNS down for the whole house, and the `catch_unwind` boundary that really
+  mitigates it does not arrive until the cutover-hardening phase. Until then the lint is
+  the only guard, so the descent must contain no unchecked indexing, no `unwrap` on parsed
+  data, and no arithmetic that can overflow on hostile TTLs or counts.
 - Observability is `tracing`: one span per descent, one child span per outbound query,
   carrying the zone cut, the question **as actually sent** (minimised or full), the server
-  chosen, and the classification of the response. This is also what makes a differential-run
-  disagreement diagnosable instead of a shrug.
+  chosen, and the classification of the response. This is also what makes a
+  differential-run disagreement diagnosable instead of a shrug.
 
 ### 9. Alternatives considered and rejected
 
 - **Strict QNAME minimisation (no fallback)** — rejected: a nontrivial number of real
   authoritative servers mishandle minimised queries, so strict mode converts a privacy win
   into resolution failures on real names.
-- **QNAME minimisation as a later increment** — rejected: it changes what is asked at every
-  step, so the loop and every fixture would be rewritten together.
+- **QNAME minimisation as a later increment** — rejected: it changes what is asked at
+  every step, so the loop and every fixture would be rewritten together.
 - **One cache for everything** — rejected: different keys, contents, consumers and
   lifetimes, and it would leak recursion's topology model across a crate boundary.
 - **Recursion as a distinct server mode** — rejected: forks the pool, the selection
@@ -503,35 +504,39 @@ upstream requires SSH and a restart, which is the thing people most want to do f
 ### Trait (port) relationships
 
 1. `Upstream` (defined in `styx-resolution`'s domain, phase 3) declares
-   `async fn resolve(&self, question: Question) -> Result<Response, UpstreamError>` plus the
-   canary hook used for probing. **`Recursor` implements `Upstream`** — the same port the
-   Do53 forwarder implements.
+   `async fn resolve(&self, question: Question) -> Result<Response, UpstreamError>` plus
+   the canary hook used for probing. **`Recursor` implements `Upstream`** — the same port
+   the Do53 forwarder implements.
 2. `Clock` (defined in phase 2) is injected into `Recursor` and into the infrastructure
    cache. Every timeout, RTT sample, TTL expiry and minimisation-verdict expiry reads time
-   through it. It cannot be retrofitted; it is a parameter from the first line of this crate.
+   through it. It cannot be retrofitted; it is a parameter from the first line of this
+   crate.
 3. `Transport` is a trait in `styx-recursion::domain`, implemented in
-   `styx-recursion::infrastructure` by the Do53 UDP/TCP adapter and implemented in tests by a
-   recording fake. It is how the descent state machine stays I/O-free.
-4. `DiagnosticsSink` is a trait in `styx-recursion::domain`; the binary wires the admin/web
-   read-model store into it. `styx-recursion` never names `styx-web` or `styx-admin`.
+   `styx-recursion::infrastructure` by the Do53 UDP/TCP adapter and implemented in tests
+   by a recording fake. It is how the descent state machine stays I/O-free.
+4. `DiagnosticsSink` is a trait in `styx-recursion::domain`; the binary wires the
+   admin/web read-model store into it. `styx-recursion` never names `styx-web` or
+   `styx-admin`.
 5. `ChainMaterialSink` is a trait in `styx-recursion::domain` declaring the *push* half of
-   the validator's `ChainSource`. In this phase the binary wires a no-op adapter into it; the
-   DNSSEC phase replaces that adapter with the real validator. The trait exists now so that
-   phase does not reshape the descent.
+   the validator's `ChainSource`. In this phase the binary wires a no-op adapter into it;
+   the DNSSEC phase replaces that adapter with the real validator. The trait exists now so
+   that phase does not reshape the descent.
 6. `RecursionError` is a `thiserror` enum. It is converted to `UpstreamError` at the
    `Upstream` implementation boundary and never leaks beyond it.
 
 ### Dependencies
 
-1. `styx-recursion` depends on `styx-proto` only. It depends on **no other feature crate**.
-2. `Recursor` (application) holds `Arc<InfraCache>`, `Arc<dyn Clock>`, `Arc<dyn Transport>`,
-   `Arc<dyn DiagnosticsSink>`, `Arc<dyn ChainMaterialSink>` and its config.
-3. `Recursor` drives `Descent` (domain) and never lets `Descent` touch a socket, a clock or
-   a cache.
+1. `styx-recursion` depends on `styx-proto` only. It depends on
+   **no other feature crate**.
+2. `Recursor` (application) holds `Arc<InfraCache>`, `Arc<dyn Clock>`,
+   `Arc<dyn Transport>`, `Arc<dyn DiagnosticsSink>`, `Arc<dyn ChainMaterialSink>` and its
+   config.
+3. `Recursor` drives `Descent` (domain) and never lets `Descent` touch a socket, a clock
+   or a cache.
 4. `InfraCache` (infrastructure) is consulted by `Recursor`, not by `Descent`: the descent
    receives the zone cut and the chosen server as inputs.
-5. The `styx` binary constructs `Recursor`, puts it in a pool alongside forwarders, and wires
-   the diagnostics and chain-material adapters. No feature crate wires another.
+5. The `styx` binary constructs `Recursor`, puts it in a pool alongside forwarders, and
+   wires the diagnostics and chain-material adapters. No feature crate wires another.
 6. `hickory-proto` appears in `[dev-dependencies]` only, used by the fakes, and never in a
    normal or build dependency path.
 
@@ -539,18 +544,19 @@ upstream requires SSH and a restart, which is the thing people most want to do f
 
 1. **`domain`** — `Descent`, `DescentAction`, `ResponseKind`, `DescentBudget`,
    `MinimisationState`, `MinimisationMode`, `FallbackDecision`, `ZoneCut`, `Delegation`,
-   `NsSet`, `Nameserver`, `GlueOrigin`, `CnameChain`, `ChainMaterial`, bailiwick predicates,
-   `RecursionError`, and the `Transport` / `DiagnosticsSink` / `ChainMaterialSink` traits.
-   Depends on `styx-proto` and nothing else. No `async`, no I/O, no clock reads.
+   `NsSet`, `Nameserver`, `GlueOrigin`, `CnameChain`, `ChainMaterial`, bailiwick
+   predicates, `RecursionError`, and the `Transport` / `DiagnosticsSink` /
+   `ChainMaterialSink` traits. Depends on `styx-proto` and nothing else. No `async`, no
+   I/O, no clock reads.
 2. **`application`** — `Recursor`, the descent driver loop, the `Upstream` implementation,
    server selection over `NameserverMetrics`, metric recording, diagnostics assembly,
    `tracing` instrumentation. May depend on `domain`.
-3. **`infrastructure`** — `InfraCache` implementation, `Do53Transport`, `RootHints` loader.
-   May depend on `domain` and `application`.
-4. Arch-lint enforces that `domain` names nothing in `application` or `infrastructure`, and
-   the `cargo tree` gate independently enforces that `styx-recursion` links no other feature
-   crate. Both are needed: **arch-lint reads source text while `cargo tree` reads the link
-   graph.**
+3. **`infrastructure`** — `InfraCache` implementation, `Do53Transport`, `RootHints`
+   loader. May depend on `domain` and `application`.
+4. Arch-lint enforces that `domain` names nothing in `application` or `infrastructure`,
+   and the `cargo tree` gate independently enforces that `styx-recursion` links no other
+   feature crate. Both are needed:
+   **arch-lint reads source text while `cargo tree` reads the link graph.**
 
 ---
 
@@ -562,9 +568,9 @@ Tasks are ordered by dependency. Each is independently verifiable.
 
 1. **Responsibility**: a feature crate with `domain` / `application` / `infrastructure`
    modules, depending only on `styx-proto` plus runtime/util crates.
-2. **Contents**: module tree, `thiserror` `RecursionError`, `tracing` setup usage, crate-level
-   docs stating the two structural commitments (minimisation from the first test; the
-   infrastructure cache is private to this crate).
+2. **Contents**: module tree, `thiserror` `RecursionError`, `tracing` setup usage,
+   crate-level docs stating the two structural commitments (minimisation from the first
+   test; the infrastructure cache is private to this crate).
 3. **Constraints**: workspace lint policy applies unchanged — the 15 denied clippy lints,
    including `indexing_slicing`, `arithmetic_side_effects` and `panic`. `hickory-proto` in
    `[dev-dependencies]` only.
@@ -577,15 +583,15 @@ Tasks are ordered by dependency. Each is independently verifiable.
 1. **Responsibility**: model what a descent learns from a referral.
 2. **Types**: `ZoneCut`, `Delegation`, `NsSet`, `Nameserver`, `GlueOrigin`.
 3. **Logic**:
-   - `Delegation::from_referral(parent_zone, message)` — extracts the NS RRset and any glue,
-     classifying each address as `InBailiwickGlue`, `OutOfBailiwickDiscarded` or (later)
-     `ResolvedSeparately`.
+   - `Delegation::from_referral(parent_zone, message)` — extracts the NS RRset and any
+     glue, classifying each address as `InBailiwickGlue`, `OutOfBailiwickDiscarded` or
+     (later) `ResolvedSeparately`.
    - Out-of-bailiwick glue is **discarded, not deprioritised** — it is a cache-poisoning
      vector, not a quality signal.
    - A referral to the same zone that was asked, or to an ancestor of the current cut, is
      rejected as `DelegationLoop`.
-4. **Constraints**: no address is ever accepted from a server that is not entitled to speak
-   for the name it appears under.
+4. **Constraints**: no address is ever accepted from a server that is not entitled to
+   speak for the name it appears under.
 
 ### 3. Create bailiwick predicates
 
@@ -593,8 +599,8 @@ Tasks are ordered by dependency. Each is independently verifiable.
    this name?".
 2. **Methods**: `is_in_bailiwick(server_zone, record_name) -> bool`, plus the
    referral-acceptance and answer-acceptance predicates built on it.
-3. **Logic**: applied to glue, to referral NS sets and to answers alike, before anything is
-   believed and before anything is offered to the answer cache. The answer cache's own
+3. **Logic**: applied to glue, to referral NS sets and to answers alike, before anything
+   is believed and before anything is offered to the answer cache. The answer cache's own
    bailiwick rules (phase 4) are the second gate, not the first.
 4. **Constraints**: pure functions, exhaustively unit-tested, no I/O.
 
@@ -610,17 +616,17 @@ first.**
 3. **Methods**:
    - `next_question(cut: &ZoneCut) -> Question`
      - In `Relaxed` mode: take the current zone cut's name, prepend **exactly one** label
-       from the target, and ask `NS` for it — unless this is the final step (the prefix now
-       equals the target), in which case ask the client's original qtype.
+       from the target, and ask `NS` for it — unless this is the final step (the prefix
+       now equals the target), in which case ask the client's original qtype.
      - In `FellBackFullQname` mode: ask the full target with the client's original qtype.
    - `on_bad_response(kind: ResponseKind) -> FallbackDecision`
-     - `FORMERR`, `NOTIMP`, `REFUSED`, `SERVFAIL`, or a timeout to a *minimised intermediate*
-       query → `RetryFullQnameSameServer`, and record a `MishandlesMinimised` verdict against
-       that nameserver.
-     - `NXDOMAIN` at an **intermediate** label → `RetryFullQnameSameServer`. A broken server
-       and a genuinely absent name are indistinguishable here, and treating this as genuine
-       manufactures a false NXDOMAIN. Only an NXDOMAIN for the **full qname**, from a server
-       that has demonstrated it handles minimisation, is `AcceptAsGenuine`.
+     - `FORMERR`, `NOTIMP`, `REFUSED`, `SERVFAIL`, or a timeout to a
+       *minimised intermediate* query → `RetryFullQnameSameServer`, and record a
+       `MishandlesMinimised` verdict against that nameserver.
+     - `NXDOMAIN` at an **intermediate** label → `RetryFullQnameSameServer`. A broken
+       server and a genuinely absent name are indistinguishable here, and treating this as
+       genuine manufactures a false NXDOMAIN. Only an NXDOMAIN for the **full qname**,
+       from a server that has demonstrated it handles minimisation, is `AcceptAsGenuine`.
      - Empty `NOERROR` that is neither referral nor answer at an intermediate label → the
        **empty non-terminal** case: continue the descent with the next label, do **not**
        conclude NODATA for the client's question.
@@ -629,8 +635,8 @@ first.**
 4. **Constraints**:
    - There is **no code path that composes an outbound question without this type.**
    - The fallback is **scoped to the offending nameserver**, persisted as a
-     `MishandlesMinimised(until)` verdict in the infrastructure cache, so the lesson outlives
-     the descent without becoming a global switch.
+     `MishandlesMinimised(until)` verdict in the infrastructure cache, so the lesson
+     outlives the descent without becoming a global switch.
    - A descent that falls back increments the `minimisation_fallbacks` diagnostic counter.
 
 ### 5. Create `DescentBudget`
@@ -641,10 +647,11 @@ first.**
    `started_at`.
 3. **Methods**: `charge_query()`, `descend()`, `elapsed(now)` — each returning
    `Result<(), BudgetExceeded>`.
-4. **Constraints**: all four limits are **named constants with a written rationale in the
-   source**, configurable from the TOML file, never scattered literals — they are the
-   denial-of-service boundary. A glue-resolving sub-descent draws from the **same** outbound
-   query budget as its parent, or nesting defeats the limit.
+4. **Constraints**: all four limits are
+   **named constants with a written rationale in the source**, configurable from the TOML
+   file, never scattered literals — they are the denial-of-service boundary. A
+   glue-resolving sub-descent draws from the **same** outbound query budget as its parent,
+   or nesting defeats the limit.
 
 ### 6. Create `Descent` — the I/O-free state machine
 
@@ -652,25 +659,27 @@ first.**
    `DescentAction`.
 2. **Methods**:
    - `classify(response) -> ResponseKind` — `Referral` / `AuthoritativeAnswer` / `Alias` /
-     `NoDataAtEmptyNonTerminal` / `Lame` / `MinimisationRefused` / `Truncated` / `Malformed`.
-     A server that answers non-authoritatively for a zone it was delegated is `Lame`.
+     `NoDataAtEmptyNonTerminal` / `Lame` / `MinimisationRefused` / `Truncated` /
+     `Malformed`. A server that answers non-authoritatively for a zone it was delegated is
+     `Lame`.
    - `next_action(Option<ParsedResponse>) -> DescentAction` — advance the zone cut on a
      referral, follow an alias on a CNAME, request glue resolution when an NS set has no
      usable address, return the answer, or fail.
 3. **Logic**:
-   - **Glue-less delegation**: when the NS set names servers whose addresses cannot be glued
-     (they are not below the delegated zone), yield `ResolveGlue(name)`; the driver runs a
-     sub-descent under the shared budget.
-   - **Circular glue** (`a.example` served by `ns.b.example` and vice versa, no usable glue):
-     must terminate via the shared budget and `NoReachableNameserver`, never loop.
-   - **CNAME**: push onto `CnameChain`; a repeat is `CnameLoop`. A target outside the current
-     zone restarts the descent from the closest known cut, at cost against the same budget.
-   - **Truncation**: retry over TCP with the **same** question — minimised if that is what was
-     sent. Retrying with the full qname on TC would silently leak.
-   - **Answer below the server's own cut**: subject to the bailiwick predicate like anything
-     else.
-4. **Constraints**: no `async`, no socket, no clock read, no cache handle. Time and choices
-   arrive as parameters.
+   - **Glue-less delegation**: when the NS set names servers whose addresses cannot be
+     glued (they are not below the delegated zone), yield `ResolveGlue(name)`; the driver
+     runs a sub-descent under the shared budget.
+   - **Circular glue** (`a.example` served by `ns.b.example` and vice versa, no usable
+     glue): must terminate via the shared budget and `NoReachableNameserver`, never loop.
+   - **CNAME**: push onto `CnameChain`; a repeat is `CnameLoop`. A target outside the
+     current zone restarts the descent from the closest known cut, at cost against the
+     same budget.
+   - **Truncation**: retry over TCP with the **same** question — minimised if that is what
+     was sent. Retrying with the full qname on TC would silently leak.
+   - **Answer below the server's own cut**: subject to the bailiwick predicate like
+     anything else.
+4. **Constraints**: no `async`, no socket, no clock read, no cache handle. Time and
+   choices arrive as parameters.
 
 ### 7. Create `InfraCache` — the infrastructure cache
 
@@ -686,21 +695,23 @@ first.**
      `EdnsCapability` and `MinimisationVerdict` are learned facts, not records.
    - Bounded by a configured memory budget with an eviction policy; the box is a Raspberry
      Pi, and this store grows with the breadth of names resolved.
-4. **Constraints**: **stores no answers**; the global answer cache stores no topology. Never
-   exposed outside `styx-recursion`. No I/O other than in-memory access — the hot path
-   touches no disk and no database.
+4. **Constraints**: **stores no answers**; the global answer cache stores no topology.
+   Never exposed outside `styx-recursion`. No I/O other than in-memory access — the hot
+   path touches no disk and no database.
 
 ### 8. Create `Do53Transport` and root-hints loading
 
-1. **Responsibility**: send a composed question to a chosen nameserver address and return a
-   parsed response or a transport error.
+1. **Responsibility**: send a composed question to a chosen nameserver address and return
+   a parsed response or a transport error.
 2. **Logic**: UDP first with EDNS0 and **DO=1**; on TC, retry over TCP with the identical
-   question; on a response indicating EDNS intolerance, record `EdnsCapability::Intolerant`
-   and retry without EDNS. Per-query timeout from the injected `Clock`.
-3. **Root hints**: loaded from a path in the **TOML file** (file owns infrastructure), then
-   replaced by a live root NS set via a priming query, which seeds `InfraCache`.
-4. **Constraints**: **no EDNS Client Subnet option is ever attached to an outbound query.**
-   No DoQ. Every response is parsed through `styx-proto`.
+   question; on a response indicating EDNS intolerance, record
+   `EdnsCapability::Intolerant` and retry without EDNS. Per-query timeout from the
+   injected `Clock`.
+3. **Root hints**: loaded from a path in the **TOML file** (file owns infrastructure),
+   then replaced by a live root NS set via a priming query, which seeds `InfraCache`.
+4. **Constraints**:
+   **no EDNS Client Subnet option is ever attached to an outbound query.** No DoQ. Every
+   response is parsed through `styx-proto`.
 
 ### 9. Create `Recursor` — the driver and the `Upstream` implementation
 
@@ -708,33 +719,35 @@ first.**
 2. **Core method**: `resolve(question) -> Result<Response, RecursionError>`
    - Seed a `Descent` from `InfraCache::closest_enclosing_cut` (root hints if cold).
    - Loop: select a server from the NS set by `NameserverMetrics` (lowest SRTT, skipping
-     servers marked lame for this zone or in failure backoff) → compose the question through
-     `MinimisationState` → send via `Transport` → classify → update `InfraCache` metrics and
-     delegations → advance.
+     servers marked lame for this zone or in failure backoff) → compose the question
+     through `MinimisationState` → send via `Transport` → classify → update `InfraCache`
+     metrics and delegations → advance.
    - Accumulate `ChainMaterial` from DO=1 referrals and push it to `ChainMaterialSink`.
-   - Return the answer, or a `RecursionError` the `Upstream` boundary converts to an RCODE.
+   - Return the answer, or a `RecursionError` the `Upstream` boundary converts to an
+     RCODE.
 3. **Canary**: `Upstream`'s probe hook performs a **full descent**, not a single query —
    that is the correct test of a recursor. Probes run only against members idle beyond a
    window and members currently marked down.
 4. **Instrumentation**: one `tracing` span per descent; one child span per outbound query
    recording the zone cut, **the question as actually sent**, the server, and the
    classification.
-5. **Constraints**: returns `Result`, never panics, never blocks the runtime on a lock held
-   across an await.
+5. **Constraints**: returns `Result`, never panics, never blocks the runtime on a lock
+   held across an await.
 
 ### 10. Create `RecursionDiagnostics` and its publication path
 
 1. **Responsibility**: a read model describing root/TLD reachability and descent health.
 2. **Attributes**: per-root reachability with last RTT and last-probed time; per-TLD
-   reachability and last-seen; last successful priming; `descents_total`, `descents_failed`,
-   `minimisation_fallbacks`; `observed_at`.
+   reachability and last-seen; last successful priming; `descents_total`,
+   `descents_failed`, `minimisation_fallbacks`; `observed_at`.
 3. **Publication**: assembled by `Recursor` and published through `DiagnosticsSink` as a
    snapshot replaced wholesale. The admin/web layer reads it **directly**.
 4. **Constraints**:
-   - **Never routed through the pool**, and never merged into or derived from `HealthState`.
-   - The type name, the module name and the UI label must all keep the two distinguishable —
-     `RecursionDiagnostics` answers "is delegation infrastructure reachable from this box?";
-     `HealthState` answers "should the pool send the next query here?".
+   - **Never routed through the pool**, and never merged into or derived from
+     `HealthState`.
+   - The type name, the module name and the UI label must all keep the two distinguishable
+     — `RecursionDiagnostics` answers "is delegation infrastructure reachable from this
+     box?"; `HealthState` answers "should the pool send the next query here?".
    - Publication is off the critical path of an individual descent.
 
 ### 11. Create `RecursionError`
@@ -742,41 +755,43 @@ first.**
 1. **Definition**: `#[derive(Debug, thiserror::Error)] pub enum RecursionError`.
 2. **Variants**: `NoReachableNameserver`, `BudgetExceeded`, `CnameLoop`, `DelegationLoop`,
    `OutOfBailiwick`, `LameDelegation`, `Truncated`, `Malformed`, `Timeout`.
-3. **Usage**: returned from the descent, converted to `UpstreamError` and then to an RCODE at
-   the `Upstream` boundary. Internal detail — server addresses, zone names — is carried in
-   `tracing` fields and `Debug`, not in anything a client sees.
-4. **Constraints**: no `Box<dyn Error>` in public signatures; every variant reachable from a
-   test.
+3. **Usage**: returned from the descent, converted to `UpstreamError` and then to an RCODE
+   at the `Upstream` boundary. Internal detail — server addresses, zone names — is carried
+   in `tracing` fields and `Debug`, not in anything a client sees.
+4. **Constraints**: no `Box<dyn Error>` in public signatures; every variant reachable from
+   a test.
 
 ### 12. Author hermetic socket tests
 
-1. **Responsibility**: prove the descent over real UDP/TCP against the in-process fake root,
-   TLD and authoritative servers, under an injected `Clock`.
-2. **Scenarios** (authored in this phase; the harness supplies the machinery, not the cases):
-   cold descent from root; warm descent from a cached cut; glue-less delegation; circular
-   glue; out-of-bailiwick glue offered and discarded; lame delegation with recovery onto
-   another NS-set member; empty non-terminal; CNAME chain within and across zones; CNAME
-   loop; DNAME rewrite mid-descent; TC → TCP retry with the same minimised question;
-   EDNS-intolerant server; minimisation-hostile server (each bad-response class); priming
-   failure with all roots unreachable; depth, query-count and wall-clock budget exhaustion.
-3. **Critical assertion**: tests must assert on **the questions the fakes received**, not only
-   on the answers returned. Nothing in an answer reveals whether the full qname leaked to the
-   root, so a functional-only suite lets minimisation silently regress to full-qname
-   behaviour while staying green.
-4. **Constraints**: fakes encode wire format with `hickory-proto`, never with `styx-proto` —
-   if our own codec encodes the fixtures, the resolver and its oracle share every bug and a
-   green suite proves only self-consistency.
+1. **Responsibility**: prove the descent over real UDP/TCP against the in-process fake
+   root, TLD and authoritative servers, under an injected `Clock`.
+2. **Scenarios** (authored in this phase; the harness supplies the machinery, not the
+   cases): cold descent from root; warm descent from a cached cut; glue-less delegation;
+   circular glue; out-of-bailiwick glue offered and discarded; lame delegation with
+   recovery onto another NS-set member; empty non-terminal; CNAME chain within and across
+   zones; CNAME loop; DNAME rewrite mid-descent; TC → TCP retry with the same minimised
+   question; EDNS-intolerant server; minimisation-hostile server (each bad-response
+   class); priming failure with all roots unreachable; depth, query-count and wall-clock
+   budget exhaustion.
+3. **Critical assertion**: tests must assert on **the questions the fakes received**, not
+   only on the answers returned. Nothing in an answer reveals whether the full qname
+   leaked to the root, so a functional-only suite lets minimisation silently regress to
+   full-qname behaviour while staying green.
+4. **Constraints**: fakes encode wire format with `hickory-proto`, never with `styx-proto`
+   — if our own codec encodes the fixtures, the resolver and its oracle share every bug
+   and a green suite proves only self-consistency.
 
 ### 13. Build the differential run against local `unbound`
 
 1. **Responsibility**: the phase gate.
-2. **Contents**: a curated corpus of real domains; a local `unbound` configured to recurse;
-   a runner that resolves each name through both and diffs **RCODE and rrset contents**.
+2. **Contents**: a curated corpus of real domains; a local `unbound` configured to
+   recurse; a runner that resolves each name through both and diffs
+   **RCODE and rrset contents**.
 3. **Scope note**: the **AD bit** is explicitly the *next* phase's criterion — there is no
-   validator yet — but `unbound`'s DNSSEC posture must still be configured comparably, or the
-   diff is meaningless.
-4. **Constraints**: runs **per phase, never per push** — see Safeguards for why, and for the
-   triage discipline that keeps it honest.
+   validator yet — but `unbound`'s DNSSEC posture must still be configured comparably, or
+   the diff is meaningless.
+4. **Constraints**: runs **per phase, never per push** — see Safeguards for why, and for
+   the triage discipline that keeps it honest.
 
 ---
 
@@ -786,22 +801,22 @@ first.**
    `infrastructure` are modules inside it. `domain` names nothing above it. Feature crates
    never depend on each other; `styx-proto` is the single shared-foundation exception, and
    the arch-lint `[[restrict-use]]` rules must be written so as not to forbid it.
-2. **Ports are traits** — declared in the consumer's `domain`, implemented by adapters, wired
-   in the `styx` binary. No crate wires another crate. There are **no annotations and no
-   framework-managed injection**: dependencies are constructor parameters, held as `Arc<dyn
-   Trait>` where shared.
+2. **Ports are traits** — declared in the consumer's `domain`, implemented by adapters,
+   wired in the `styx` binary. No crate wires another crate. There are
+   **no annotations and no framework-managed injection**: dependencies are constructor
+   parameters, held as `Arc<dyn Trait>` where shared.
 3. **Errors** — `thiserror` enums, `Result<T, E>` everywhere, `#[from]` for conversions,
    `#[error("…")]` messages that name the zone and the question class but never a client
-   identity. No `unwrap`, no `expect`, no `panic!` in shipping code, no `Box<dyn Error>` in a
-   public signature.
+   identity. No `unwrap`, no `expect`, no `panic!` in shipping code, no `Box<dyn Error>`
+   in a public signature.
 4. **Lints** — the workspace's 15 denied clippy lints apply unchanged, with four
    `allow-*-in-tests` entries in `clippy.toml`. `indexing_slicing` and
    `arithmetic_side_effects` are denied, so every label offset, TTL decrement and counter
-   increment is a checked operation. That is the intended tax; it makes parsing verbose and
-   pointer-loop detection fiddly, and **fuzzing is not optional**.
+   increment is a checked operation. That is the intended tax; it makes parsing verbose
+   and pointer-loop detection fiddly, and **fuzzing is not optional**.
 5. **Time** — never `Instant::now()` or `SystemTime::now()` in this crate. Every time read
-   goes through the injected `Clock`. It cannot be retrofitted; a validator or a cache that
-   assumes ambient time is a rewrite, not a patch.
+   goes through the injected `Clock`. It cannot be retrofitted; a validator or a cache
+   that assumes ambient time is a rewrite, not a patch.
 6. **Logging** — `tracing` only, structured fields not formatted strings. One span per
    descent, one child per outbound query. **Log the question as actually sent**, so a
    minimisation regression is visible in a trace. Never log at a level that makes a
@@ -812,15 +827,15 @@ first.**
 8. **Testing** — TDD at socket level by default: real UDP/TCP against an ephemeral-port
    server with the in-process fakes and the injected `Clock`. Domain state machines
    additionally get exhaustive unit tests, because they are where correctness lives.
-   `hickory-proto` is `[dev-dependencies]` only; a CI check asserts it appears in no normal or
-   build dependency path, or the exception rots into a real dependency.
+   `hickory-proto` is `[dev-dependencies]` only; a CI check asserts it appears in no
+   normal or build dependency path, or the exception rots into a real dependency.
 9. **Documentation** — every budget constant, every timeout and every minimisation
-   classification carries a doc comment saying *why* that value or that verdict, not what it
-   is. The classification table in particular is the part a future reader will otherwise
-   "simplify" into a bug.
-10. **Naming** — `RecursionDiagnostics` and `HealthState` are never abbreviated to a common
-    word, never aliased to each other, and never combined in a single struct field, a single
-    log line, or a single UI panel.
+   classification carries a doc comment saying *why* that value or that verdict, not what
+   it is. The classification table in particular is the part a future reader will
+   otherwise "simplify" into a bug.
+10. **Naming** — `RecursionDiagnostics` and `HealthState` are never abbreviated to a
+    common word, never aliased to each other, and never combined in a single struct field,
+    a single log line, or a single UI panel.
 
 ---
 
@@ -839,42 +854,45 @@ constraint 3.
 ### 2. Functional constraints
 
 - Every outbound question is composed by `MinimisationState`. **There must be no code path
-  that puts the client's original qname on the wire without a recorded fallback decision.**
+  that puts the client's original qname on the wire without a recorded fallback
+  decision.**
 - Relaxed, not strict: a fallback to the full qname is always available, is scoped to the
   offending nameserver, and is recorded as a `MishandlesMinimised` verdict with an expiry.
-- An NXDOMAIN or an empty NOERROR at an **intermediate** minimised label is never returned to
-  the client as an answer without a full-qname confirmation.
-- Out-of-bailiwick data is discarded — never cached, never used, never merely deprioritised.
+- An NXDOMAIN or an empty NOERROR at an **intermediate** minimised label is never returned
+  to the client as an answer without a full-qname confirmation.
+- Out-of-bailiwick data is discarded — never cached, never used, never merely
+  deprioritised.
 - Every descent terminates: depth, outbound-query count, CNAME-chain length and wall clock
   are all enforced, and a glue-resolving sub-descent shares its parent's query budget.
 - The infrastructure cache holds no answers; the global answer cache holds no delegations,
   NS sets, RTT or EDNS capability.
-- `RecursionDiagnostics` is published directly to the admin/web layer and never through the
-  pool.
-- The recursor implements `Upstream` and requires no change to the server loop, the pipeline
-  order (local records → filter → cache → upstream) or the pool.
+- `RecursionDiagnostics` is published directly to the admin/web layer and never through
+  the pool.
+- The recursor implements `Upstream` and requires no change to the server loop, the
+  pipeline order (local records → filter → cache → upstream) or the pool.
 - DO=1 is set on descent queries and the DS material returned in referrals is retained and
   pushed to the `ChainMaterialSink`.
 
 ### 3. The differential gate — and its recorded weakness
 
-- **Why it is the gate.** **In-process fakes only prove the resolver does what *we think*
-  delegation means.** The fakes are written by the same people reading the same RFCs as the
-  resolver; a fake built from the same misreading will agree with the resolver
-  enthusiastically. **The differential run against a local `unbound` is the only gate that
-  catches a shared misreading**, because `unbound` was written by other people reading those
-  RFCs independently.
-- **Recorded properties, which must not be quietly dropped:** it **depends on the live
-  internet**, it is **flaky by nature** because real DNS changes underneath the corpus, it
-  therefore **gates a phase and never a push** — and **a genuine regression can consequently
-  hide behind a shrug.**
-- **Mandatory mitigation:** every differential failure is triaged to a **named cause** before
-  the phase is called done. A disagreement is never dismissed on the strength of "DNS moved".
-  The corpus is curated toward names with stable delegation structure, so that movement is
-  rare enough for a failure to be notable rather than routine.
+- **Why it is the gate.**
+  **In-process fakes only prove the resolver does what *we think* delegation means.** The
+  fakes are written by the same people reading the same RFCs as the resolver; a fake built
+  from the same misreading will agree with the resolver enthusiastically. **The
+  differential run against a local `unbound` is the only gate that catches a shared
+  misreading**, because `unbound` was written by other people reading those RFCs
+  independently.
+- **Recorded properties, which must not be quietly dropped:** it
+  **depends on the live internet**, it is **flaky by nature** because real DNS changes
+  underneath the corpus, it therefore **gates a phase and never a push** — and
+  **a genuine regression can consequently hide behind a shrug.**
+- **Mandatory mitigation:** every differential failure is triaged to a **named cause**
+  before the phase is called done. A disagreement is never dismissed on the strength of
+  "DNS moved". The corpus is curated toward names with stable delegation structure, so
+  that movement is rare enough for a failure to be notable rather than routine.
 - The per-push gate remains hermetic and fast: formatting, the 15 denied clippy lints,
-  `arch-lint check`, the `cargo tree` layering gate, the `hickory-dev-only` check, socket-level
-  tests, and the `--no-default-features` headless build.
+  `arch-lint check`, the `cargo tree` layering gate, the `hickory-dev-only` check,
+  socket-level tests, and the `--no-default-features` headless build.
 
 ### 4. Security constraints
 
@@ -883,8 +901,8 @@ constraint 3.
 - Bailiwick enforcement is applied before anything is believed *and* before anything is
   offered to the answer cache.
 - **No EDNS Client Subnet is ever attached to an outbound query** — the v1 non-goal exists
-  because ECS leaks client topology, and relaxed QNAME minimisation is the same posture one
-  layer up.
+  because ECS leaks client topology, and relaxed QNAME minimisation is the same posture
+  one layer up.
 - All parsing of hostile input goes through the fuzzed `styx-proto` codec under
   `indexing_slicing = deny`; compression-pointer loops must be detected, not survived by
   luck.
@@ -894,62 +912,66 @@ constraint 3.
 
 ### 5. Privacy constraints (testable, not aspirational)
 
-- Hermetic tests assert on **what the fakes received**. A suite that only asserts on answers
-  cannot detect a regression to full-qname behaviour.
-- A minimisation fallback increments `minimisation_fallbacks` in `RecursionDiagnostics`, so
-  a sudden rise in leakage is visible rather than silent.
+- Hermetic tests assert on **what the fakes received**. A suite that only asserts on
+  answers cannot detect a regression to full-qname behaviour.
+- A minimisation fallback increments `minimisation_fallbacks` in `RecursionDiagnostics`,
+  so a sudden rise in leakage is visible rather than silent.
 
 ### 6. Technical constraints
 
-- `styx-recursion` links `styx-proto` and no other feature crate. Enforced twice — arch-lint
-  over source text, `cargo tree` over the link graph.
-- `panic = "deny"` is load-bearing: in a single process a panic anywhere takes DNS down for
-  the whole house, and the `catch_unwind` boundary that really mitigates it does not arrive
-  until **Phase 12 — Cutover hardening**. Until then the lint is the only guard.
+- `styx-recursion` links `styx-proto` and no other feature crate. Enforced twice —
+  arch-lint over source text, `cargo tree` over the link graph.
+- `panic = "deny"` is load-bearing: in a single process a panic anywhere takes DNS down
+  for the whole house, and the `catch_unwind` boundary that really mitigates it does not
+  arrive until **Phase 12 — Cutover hardening**. Until then the lint is the only guard.
 - **The committed `arch-lint.toml` enforces nothing until Phase 0 replaces it.** The file
-  contains `[[layers]]`, which routes arch-lint to its tree-sitter engine; that engine ships
-  only a Kotlin grammar and discovers zero `.rs` files, so the run exits green having checked
-  nothing — including AL001–AL013. Without `[[layers]]`, the **syn** engine runs AL001–AL013
-  plus `[[scopes]]`, `[[deny-scope-dep]]` and `[[restrict-use]]`, which enforce layering on
-  Rust by path glob. **Verify with a deliberate violation — an inert config looks identical to
-  a passing one.**
+  contains `[[layers]]`, which routes arch-lint to its tree-sitter engine; that engine
+  ships only a Kotlin grammar and discovers zero `.rs` files, so the run exits green
+  having checked nothing — including AL001–AL013. Without `[[layers]]`, the **syn** engine
+  runs AL001–AL013 plus `[[scopes]]`, `[[deny-scope-dep]]` and `[[restrict-use]]`, which
+  enforce layering on Rust by path glob. **Verify with a deliberate violation — an inert
+  config looks identical to a passing one.**
 - `hickory-proto` must not appear in any normal or build dependency path; the CI check
   asserting this must exist before this phase writes its test rig.
-- The infrastructure cache has a configured memory bound. The target box is a Raspberry Pi.
+- The infrastructure cache has a configured memory bound. The target box is a Raspberry
+  Pi.
 
 ### 7. Configuration constraints
 
-- Root hints, budgets, timeouts and the recursor's pool membership live in the **TOML file**;
-  the database owns none of them. A dead database must not affect resolution.
-- **Accepted consequence, carried forward: changing an upstream requires SSH and a restart,
-  which is the thing people most want to do from the UI.**
+- Root hints, budgets, timeouts and the recursor's pool membership live in the
+  **TOML file**; the database owns none of them. A dead database must not affect
+  resolution.
+- **Accepted consequence, carried forward: changing an upstream requires SSH and a
+  restart, which is the thing people most want to do from the UI.**
 
 ### 8. Open implementation-level choices (decide at the keyboard, then document)
 
 These are deliberately unfixed, consistent with how SRTT decay constants and circuit
-thresholds are treated elsewhere. Each must end up a named constant with a written rationale.
+thresholds are treated elsewhere. Each must end up a named constant with a written
+rationale.
 
-- Maximum delegation depth, maximum outbound queries per client question, maximum CNAME chain
-  length, per-query and whole-descent timeouts.
-- The expiry period for a `MishandlesMinimised` verdict and for an `EdnsCapability` record.
+- Maximum delegation depth, maximum outbound queries per client question, maximum CNAME
+  chain length, per-query and whole-descent timeouts.
+- The expiry period for a `MishandlesMinimised` verdict and for an `EdnsCapability`
+  record.
 - Infrastructure-cache memory budget and eviction policy.
 - Corpus size, selection and refresh cadence for the differential run, and the `unbound`
   configuration it is diffed against.
 - Whether the descent prefers A or AAAA glue, and behaviour on a box with no IPv6 path to
   some roots.
 - The exact `RecursionDiagnostics` field set beyond root/TLD reachability — the *routing*
-  (direct to admin/web) and the *naming* (distinct from `HealthState`) are settled; the shape
-  is not.
+  (direct to admin/web) and the *naming* (distinct from `HealthState`) are settled; the
+  shape is not.
 
 ### 9. Accepted project-wide consequences that bear on this phase
 
 - **Resolution-first plus a last cutover removes every feedback loop.** Phases 1 through 7
-  produce nothing a human can look at except `dig` output, and because the cutover is last,
-  nobody is waiting on it either. This phase sits in the middle of that stretch: no
-  operational feedback on cache behaviour, no real client traffic, no external pressure. This
-  is the accepted cost of not doing a live migration under two hand-written
+  produce nothing a human can look at except `dig` output, and because the cutover is
+  last, nobody is waiting on it either. This phase sits in the middle of that stretch: no
+  operational feedback on cache behaviour, no real client traffic, no external pressure.
+  This is the accepted cost of not doing a live migration under two hand-written
   security-critical subsystems.
-- **The household stays on Pi-hole until v1 is complete.** Nothing here has to be shippable;
-  breaking changes remain free within the phase.
-- **v1 scope is large**, and taking the phases out of order is how it stalls. This phase does
-  not start DNSSEC validation, and it does not start filtering.
+- **The household stays on Pi-hole until v1 is complete.** Nothing here has to be
+  shippable; breaking changes remain free within the phase.
+- **v1 scope is large**, and taking the phases out of order is how it stalls. This phase
+  does not start DNSSEC validation, and it does not start filtering.

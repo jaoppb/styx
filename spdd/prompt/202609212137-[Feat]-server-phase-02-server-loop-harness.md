@@ -627,10 +627,11 @@ concerns, not a zone-file server.
 
 ### 3. Declare `FilterPolicy` and its no-op — `styx-resolution::domain::ports::filter`
 
-1. **Trait `FilterPolicy`**: `evaluate(&self, client: &ClientId, question: &Question) -> FilterVerdict`.
-   Synchronous and infallible — the real matcher is an in-memory radix trie plus one
-   `RegexSet`, swapped wholesale via `ArcSwap` on explicit reload, so it never does I/O and
-   never fails.
+1. **Trait `FilterPolicy`**:
+   `evaluate(&self, client: &ClientId, question: &Question) -> FilterVerdict`. Synchronous
+   and infallible — the real matcher is an in-memory radix trie plus one `RegexSet`,
+   swapped wholesale via `ArcSwap` on explicit reload, so it never does I/O and never
+   fails.
 2. **`FilterVerdict`**: `Allow` | `Block`. Deliberately minimal for this phase. Phase 8
    decides whether `Block` carries the blocked-reply mode or whether the pipeline forges
    from a configured default; either way the forging happens through
@@ -700,8 +701,8 @@ concerns, not a zone-file server.
 4. **`max_response_size` derivation**: EDNS(0) advertised UDP payload size when OPT is
    present (including the case where it is advertised *below* 512), 512 when absent, and
    effectively unbounded on TCP subject to the 16-bit length prefix.
-5. **Constraint**: **no EDNS Client Subnet option is ever read or emitted.** ECS (RFC 7871)
-   is a deliberate v1 non-goal because it leaks client topology.
+5. **Constraint**: **no EDNS Client Subnet option is ever read or emitted.** ECS (RFC
+   7871) is a deliberate v1 non-goal because it leaks client topology.
 
 ### 7. Define `ResolutionOutcome`, `AnswerSource` and `ForgedAnswer` — `styx-resolution::domain::answer`
 
@@ -812,7 +813,8 @@ concerns, not a zone-file server.
 2. **`Server::bind(config, pipeline, clock) -> Result<Server, ServerError>`**: bind one
    UDP and one TCP listener per configured address; spawn each as a **supervised** task
    under a shared cancellation token; record handles.
-3. **`local_addrs() -> Vec<SocketAddr>`**: the actual bound addresses, for the port-0 case.
+3. **`local_addrs() -> Vec<SocketAddr>`**: the actual bound addresses, for the port-0
+   case.
 4. **`shutdown()`**: cancel, await all listener tasks, return. Must not hang with
    in-flight queries, or every ephemeral-server test leaks one.
 5. **Binary wiring**: construct `SystemClock`, `AllowAllFilter`, `NoLocalRecords`,
@@ -854,8 +856,8 @@ concerns, not a zone-file server.
 1. **`TestServer::boot_ephemeral()`**: build a `Pipeline` with the no-op ports and a
    `TestClock`, bind a `Server` on port 0, return the fixture with the **actual** UDP and
    TCP addresses read back from the OS.
-2. **`with_filter` / `with_local_records` / `with_observer`**: substitute a test double for
-   any port. *Why these exist:* they are how the pipeline-order and port-injectability
+2. **`with_filter` / `with_local_records` / `with_observer`**: substitute a test double
+   for any port. *Why these exist:* they are how the pipeline-order and port-injectability
    safeguards are proven, and they prove the ports are genuinely injectable rather than
    decorative.
 3. **`DnsClient::query_udp` / `query_tcp`**: drive the server over **real sockets**,
@@ -924,11 +926,11 @@ concerns, not a zone-file server.
    Concentrate size arithmetic in `ResponseWriter` rather than spreading it through the
    listeners.
 
-5. **Concurrency**: listeners and per-connection handlers run as **supervised** async tasks
-   under a shared cancellation token, never fire-and-forget. *Why:* in a single process a
-   panic in any task takes DNS down for the whole house, and the `catch_unwind` boundary
-   that really mitigates this is **phase 12** — everything before it relies on the lint
-   plus supervision. Shutdown must be prompt and must not hang on in-flight work.
+5. **Concurrency**: listeners and per-connection handlers run as **supervised** async
+   tasks under a shared cancellation token, never fire-and-forget. *Why:* in a single
+   process a panic in any task takes DNS down for the whole house, and the `catch_unwind`
+   boundary that really mitigates this is **phase 12** — everything before it relies on
+   the lint plus supervision. Shutdown must be prompt and must not hang on in-flight work.
 
 6. **Logging**: `tracing` throughout (`require-tracing`), initialised once at binary
    startup (`tracing-env-init`). One span per query carrying client address and question.
@@ -945,10 +947,10 @@ concerns, not a zone-file server.
    dependency path. *Why:* if our own codec encodes the fixtures, the resolver and its
    oracle share every bug and a green suite proves only self-consistency.
 
-9. **Test style**: **socket-level by default.** Feature tests drive real UDP/TCP against an
-   ephemeral-port server with in-process fakes and an injected `Clock`. In-memory
-   transports are not an acceptable substitute — they skip datagram limits, truncation, TCP
-   fallback and stream framing. Every test binds port 0 and reads the address back.
+9. **Test style**: **socket-level by default.** Feature tests drive real UDP/TCP against
+   an ephemeral-port server with in-process fakes and an injected `Clock`. In-memory
+   transports are not an acceptable substitute — they skip datagram limits, truncation,
+   TCP fallback and stream framing. Every test binds port 0 and reads the address back.
 
 10. **Build configurations**: everything must compile and test under
     `--no-default-features`. The `web` feature is default-on, and CI builds the headless
@@ -985,7 +987,8 @@ and expensive to discover later:
   no outbound traffic; neither result is marked cacheable.
 - **S4 — Forged answers are honest.** Every answer with `forged: true` has AD cleared,
   carries no RRSIG, and has `cacheable: false`. Asserted once at `ForgedAnswer::build`,
-  since phase 8's five blocked-reply modes and phase 9's local records all pass through it.
+  since phase 8's five blocked-reply modes and phase 9's local records all pass through
+  it.
 
 ### 2. Functional constraints
 
@@ -1008,8 +1011,9 @@ and expensive to discover later:
   first so an operator override takes effect; filter before cache because **the answer
   cache is global, keyed `(qname, qtype, qclass)`, with group policy applied over the
   result on the way out — there are no per-group cache namespaces, since N groups would
-  multiply memory and shred the hit rate the cache exists to provide**; both short-circuits
-  before upstream so a blocked or locally-answered name generates no outbound traffic.
+  multiply memory and shred the hit rate the cache exists to provide**; both
+  short-circuits before upstream so a blocked or locally-answered name generates no
+  outbound traffic.
 - **Local records and blocks are both forged answers.** Both clear AD, forge no signature,
   and never enter the answer cache. Local records are **always Insecure** and never reach
   the validator.
@@ -1033,14 +1037,14 @@ and expensive to discover later:
   `domain` only. Enforced by arch-lint's `[[scopes]]` and `[[deny-scope-dep]]`.
 - The `styx` binary is the only place a port meets an implementation.
 - **The gate must be verified live before it is trusted.** arch-lint 0.5.0 selects its
-  engine by whether the config contains `[[layers]]`: with it, the tree-sitter engine runs,
-  which ships only `tree-sitter-kotlin-ng` and filters discovery to `.kt`/`.kts` — **on a
-  Rust repo it analyses zero files and exits 0**, silently disabling AL001–AL013 too.
-  Without it, the syn engine runs AL001–AL013 plus `[[scopes]]`, `[[deny-scope-dep]]` and
-  `[[restrict-use]]`. **An inert config looks identical to a passing one**, so this phase
-  must confirm phase 0's deliberate-violation check still fails (a deliberate `.unwrap()`
-  in a `domain` module, and a deliberate cross-layer `use`) before relying on any lint
-  below.
+  engine by whether the config contains `[[layers]]`: with it, the tree-sitter engine
+  runs, which ships only `tree-sitter-kotlin-ng` and filters discovery to `.kt`/`.kts` —
+  **on a Rust repo it analyses zero files and exits 0**, silently disabling AL001–AL013
+  too. Without it, the syn engine runs AL001–AL013 plus `[[scopes]]`, `[[deny-scope-dep]]`
+  and `[[restrict-use]]`. **An inert config looks identical to a passing one**, so this
+  phase must confirm phase 0's deliberate-violation check still fails (a deliberate
+  `.unwrap()` in a `domain` module, and a deliberate cross-layer `use`) before relying on
+  any lint below.
 
 ### 5. Lint and build constraints
 
@@ -1067,9 +1071,9 @@ and expensive to discover later:
   corpus and it will sometimes fail for reasons that are not a bug. That also means a
   genuine regression can hide behind a shrug, which is why the hermetic suite has to be
   thorough on its own.
-- `QueryObserver::record_outcome` is asserted to be invoked exactly once per query on every
-  path, including error paths — otherwise the rollups undercount and **the dashboard
-  lies**, with no way for a reader to tell.
+- `QueryObserver::record_outcome` is asserted to be invoked exactly once per query on
+  every path, including error paths — otherwise the rollups undercount and
+  **the dashboard lies**, with no way for a reader to tell.
 
 ### 7. Scope constraints (what this phase must not build)
 
@@ -1080,8 +1084,8 @@ and expensive to discover later:
 - **No TLS, no DoT, no DoH** — phase 7.
 - **No matcher, no blocklists, no blocked-reply modes, no adlist ingestion** — phase 8.
   Only the `FilterPolicy` port and its no-op.
-- **No database, no schema, no migrations** — phase 9. Only the `LocalRecords` port and its
-  no-op.
+- **No database, no schema, no migrations** — phase 9. Only the `LocalRecords` port and
+  its no-op.
 - **No rollups, no ring buffer, no bounded channel implementation, no privacy levels** —
   phase 10. Only the `QueryObserver` port and its no-op.
 - **No web UI, no auth** — phase 11.
@@ -1090,34 +1094,34 @@ and expensive to discover later:
 ### 8. Non-goal constraints (permanent for v1)
 
 - **No DHCP server.** Clients are identified by IP plus optional manual naming; styx never
-  owns the lease table. Client identity is best-effort and breaks on DHCP churn — per-client
-  groups keyed on IP will silently misattribute after a lease change, and manual naming plus
-  a visible "last seen" are mitigations, not fixes.
-- **No DoQ (RFC 9250)**, inbound or outbound. `Transport` grows for TLS and HTTP/2 in phase
-  7 and never for QUIC.
+  owns the lease table. Client identity is best-effort and breaks on DHCP churn —
+  per-client groups keyed on IP will silently misattribute after a lease change, and
+  manual naming plus a visible "last seen" are mitigations, not fixes.
+- **No DoQ (RFC 9250)**, inbound or outbound. `Transport` grows for TLS and HTTP/2 in
+  phase 7 and never for QUIC.
 - **No EDNS Client Subnet (RFC 7871).** Deliberately omitted because it leaks client
   topology. The EDNS(0) handling here must never read or emit an ECS option.
 - **No authoritative zone serving.** Local records and per-zone overrides are
-  resolution/filtering concerns, not a zone-file server. `ZoneScript` is a harness fixture,
-  not a product feature.
+  resolution/filtering concerns, not a zone-file server. `ZoneScript` is a harness
+  fixture, not a product feature.
 - **No multi-node or replicated deployment.** One box, one binary, local DB file.
 - **No multi-user admin, roles or audit trail.** The observer carries no actor field.
 
 ### 9. Documented accepted consequences
 
 - **A local name under a signed public zone is unprovable.** `nas.example.com` where
-  `example.com` is signed will be answered Insecure with AD cleared, and validating clients
-  may SERVFAIL it. The guidance is to keep local names under an unsigned or internal
-  suffix. **This is precisely the failure reported as pi-hole#2686.** The mitigation is
-  documentation, which only helps people who read it — expect to diagnose it at least once
-  on your own network.
-- **A client validating with CD=0 gets an unsigned answer for a signed name** whenever styx
-  forges one. **That is a deliberate lie, and it is documented as one.**
+  `example.com` is signed will be answered Insecure with AD cleared, and validating
+  clients may SERVFAIL it. The guidance is to keep local names under an unsigned or
+  internal suffix. **This is precisely the failure reported as pi-hole#2686.** The
+  mitigation is documentation, which only helps people who read it — expect to diagnose it
+  at least once on your own network.
+- **A client validating with CD=0 gets an unsigned answer for a signed name** whenever
+  styx forges one. **That is a deliberate lie, and it is documented as one.**
 - **Changing a listener or an upstream requires SSH and a restart**, because the file owns
-  infrastructure and the DB owns policy with no overlap. That is the thing people most want
-  to do from the UI, and it is the price of a dead DB being structurally unable to touch
-  resolution.
+  infrastructure and the DB owns policy with no overlap. That is the thing people most
+  want to do from the UI, and it is the price of a dead DB being structurally unable to
+  touch resolution.
 - **This phase and the six after it produce nothing a human can look at except `dig`
   output**, and because the cutover is last — the household stays on Pi-hole until v1 is
-  complete — there is no external pressure either. Accepted as the cost of not doing a live
-  migration under two hand-written security-critical subsystems.
+  complete — there is no external pressure either. Accepted as the cost of not doing a
+  live migration under two hand-written security-critical subsystems.
