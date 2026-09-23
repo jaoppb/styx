@@ -33,9 +33,20 @@ respect_gitignore = true
 
 exclude = [
     "target/**",
-    # Vendored tool definitions. Note that the /spdd-* files here ARE now
-    # maintained by this project, so this exclusion is weaker than it was;
-    # bringing them under the gate costs ~271 fixes and has not been done.
+    # Vendored tool definitions. The /spdd-* files here ARE now maintained by
+    # this project, so this exclusion is weaker than it reads.
+    #
+    # They have been brought most of the way in: the cosmetic findings and the
+    # prose wrapping are fixed, leaving 43. Those 43 are all one decision —
+    # whether these files' section markers become real headings. MD036 (24)
+    # wants `**Steps**` / `**Output**` / `**Guardrails**` turned into `##`
+    # headings; MD041 (5) wants an H1 after the YAML frontmatter; MD023 and
+    # MD035 (7 each) want the seven REASONS stage headings and their rules
+    # un-indented out of step 3, which would promote them from content nested
+    # inside one step to top-level sections of the document.
+    #
+    # That is a change to what a model reads when the command runs, not a lint
+    # fix, which is why it has not been made and why this exclusion stays.
     ".claude/**",
     # Fixture E is a DELIBERATE violation and must not fail the normal run.
     #

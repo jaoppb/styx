@@ -5,23 +5,27 @@ category: Development
 description: Generate Rust code from a structured SPDD prompt file following the REASONS Canvas methodology
 ---
 
-Generate Rust implementation code from a structured SPDD (Structured Prompt-Driven Development) prompt file, strictly following the Operations sequence and coding norms defined in the prompt.
+Generate Rust implementation code from a structured SPDD (Structured Prompt-Driven
+Development) prompt file, strictly following the Operations sequence and coding norms
+defined in the prompt.
 
-**Input**: The argument after `/spdd-generate` is the path to the structured prompt file (e.g., `@spdd/prompt/202602271430-[Feat]-api-create-agent-endpoint.md`).
+**Input**: The argument after `/spdd-generate` is the path to the structured prompt file
+(e.g., `@spdd/prompt/202602271430-[Feat]-api-create-agent-endpoint.md`).
 
 **Steps**
 
 1. **If no input provided, ask for the prompt file**
 
    Use the **AskUserQuestion tool** to ask:
-   > "Please provide the path to the structured prompt file (e.g., `@spdd/prompt/xxx.md`)."
+   > "Please provide the path to the structured prompt file (e.g.,
+   > `@spdd/prompt/xxx.md`)."
 
    **IMPORTANT**: Do NOT proceed without a valid prompt file path.
 
 2. **Read and parse the structured prompt file**
 
    Read the prompt file and extract the REASONS Canvas sections:
-   
+
    | Section | Purpose | Usage |
    |---------|---------|-------|
    | **R** - Requirements | Overall goal and DoD | Understand the business context |
@@ -37,38 +41,47 @@ Generate Rust implementation code from a structured SPDD (Structured Prompt-Driv
 3. **Analyze project context**
 
    Before generating code:
-   - Read the workspace root `Cargo.toml` and the target crate's `Cargo.toml` — edition, MSRV (`rust-version`), `[features]`, available dependencies, `[workspace.lints]`
-   - Confirm every crate the Operations section references is already a dependency. If one is missing, add it to the correct `Cargo.toml` with the right features before writing code that imports it
+   - Read the workspace root `Cargo.toml` and the target crate's `Cargo.toml` — edition,
+     MSRV (`rust-version`), `[features]`, available dependencies, `[workspace.lints]`
+   - Confirm every crate the Operations section references is already a dependency. If one
+     is missing, add it to the correct `Cargo.toml` with the right features before writing
+     code that imports it
    - Locate existing similar patterns in the codebase for reference
    - Identify the correct module path and where the new `mod` declarations must be added
-   - Read `clippy.toml`, `rustfmt.toml` and any crate-level `#![deny(...)]` attributes — these bind the generated code
-   - Check for existing error types, newtypes, traits, or helpers to reuse rather than duplicate
+   - Read `clippy.toml`, `rustfmt.toml` and any crate-level `#![deny(...)]` attributes —
+     these bind the generated code
+   - Check for existing error types, newtypes, traits, or helpers to reuse rather than
+     duplicate
 
    **IMPORTANT**: Generated code MUST align with existing project conventions.
 
 4. **Validate the Operations sequence**
 
    Review the **Operations** section to verify:
-   
+
    a. **Dependency order is correct**:
       - Types with no dependencies come first (error enums, newtypes, plain enums, consts)
       - Then traits, then their implementors, then wiring, then tests
       - Types depend only on previously defined types
-      - No circular module dependencies exist (Rust permits cycles between modules in a crate, but not between crates — check crate edges especially)
-   
+      - No circular module dependencies exist (Rust permits cycles between modules in a
+        crate, but not between crates — check crate edges especially)
+
    b. **Task decomposition is complete**:
       - Each operation is atomic and testable
       - No logical gaps between operations
       - All components mentioned in Structure are covered
-   
+
    c. **Consistency with Structure section**:
       - Trait implementations match
       - Dependencies match
-      - Layering is respected: no domain module importing infrastructure, no crate edge the Structure section forbids
+      - Layering is respected: no domain module importing infrastructure, no crate edge
+        the Structure section forbids
 
-   **If issues are found**: Report to user and suggest prompt modifications before proceeding.
-   
-   **IMPORTANT**: Do NOT re-plan the sequence. The Operations order is the designed execution order from the Abstraction phase.
+   **If issues are found**: Report to user and suggest prompt modifications before
+   proceeding.
+
+   **IMPORTANT**: Do NOT re-plan the sequence. The Operations order is the designed
+   execution order from the Abstraction phase.
 
 5. **Generate code following Operations sequence**
 
@@ -76,7 +89,8 @@ Generate Rust implementation code from a structured SPDD (Structured Prompt-Driv
 
    a. **Read the operation specification**:
       - Responsibility: What the component does
-      - Fields/Methods: Exact fields, types, and full signatures including `&self`/`&mut self`/`self` and borrows
+      - Fields/Methods: Exact fields, types, and full signatures including
+        `&self`/`&mut self`/`self` and borrows
       - Derives: The required derive set
       - Invariants: What must always hold, and where it is enforced
       - Error paths: Which error variant each failure returns
@@ -84,23 +98,30 @@ Generate Rust implementation code from a structured SPDD (Structured Prompt-Driv
 
    b. **Apply Norms**:
       - Naming: `snake_case` items, `UpperCamelCase` types, no stutter
-      - Visibility: the narrowest that satisfies the stated callers — `pub(crate)` unless the API surface calls for `pub`
-      - Error handling: `thiserror` enums in library code, `anyhow` with `.context(...)` at binary boundaries, propagation via `?`
-      - Construction: explicit constructor injection — a type takes its collaborators as `new` parameters
+      - Visibility: the narrowest that satisfies the stated callers — `pub(crate)` unless
+        the API surface calls for `pub`
+      - Error handling: `thiserror` enums in library code, `anyhow` with `.context(...)`
+        at binary boundaries, propagation via `?`
+      - Construction: explicit constructor injection — a type takes its collaborators as
+        `new` parameters
       - Logging: `tracing`, structured fields, `#[instrument]` on meaningful operations
-      - Documentation: `///` on public items, with `# Errors` on fallible functions and `# Panics` where applicable
+      - Documentation: `///` on public items, with `# Errors` on fallible functions and
+        `# Panics` where applicable
 
    c. **Enforce Safeguards**:
       - Invariants enforced at construction rather than checked at use
       - **Exact error messages** (do not modify)
       - No `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!` on any non-test path
-      - Checked arithmetic and indexing on untrusted input where the lint config demands it
-      - `Send`/`Sync` bounds where specified; no lock held across an `.await` unless explicitly sanctioned
+      - Checked arithmetic and indexing on untrusted input where the lint config demands
+        it
+      - `Send`/`Sync` bounds where specified; no lock held across an `.await` unless
+        explicitly sanctioned
       - No `unsafe` unless the prompt justifies it, with a `# Safety` comment
 
    d. **Generate the code**:
       - Place the file at the module path Structure specifies
-      - **Add the `mod` declaration to the parent module** — a new file that nothing declares is silently not compiled
+      - **Add the `mod` declaration to the parent module** — a new file that nothing
+        declares is silently not compiled
       - Include all required `use` statements
       - Implement exact signatures as specified
       - Follow the exact error messages from Safeguards
@@ -109,7 +130,8 @@ Generate Rust implementation code from a structured SPDD (Structured Prompt-Driv
    - Do NOT deviate from the specifications in Operations
    - Do NOT add features or methods not specified
    - Do NOT change error messages from Safeguards
-   - Do NOT silence a compiler or clippy complaint with `#[allow]` to make it build — fix the cause, or report it as a prompt defect
+   - Do NOT silence a compiler or clippy complaint with `#[allow]` to make it build — fix
+     the cause, or report it as a prompt defect
    - DO reference existing project patterns for consistency
 
 6. **Batch validation after generation**
@@ -119,10 +141,13 @@ Generate Rust implementation code from a structured SPDD (Structured Prompt-Driv
    a. **Build and lint gate** — run these in order and fix what they report:
       - `cargo fmt --all` — formatting is not a matter of taste
       - `cargo check --all-targets` — resolve every type and borrow error
-      - `cargo clippy --all-targets --all-features -- -D warnings` — clippy findings are defects, not suggestions
+      - `cargo clippy --all-targets --all-features -- -D warnings` — clippy findings are
+        defects, not suggestions
       - `cargo test` — unit, integration and doc tests
-      - `cargo build --no-default-features` if the crate has optional features, plus any feature combination Safeguards names
-      - Prefer the project's own aggregate target (`just gate`, `make check`, a CI script) if one exists — it encodes gates these commands miss
+      - `cargo build --no-default-features` if the crate has optional features, plus any
+        feature combination Safeguards names
+      - Prefer the project's own aggregate target (`just gate`, `make check`, a CI script)
+        if one exists — it encodes gates these commands miss
 
    b. **Acceptance Criteria verification**:
       - Cross-check with the **Acceptance Criteria Traceability** table (if present)
@@ -130,15 +155,19 @@ Generate Rust implementation code from a structured SPDD (Structured Prompt-Driv
       - Verify error variants and messages match exactly
 
    c. **Structure verification**:
-      - Verify layering is respected — no domain module importing infrastructure, no forbidden crate edge
-      - Confirm collaborators are injected through constructors rather than constructed internally
+      - Verify layering is respected — no domain module importing infrastructure, no
+        forbidden crate edge
+      - Confirm collaborators are injected through constructors rather than constructed
+        internally
       - Check trait implementations match those specified
       - Confirm every new file is reachable through a `mod` declaration
 
    d. **Fix any issues found**:
-      - Fix compilation and borrow-checker errors at the cause, not by cloning to silence them
+      - Fix compilation and borrow-checker errors at the cause, not by cloning to silence
+        them
       - Correct `use` statements
-      - If a fix requires deviating from the prompt, stop and report it as a prompt defect rather than diverging silently
+      - If a fix requires deviating from the prompt, stop and report it as a prompt defect
+        rather than diverging silently
 
 7. **Report generation summary**
 
@@ -149,7 +178,8 @@ Generate Rust implementation code from a structured SPDD (Structured Prompt-Driv
 
 **Review & Iteration Loop**
 
-If issues are discovered after generation (during testing or code review), follow the SPDD principle:
+If issues are discovered after generation (during testing or code review), follow the SPDD
+principle:
 
 > **"When reality diverges, fix the prompt first — then update the code."**
 
@@ -166,12 +196,15 @@ If issues are discovered after generation (during testing or code review), follo
 
 3. **Update the prompt first**: Modify the relevant section in the prompt file
 
-4. **Regenerate affected code**: Only regenerate the components affected by the prompt change
+4. **Regenerate affected code**: Only regenerate the components affected by the prompt
+   change
 
-5. **Commit together**: Commit the updated prompt and code together to maintain traceability
+5. **Commit together**: Commit the updated prompt and code together to maintain
+   traceability
 
 **Example iteration**:
-```
+
+```text
 Issue: "The Resolver port isn't object-safe, so Arc<dyn Resolver> won't compile"
 
 1. Trace: Operations defines Resolver with a generic method, which makes it non-object-safe
@@ -230,7 +263,8 @@ what it reports. Do not hand the document to the gate to be rejected.
 - Do NOT change method signatures, field names, or error messages from the specification
 - Do NOT add extra public items, methods, or fields not specified
 - Do NOT patch code directly when issues are found — update prompt first
-- Do NOT add `#[allow(...)]`, `unwrap()`, `clone()` or `unsafe` to make something compile — each is a design answer and belongs in the prompt
+- Do NOT add `#[allow(...)]`, `unwrap()`, `clone()` or `unsafe` to make something compile
+  — each is a design answer and belongs in the prompt
 - Do NOT add a dependency without recording it in the prompt's Structure section
 - Always use the exact error messages from Safeguards
 - Always follow Norms for coding style and patterns
@@ -242,7 +276,7 @@ what it reports. Do not hand the document to the gate to be rejected.
 
 This command is the third phase of the SPDD workflow:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                           SPDD Workflow                                  │
 ├─────────────────────────────────────────────────────────────────────────┤
@@ -281,4 +315,5 @@ This command is the third phase of the SPDD workflow:
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-The structured prompt serves as the **contract** between design and implementation, and must stay in sync with the code throughout the lifecycle.
+The structured prompt serves as the **contract** between design and implementation, and
+must stay in sync with the code throughout the lifecycle.

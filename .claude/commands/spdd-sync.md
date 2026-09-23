@@ -5,9 +5,12 @@ category: Development
 description: Sync Rust code changes back to the structured SPDD prompt file following the REASONS Canvas methodology
 ---
 
-Synchronize implementation details from refactored or updated Rust code back to the structured SPDD (Structured Prompt-Driven Development) prompt file, ensuring the prompt remains the accurate source of truth for the system design.
+Synchronize implementation details from refactored or updated Rust code back to the
+structured SPDD (Structured Prompt-Driven Development) prompt file, ensuring the prompt
+remains the accurate source of truth for the system design.
 
-**Input**: The argument after `/spdd-sync` is the path to the structured prompt file (e.g., `@spdd/prompt/202602271430-[Feat]-api-create-agent-endpoint.md`).
+**Input**: The argument after `/spdd-sync` is the path to the structured prompt file
+(e.g., `@spdd/prompt/202602271430-[Feat]-api-create-agent-endpoint.md`).
 
 **Steps**
 
@@ -15,7 +18,8 @@ Synchronize implementation details from refactored or updated Rust code back to 
 
    Use the **AskUserQuestion tool** to ask:
 
-   > "Please provide the path to the structured prompt file you want to sync (e.g., `@spdd/prompt/xxx.md`)."
+   > "Please provide the path to the structured prompt file you want to sync (e.g.,
+   > `@spdd/prompt/xxx.md`)."
 
    **IMPORTANT**: Do NOT proceed without a valid prompt file path.
 
@@ -33,7 +37,8 @@ Synchronize implementation details from refactored or updated Rust code back to 
    | **N** - Norms        | Engineering standards          | Medium (patterns may evolve)           |
    | **S** - Safeguards   | Non-negotiable constraints     | Low (constraints rarely relax)         |
 
-   **IMPORTANT**: Operations section typically requires the most updates as it contains implementation specifics.
+   **IMPORTANT**: Operations section typically requires the most updates as it contains
+   implementation specifics.
 
 3. **Identify affected components from user context**
 
@@ -45,7 +50,8 @@ Synchronize implementation details from refactored or updated Rust code back to 
    > - Type of change (renamed, restructured, logic changed, new components added)
    > - Brief description of what changed"
 
-   Alternatively, analyze recent git changes or user-specified files to identify modifications.
+   Alternatively, analyze recent git changes or user-specified files to identify
+   modifications.
 
 4. **Analyze current implementation**
 
@@ -53,18 +59,22 @@ Synchronize implementation details from refactored or updated Rust code back to 
 
    a. **Read the current implementation**:
    - Locate the source file in the codebase
-   - Extract type definitions (struct/enum/trait), their fields and variants, `impl` blocks, derives and attributes
-   - Identify relationships and dependencies: which traits are implemented, what is held behind `Arc`/`Box`, which ports are injected
+   - Extract type definitions (struct/enum/trait), their fields and variants, `impl`
+     blocks, derives and attributes
+   - Identify relationships and dependencies: which traits are implemented, what is held
+     behind `Arc`/`Box`, which ports are injected
    - Check whether `Cargo.toml` changed — new dependencies, new features, an MSRV bump
 
    b. **Compare with prompt specification**:
    - Find corresponding Operation/Entity/Structure section
    - Note discrepancies in:
      - Type names and module paths
-     - Function signatures, including `&self`/`&mut self`/`self`, borrows, lifetimes and generic bounds
+     - Function signatures, including `&self`/`&mut self`/`self`, borrows, lifetimes and
+       generic bounds
      - Fields, variants and their types
      - Derives and attributes in use
-     - Visibility (`pub`, `pub(crate)`, private) — a widened visibility is a change to the API surface
+     - Visibility (`pub`, `pub(crate)`, private) — a widened visibility is a change to the
+       API surface
      - Error enum variants and their messages
      - Business logic steps
      - Invariants and where they are enforced
@@ -75,13 +85,14 @@ Synchronize implementation details from refactored or updated Rust code back to 
    - **Naming**: type/function/field renames
    - **Additions**: new functions, fields, variants, or types
    - **Deletions**: removed functions, fields, variants, or types
-   - **API surface**: visibility changes and anything semver-breaking for a published crate
+   - **API surface**: visibility changes and anything semver-breaking for a published
+     crate
 
 5. **Generate prompt update plan**
 
    Create a detailed update plan showing:
 
-   ```
+   ```text
    ## Prompt Sync Plan
 
    ### Entities Section Updates
@@ -113,19 +124,22 @@ Synchronize implementation details from refactored or updated Rust code back to 
    - Update the Mermaid diagram to reflect actual type structure
    - Ensure fields and variants match actual names and types
    - Update relationship arrows to reflect actual trait implementations and ownership
-   - Keep Mermaid's constraints in mind: generics are `~T~`, nested generics mangle, and `Result~(), E~` can drop its line — flatten and state the real signature in Structure
+   - Keep Mermaid's constraints in mind: generics are `~T~`, nested generics mangle, and
+     `Result~(), E~` can drop its line — flatten and state the real signature in Structure
 
    b. **Structure section updates**:
    - Update the trait implementation list
    - Update dependencies, including any new crate added to `Cargo.toml` and why
    - Update the module tree if files moved, and confirm the `mod` declarations match
-   - Ensure the layering description matches reality — if a layering rule was violated rather than changed, say so instead of rewriting the rule to match the code
+   - Ensure the layering description matches reality — if a layering rule was violated
+     rather than changed, say so instead of rewriting the rule to match the code
 
    c. **Operations section updates** (most critical):
    - Update **Responsibility** if the component's purpose evolved
    - Update **Location** if the type moved to a different module or crate
    - Update **Fields** to match actual fields and variants
-   - Update **Methods** to match actual signatures, including receivers, borrows and bounds
+   - Update **Methods** to match actual signatures, including receivers, borrows and
+     bounds
    - Update **Logic** steps to match actual implementation
    - Update **Derives** to match actual derives and attributes
    - Update **Invariants** and error paths to match what the code now enforces and returns
@@ -133,7 +147,8 @@ Synchronize implementation details from refactored or updated Rust code back to 
    - Mark obsolete operations (or remove if no longer relevant)
 
    d. **Norms section updates**:
-   - Add new patterns if adopted (e.g., typestate, newtype wrappers, a shared error-conversion idiom)
+   - Add new patterns if adopted (e.g., typestate, newtype wrappers, a shared
+     error-conversion idiom)
    - Update coding standards if conventions evolved
    - Record any new lint configuration or `#[allow]` convention established
 
@@ -187,7 +202,8 @@ When syncing different types of changes:
    - Update references in Structure section
 
 2. **Signature Changes**:
-   - Update Operations method specifications, including receiver, borrows, lifetimes and bounds
+   - Update Operations method specifications, including receiver, borrows, lifetimes and
+     bounds
    - Update any Safeguards that reference return types or parameters
    - Verify the Entities diagram if the public API changed
 
@@ -214,12 +230,14 @@ When syncing different types of changes:
    - Check every call site the variant change affects
 
 7. **Ownership/Concurrency Changes**:
-   - If sharing moved (owned → `Arc`, `Mutex` → `RwLock` → atomics → `ArcSwap`), update Approach as well as Operations — this is an architectural decision, not a detail
+   - If sharing moved (owned → `Arc`, `Mutex` → `RwLock` → atomics → `ArcSwap`), update
+     Approach as well as Operations — this is an architectural decision, not a detail
    - Update any `Send`/`Sync` bounds in Structure
    - Update Safeguards if what may block, allocate, or be held across an `.await` changed
 
 8. **Dispatch Changes**:
-   - A move between generics and `dyn Trait` changes object-safety requirements and the Structure section's dependency shape
+   - A move between generics and `dyn Trait` changes object-safety requirements and the
+     Structure section's dependency shape
    - Update Approach with the reason for the switch, not just the fact of it
 
 9. **Dependency or Feature Changes**:
@@ -270,7 +288,8 @@ what it reports. Do not hand the document to the gate to be rejected.
   columns, every fence carrying a language, real headings rather than bold lines,
   and no trailing punctuation in a heading
 - Do NOT remove content from prompt without explicit user approval
-- Do NOT change Requirements section unless user explicitly requests (business goals shouldn't change from code refactoring)
+- Do NOT change Requirements section unless user explicitly requests (business goals
+  shouldn't change from code refactoring)
 - Do NOT simplify or abbreviate existing detailed specifications
 - Do NOT change error messages in Safeguards unless they actually changed in code
 - Always preserve the existing formatting style within each section
@@ -283,7 +302,7 @@ what it reports. Do not hand the document to the gate to be rejected.
 
 This command completes the bidirectional sync in the SPDD workflow:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                      SPDD Bidirectional Sync                            │
 ├─────────────────────────────────────────────────────────────────────────┤
@@ -335,7 +354,8 @@ Use this command when:
 - A trait had to change shape to stay object-safe, or dispatch was switched
 - The error enum gained, lost, or reworded variants
 
-**Principle**: The structured prompt should always reflect the **actual** implementation, not just the **planned** implementation. This ensures:
+**Principle**: The structured prompt should always reflect the **actual** implementation,
+not just the **planned** implementation. This ensures:
 
 - New team members understand the real system from the prompt
 - Future enhancements build on accurate specifications

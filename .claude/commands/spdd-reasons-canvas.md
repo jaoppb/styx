@@ -5,18 +5,21 @@ category: Development
 description: Generate REASONS-Canvas structured prompts for Rust codebases from business context without external template
 ---
 
-Generate implementation-ready structured prompts using the built-in REASONS-Canvas framework (Requirements, Entities, Approach, Structure, Operations, Norms, Safeguards), targeting **Rust** codebases and their conventions.
+Generate implementation-ready structured prompts using the built-in REASONS-Canvas
+framework (Requirements, Entities, Approach, Structure, Operations, Norms, Safeguards),
+targeting **Rust** codebases and their conventions.
 
 **Input**: Business context/requirement description after `/spdd-reasons-canvas`
 
 Input can be provided in two ways:
 
 1. **Text description**: Direct text describing the requirement
-2. **File/folder reference**: Using `@` to reference files or folders containing requirements
+2. **File/folder reference**: Using `@` to reference files or folders containing
+   requirements
 
 **Examples**:
 
-```
+```text
 # Text description
 /spdd-reasons-canvas Implement a bounded work queue with backpressure and a drop counter
 
@@ -34,14 +37,17 @@ Input can be provided in two ways:
 
 1. **Validate and consolidate business context**
 
-   a. **If business context is missing**, use the **AskUserQuestion tool** (open-ended, no preset options) to ask:
-   - "Please provide the business context or requirement description (you can use text, @file references, or both)"
+   a. **If business context is missing**, use the **AskUserQuestion tool** (open-ended, no
+   preset options) to ask:
+   - "Please provide the business context or requirement description (you can use text,
+     @file references, or both)"
 
    **IMPORTANT**: Do NOT proceed without business context input.
 
    b. **If input contains `@` file/folder references**:
    - Read ALL referenced files completely using the Read tool
-   - For folder references, read all relevant files within the folder (`.md`, `.txt`, `.toml`, `.rs`, etc.)
+   - For folder references, read all relevant files within the folder (`.md`, `.txt`,
+     `.toml`, `.rs`, etc.)
    - Consolidate all file contents into a unified business context
 
    c. **Combine all context sources**:
@@ -56,17 +62,26 @@ Input can be provided in two ways:
 
 2. **Read relevant Rust codebase context**
 
-   - Read the workspace root `Cargo.toml` — workspace members, shared `[workspace.dependencies]`, `[workspace.lints]`, resolver version, `rust-version` (MSRV)
-   - Read the `Cargo.toml` of each crate the requirement touches — its dependencies, `[features]`, and whether it is a lib, bin, or both
-   - Locate the relevant modules by reading `lib.rs` / `main.rs` / `mod.rs` and following the `mod` tree
+   - Read the workspace root `Cargo.toml` — workspace members, shared
+     `[workspace.dependencies]`, `[workspace.lints]`, resolver version, `rust-version`
+     (MSRV)
+   - Read the `Cargo.toml` of each crate the requirement touches — its dependencies,
+     `[features]`, and whether it is a lib, bin, or both
+   - Locate the relevant modules by reading `lib.rs` / `main.rs` / `mod.rs` and following
+     the `mod` tree
    - Read the existing traits (ports), domain types, and error enums in scope
-   - Note the conventions actually in use: error crate (`thiserror` / `anyhow` / hand-rolled), async runtime, logging (`tracing` vs `log`), dispatch style (generics vs `Arc<dyn Trait>`), interior mutability choices, test layout
-   - Read `clippy.toml`, `rustfmt.toml`, `deny.toml` and any `#![deny(...)]` / `#![warn(...)]` crate attributes — these are binding constraints on generated code
-   - If the area is greenfield with no existing code, say so explicitly and derive conventions from the workspace manifests and lint configuration instead of guessing
+   - Note the conventions actually in use: error crate (`thiserror` / `anyhow` /
+     hand-rolled), async runtime, logging (`tracing` vs `log`), dispatch style (generics
+     vs `Arc<dyn Trait>`), interior mutability choices, test layout
+   - Read `clippy.toml`, `rustfmt.toml`, `deny.toml` and any `#![deny(...)]` /
+     `#![warn(...)]` crate attributes — these are binding constraints on generated code
+   - If the area is greenfield with no existing code, say so explicitly and derive
+     conventions from the workspace manifests and lint configuration instead of guessing
 
 3. **Apply the REASONS-Canvas Framework**
 
-   Generate fully-populated content for each of the 7 stages using the built-in construction guidance:
+   Generate fully-populated content for each of the 7 stages using the built-in
+   construction guidance:
 
    ***
 
@@ -76,18 +91,21 @@ Input can be provided in two ways:
 
    **Output Format**:
 
-   ```
+   ```text
    ## Requirements
    [Use concise verb phrases to describe the essence of requirements]
    ```
 
    **Construction Guidance**:
-   - **Essence Extraction**: Abstract what fundamental problem to solve and what value to create for whom
+   - **Essence Extraction**: Abstract what fundamental problem to solve and what value to
+     create for whom
    - **Boundary Definition**: Clarify the applicable scope and limitations
    - **Value Focus**: Highlight business value and user benefits
    - **Use Verb Phrases**: "Implement...", "Create...", "Design..."
-   - **Avoid Feature Stacking**: Don't list specific functions, abstract essential problems
-   - **State non-goals**: What this explicitly does not do, and why — a non-goal prevents scope creep in the Operations phase
+   - **Avoid Feature Stacking**: Don't list specific functions, abstract essential
+     problems
+   - **State non-goals**: What this explicitly does not do, and why — a non-goal prevents
+     scope creep in the Operations phase
 
    **Quality Standards**:
    - Core requirements summarizable in one sentence
@@ -98,11 +116,12 @@ Input can be provided in two ways:
 
    ### E - Entities
 
-   **Objective**: Model the Rust type system for this requirement — structs, enums, and traits
+   **Objective**: Model the Rust type system for this requirement — structs, enums, and
+   traits
 
    **Output Format**:
 
-   ````
+   ````text
    ## Entities
    ```mermaid
    classDiagram
@@ -137,33 +156,53 @@ Input can be provided in two ways:
    ````
 
    **Construction Guidance**:
-   - **Type identification**: Identify domain types (structs), closed sets of states (enums), and behavioural contracts (traits)
-   - **Make invalid states unrepresentable**: Prefer an enum over a struct with mutually exclusive `Option` fields; prefer a newtype over a bare `String` or `u64` where a validated invariant exists
-   - **Parse, don't validate**: Model validation as a fallible conversion producing a type that is correct by construction (`TryFrom`, a private constructor plus a `new() -> Result<Self, E>`), not as a check run against a permissive type
-   - **Ownership and borrowing**: Note where a type owns its data versus borrows it, and where `Arc`/`Rc` shared ownership is deliberate. If a lifetime parameter is load-bearing, say what it ties to
-   - **Traits are ports**: A trait in the `domain` layer is a seam an adapter implements. Mark trait classes with `<<trait>>` and use `..|>` for implementations
-   - **Error types are entities**: Model the error enum explicitly. An operation's failure modes are part of its contract, not an afterthought
-   - **Stereotypes**: use `<<trait>>`, `<<enumeration>>`, `<<newtype>>` so readers can tell a contract from a concrete type at a glance
+   - **Type identification**: Identify domain types (structs), closed sets of states
+     (enums), and behavioural contracts (traits)
+   - **Make invalid states unrepresentable**: Prefer an enum over a struct with mutually
+     exclusive `Option` fields; prefer a newtype over a bare `String` or `u64` where a
+     validated invariant exists
+   - **Parse, don't validate**: Model validation as a fallible conversion producing a type
+     that is correct by construction (`TryFrom`, a private constructor plus a
+     `new() -> Result<Self, E>`), not as a check run against a permissive type
+   - **Ownership and borrowing**: Note where a type owns its data versus borrows it, and
+     where `Arc`/`Rc` shared ownership is deliberate. If a lifetime parameter is
+     load-bearing, say what it ties to
+   - **Traits are ports**: A trait in the `domain` layer is a seam an adapter implements.
+     Mark trait classes with `<<trait>>` and use `..|>` for implementations
+   - **Error types are entities**: Model the error enum explicitly. An operation's failure
+     modes are part of its contract, not an afterthought
+   - **Stereotypes**: use `<<trait>>`, `<<enumeration>>`, `<<newtype>>` so readers can
+     tell a contract from a concrete type at a glance
 
    **Mermaid rendering constraints** (verify before shipping the diagram):
    - Mermaid's generic syntax is `~T~`, not `<T>`. `Vec~u8~` renders; `Vec<u8>` does not
-   - **Nested generics mangle**: `Result~Vec~Rule~, Error~` renders incorrectly. Flatten to `ResultVecRule` or describe the signature in prose beneath the diagram
-   - **The unit type inside a generic can drop the whole line**: `Result~(), Error~` collides with method-paren parsing. Write `Result~Unit, Error~` or omit the generic and state the real signature in Structure
-   - Spell full signatures out in Structure and Operations; the diagram is a map, not the contract
-   - If diagram fidelity matters, render it (`mmdc -i diagram.mmd -o out.svg`) and confirm every declared class appears in the output
+   - **Nested generics mangle**: `Result~Vec~Rule~, Error~` renders incorrectly. Flatten
+     to `ResultVecRule` or describe the signature in prose beneath the diagram
+   - **The unit type inside a generic can drop the whole line**: `Result~(), Error~`
+     collides with method-paren parsing. Write `Result~Unit, Error~` or omit the generic
+     and state the real signature in Structure
+   - Spell full signatures out in Structure and Operations; the diagram is a map, not the
+     contract
+   - If diagram fidelity matters, render it (`mmdc -i diagram.mmd -o out.svg`) and confirm
+     every declared class appears in the output
 
    **Conservative Constraints** (CRITICAL):
-   - **Prohibit unnecessary refactoring**: If an existing type meets the requirement, do not wrap it. A newtype must earn its place by enforcing an invariant
-   - **Existing implementation priority**: If current types can satisfy the requirement, they stay unchanged
-   - **Function-driven changes**: Only restructure when the requirement genuinely cannot be met through existing types
+   - **Prohibit unnecessary refactoring**: If an existing type meets the requirement, do
+     not wrap it. A newtype must earn its place by enforcing an invariant
+   - **Existing implementation priority**: If current types can satisfy the requirement,
+     they stay unchanged
+   - **Function-driven changes**: Only restructure when the requirement genuinely cannot
+     be met through existing types
    - **Gradual improvement**: Extend existing types rather than rebuilding
-   - **Semver awareness**: For a published crate, note whether a change to a public type is breaking
+   - **Semver awareness**: For a published crate, note whether a change to a public type
+     is breaking
 
    **Quality Standards**:
    - Focus on current task flows
    - Clear and accurate type relationships
    - Maintain simplicity of existing implementations
-   - Avoid over-abstraction: do not introduce a trait with exactly one implementation and no test double or planned second implementor
+   - Avoid over-abstraction: do not introduce a trait with exactly one implementation and
+     no test double or planned second implementor
 
    ***
 
@@ -173,7 +212,7 @@ Input can be provided in two ways:
 
    **Output Format**:
 
-   ```
+   ```text
    ## Approach
    1. [Solution Category]:
       - [High-level strategy description]
@@ -194,12 +233,22 @@ Input can be provided in two ways:
    ```
 
    **Construction Guidance**:
-   - **Categorical Organization**: Organize by solution categories (API surface, data flow, error handling, concurrency)
-   - **Architecture Decisions**: Provide key technical choices and the trade-off each one resolves
-   - **Error strategy is architecture, not detail**: Decide and state whether this code returns a `thiserror` enum (library code, callers match on variants), propagates `anyhow::Error` with context (binary/top-level code), or both at a stated boundary. Decide what is a recoverable `Err` versus a genuine invariant violation
-   - **Dispatch and ownership**: Static dispatch via generics costs compile time and code size but keeps calls inlinable; `Arc<dyn Trait>` costs a vtable hop but keeps types simple and enables runtime swapping. State which and why
-   - **Concurrency**: If state is shared, state the mechanism (`Arc<Mutex<_>>`, `RwLock`, atomics, `ArcSwap`, channels) and what the contention profile is. If anything runs on a hot path, say what it must not do there (allocate, block, touch I/O)
-   - **Async**: If async, state the runtime, whether futures must be cancellation-safe, and where `spawn`/`spawn_blocking` boundaries fall
+   - **Categorical Organization**: Organize by solution categories (API surface, data
+     flow, error handling, concurrency)
+   - **Architecture Decisions**: Provide key technical choices and the trade-off each one
+     resolves
+   - **Error strategy is architecture, not detail**: Decide and state whether this code
+     returns a `thiserror` enum (library code, callers match on variants), propagates
+     `anyhow::Error` with context (binary/top-level code), or both at a stated boundary.
+     Decide what is a recoverable `Err` versus a genuine invariant violation
+   - **Dispatch and ownership**: Static dispatch via generics costs compile time and code
+     size but keeps calls inlinable; `Arc<dyn Trait>` costs a vtable hop but keeps types
+     simple and enables runtime swapping. State which and why
+   - **Concurrency**: If state is shared, state the mechanism (`Arc<Mutex<_>>`, `RwLock`,
+     atomics, `ArcSwap`, channels) and what the contention profile is. If anything runs on
+     a hot path, say what it must not do there (allocate, block, touch I/O)
+   - **Async**: If async, state the runtime, whether futures must be cancellation-safe,
+     and where `spawn`/`spawn_blocking` boundaries fall
    - **Best Practices**: Combine ecosystem idioms and experience summaries
    - **Decision Rationale**: Explain why specific solutions were chosen
    - **Risk Assessment**: Identify potential risks and response strategies
@@ -217,7 +266,7 @@ Input can be provided in two ways:
 
    **Output Format**:
 
-   ```
+   ```text
    ## Structure
 
    ### Crate and Module Layout
@@ -247,12 +296,20 @@ Input can be provided in two ways:
    ```
 
    **Construction Guidance**:
-   - **Module tree**: Give the real paths. A new module needs its `mod` declaration in the parent and a stated visibility (`pub`, `pub(crate)`, private)
-   - **Visibility is design**: Default to the narrowest that works. `pub(crate)` for cross-module internals, `pub` only for the crate's intended API surface
-   - **Dependency direction**: Inner layers must not know about outer ones. Dependency inversion is expressed as a trait defined in the consumer's layer and implemented outside it
-   - **Derives are contracts**: `Clone` on a large type invites copies; `PartialEq` on a float-bearing type is a trap; `Default` can manufacture an invalid instance. Justify each derive
-   - **Crate boundaries**: State which crate owns the type. Moving a type across a crate boundary later is a breaking change for downstream users
-   - **Extension points**: Traits and feature flags that accommodate future work without restructuring
+   - **Module tree**: Give the real paths. A new module needs its `mod` declaration in the
+     parent and a stated visibility (`pub`, `pub(crate)`, private)
+   - **Visibility is design**: Default to the narrowest that works. `pub(crate)` for
+     cross-module internals, `pub` only for the crate's intended API surface
+   - **Dependency direction**: Inner layers must not know about outer ones. Dependency
+     inversion is expressed as a trait defined in the consumer's layer and implemented
+     outside it
+   - **Derives are contracts**: `Clone` on a large type invites copies; `PartialEq` on a
+     float-bearing type is a trap; `Default` can manufacture an invalid instance. Justify
+     each derive
+   - **Crate boundaries**: State which crate owns the type. Moving a type across a crate
+     boundary later is a breaking change for downstream users
+   - **Extension points**: Traits and feature flags that accommodate future work without
+     restructuring
 
    **Quality Standards**:
    - Clear architectural hierarchy
@@ -263,11 +320,12 @@ Input can be provided in two ways:
 
    ### O - Operations
 
-   **Objective**: Transform abstract solutions into specific executable implementation tasks
+   **Objective**: Transform abstract solutions into specific executable implementation
+   tasks
 
    **Output Format**:
 
-   ```
+   ```text
    ## Operations
 
    ### Create/Update Type - `TypeName`
@@ -326,12 +384,17 @@ Input can be provided in two ways:
    **Construction Guidance**:
    - **Based on First Four Stages**: Strictly based on complete context of R, E, A, S
    - **Task Classification**: Group by module or component type
-   - **Execution Order**: Order by dependency — types with no dependencies first (errors, newtypes, enums), then traits, then implementors, then wiring, then tests
-   - **Exact signatures**: Give the real signature including `&self`/`&mut self`/`self`, borrows, and the full `Result` type. Ambiguity here is what produces code that does not compile
-   - **Error paths are logic**: For each fallible step, name the error variant returned. "Handle errors appropriately" is not an instruction
+   - **Execution Order**: Order by dependency — types with no dependencies first (errors,
+     newtypes, enums), then traits, then implementors, then wiring, then tests
+   - **Exact signatures**: Give the real signature including `&self`/`&mut self`/`self`,
+     borrows, and the full `Result` type. Ambiguity here is what produces code that does
+     not compile
+   - **Error paths are logic**: For each fallible step, name the error variant returned.
+     "Handle errors appropriately" is not an instruction
    - **Single Responsibility**: Each task has clear responsibilities and boundaries
    - **Verifiability**: Each task has clear completion criteria
-   - **Logical Rigor**: Ensure task orchestration is based on the type model, avoiding gaps
+   - **Logical Rigor**: Ensure task orchestration is based on the type model, avoiding
+     gaps
 
    **Quality Standards**:
    - Tasks can be executed directly
@@ -346,7 +409,7 @@ Input can be provided in two ways:
 
    **Output Format**:
 
-   ```
+   ```text
    ## Norms
    1. Naming: `snake_case` for functions/modules/fields, `UpperCamelCase` for types/traits/variants,
       `SCREAMING_SNAKE_CASE` for consts. Avoid stutter (`cache::CacheEntry` → `cache::Entry`).
@@ -377,11 +440,14 @@ Input can be provided in two ways:
    ```
 
    **Construction Guidance**:
-   - **Standardization**: Define unified coding standards, derived from what the codebase already does
+   - **Standardization**: Define unified coding standards, derived from what the codebase
+     already does
    - **Reusability**: Extract reusable patterns already present in the project
    - **Consistency**: Ensure all components follow the same standards
-   - **Quality Assurance**: Prefer mechanisms the compiler or clippy can enforce over conventions a reviewer must remember
-   - **Best Practices**: Reflect ecosystem idioms — but where the project's existing convention differs, the project wins
+   - **Quality Assurance**: Prefer mechanisms the compiler or clippy can enforce over
+     conventions a reviewer must remember
+   - **Best Practices**: Reflect ecosystem idioms — but where the project's existing
+     convention differs, the project wins
 
    **Quality Standards**:
    - Clear and specific standards
@@ -396,7 +462,7 @@ Input can be provided in two ways:
 
    **Output Format**:
 
-   ```
+   ```text
    ## Safeguards
    1. Functional Constraints: [Functional requirements and limitations with specific criteria]
    2. Type-Level Constraints: [Invariants the type system must enforce rather than runtime checks;
@@ -424,11 +490,16 @@ Input can be provided in two ways:
 
    **Construction Guidance**:
    - **Clear Boundaries**: Clearly define what can and cannot be done
-   - **Verifiability**: Each constraint should be checkable by a test, a lint, or a build command — name the check
-   - **Completeness**: Cover functionality, types, errors, memory, concurrency, performance, security, compatibility
-   - **Prefer compile-time to runtime**: A constraint the type system enforces cannot regress; a constraint a comment states can
-   - **Quantified Standards**: Provide quantifiable standards and metrics whenever possible
-   - **Exit criteria**: If the source requirement states acceptance or exit criteria, reproduce them verbatim here
+   - **Verifiability**: Each constraint should be checkable by a test, a lint, or a build
+     command — name the check
+   - **Completeness**: Cover functionality, types, errors, memory, concurrency,
+     performance, security, compatibility
+   - **Prefer compile-time to runtime**: A constraint the type system enforces cannot
+     regress; a constraint a comment states can
+   - **Quantified Standards**: Provide quantifiable standards and metrics whenever
+     possible
+   - **Exit criteria**: If the source requirement states acceptance or exit criteria,
+     reproduce them verbatim here
 
    **Quality Standards**:
    - Clear constraint conditions
@@ -441,7 +512,7 @@ Input can be provided in two ways:
 
    a. **Header Section**:
 
-   ```
+   ```text
    # [Derived Requirement Title]
    ```
 
@@ -471,8 +542,10 @@ Input can be provided in two ways:
 
    a. **Derive file name**: `{TIMESTAMP}-[{ACTION}]-{scope}-{description}.md`
    - **TIMESTAMP**: `YYYYMMDDHHmm` (current time)
-   - **ACTION**: Infer from business context - `[Feat]`, `[Fix]`, `[Refactor]`, `[Perf]`, `[Test]`, `[Docs]`
-   - **scope**: The crate or module the work lands in - e.g. `proto`, `domain`, `infra`, `cli`, `db`, `codec` (optional)
+   - **ACTION**: Infer from business context - `[Feat]`, `[Fix]`, `[Refactor]`, `[Perf]`,
+     `[Test]`, `[Docs]`
+   - **scope**: The crate or module the work lands in - e.g. `proto`, `domain`, `infra`,
+     `cli`, `db`, `codec` (optional)
    - **description**: Derive from business context - kebab-case, < 10 words
 
    Examples:
@@ -485,7 +558,7 @@ Input can be provided in two ways:
 
    c. **Show summary to user**:
 
-   ```
+   ```text
    ✅ REASONS-Canvas prompt generated and saved to `spdd/prompt/<file-name>.md`
 
    📋 Generated sections:
@@ -500,7 +573,8 @@ Input can be provided in two ways:
 
 6. **Ask for confirmation to proceed**
 
-   > "The REASONS-Canvas structured prompt is ready. Would you like me to proceed with the implementation?"
+   > "The REASONS-Canvas structured prompt is ready. Would you like me to proceed with the
+   > implementation?"
 
 **Markdown Output Norms** (the structured prompt this command writes is linted)
 
@@ -535,32 +609,45 @@ what it reports. Do not hand the document to the gate to be rejected.
 
 **Output**
 
-A fully-populated, implementation-ready REASONS-Canvas structured prompt saved to `spdd/prompt/<file-name>.md`, then implementation upon user confirmation.
+A fully-populated, implementation-ready REASONS-Canvas structured prompt saved to
+`spdd/prompt/<file-name>.md`, then implementation upon user confirmation.
 
 **Guardrails**
 
 - Emitted markdown MUST satisfy the **Markdown Output Norms** above: wrapped at 90
   columns, every fence carrying a language, real headings rather than bold lines,
   and no trailing punctuation in a heading
-- **CRITICAL**: Do NOT just output section headers - you MUST analyze business context and generate fully-populated content for all 7 REASONS stages
+- **CRITICAL**: Do NOT just output section headers - you MUST analyze business context and
+  generate fully-populated content for all 7 REASONS stages
 - Do NOT proceed without business context input
-- Do NOT include framework metadata (Objective, Construction Guidance, Quality Standards) in the final prompt
+- Do NOT include framework metadata (Objective, Construction Guidance, Quality Standards)
+  in the final prompt
 - Do NOT leave placeholders or TODO items - generate complete, specific content
 - Do NOT implement code before user confirms the structured prompt
 - File name MUST follow SPDD naming convention defined above
 - Always create `spdd/prompt/` directory if it does not exist
-- Read codebase context when needed to generate accurate type models and implementation tasks
+- Read codebase context when needed to generate accurate type models and implementation
+  tasks
 - Ensure all sections are logically coherent and support the business requirement
-- Operations section MUST contain specific, executable implementation tasks with exact Rust signatures and error paths
-- **Conservative type design**: Respect existing types, avoid unnecessary newtypes and traits
-- **No code blocks**: the prompt is a specification. Describe signatures and logic in prose; do not write ```rust blocks. Mermaid diagrams are permitted
-- Never specify a type or trait from a crate that is not already a dependency without adding it explicitly to Structure with justification
+- Operations section MUST contain specific, executable implementation tasks with exact
+  Rust signatures and error paths
+- **Conservative type design**: Respect existing types, avoid unnecessary newtypes and
+  traits
+- **No code blocks**: the prompt is a specification. Describe signatures and logic in
+  prose; do not write ```rust blocks. Mermaid diagrams are permitted
+- Never specify a type or trait from a crate that is not already a dependency without
+  adding it explicitly to Structure with justification
 
 **Context Integrity Guardrails**:
 
-- **MUST read ALL `@` referenced files completely** - do NOT skip or partially read any referenced file
-- **MUST read folder contents** when `@` references a folder - scan and read all relevant files
+- **MUST read ALL `@` referenced files completely** - do NOT skip or partially read any
+  referenced file
+- **MUST read folder contents** when `@` references a folder - scan and read all relevant
+  files
 - **Do NOT summarize or truncate** referenced file contents - preserve full information
-- **Verify all references resolved** - if any `@` reference fails to read, report error immediately
-- **Combine all sources** - merge text descriptions with file contents into unified context
-- **Preserve original intent** - do not interpret or modify the meaning of provided context
+- **Verify all references resolved** - if any `@` reference fails to read, report error
+  immediately
+- **Combine all sources** - merge text descriptions with file contents into unified
+  context
+- **Preserve original intent** - do not interpret or modify the meaning of provided
+  context

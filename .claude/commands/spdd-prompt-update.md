@@ -5,13 +5,16 @@ category: Development
 description: Update an existing Rust SPDD prompt file with new requirements or architectural changes while preserving the REASONS Canvas structure
 ---
 
-Update an existing SPDD (Structured Prompt-Driven Development) prompt file for a Rust codebase with new requirements, architectural changes, or refinements while maintaining the REASONS Canvas structure and following all specification rules.
+Update an existing SPDD (Structured Prompt-Driven Development) prompt file for a Rust
+codebase with new requirements, architectural changes, or refinements while maintaining
+the REASONS Canvas structure and following all specification rules.
 
-**Input**: The argument after `/spdd-prompt-update` includes the prompt file reference and the update instructions.
+**Input**: The argument after `/spdd-prompt-update` includes the prompt file reference and
+the update instructions.
 
 **Examples**:
 
-```
+```text
 # Update with architectural principles
 /spdd-prompt-update @spdd/prompt/202603131758-[Feat]-cache-answer-cache.md
 Invert the storage dependency behind a trait defined in the domain layer
@@ -30,10 +33,12 @@ Update Safeguards to add a memory ceiling and an eviction guarantee
 1. **Validate input**
 
    a. **If no prompt file provided**, use the **AskUserQuestion tool** to ask:
-   > "Please provide the path to the SPDD prompt file to update (e.g., `@spdd/prompt/xxx.md`)"
+   > "Please provide the path to the SPDD prompt file to update (e.g.,
+   > `@spdd/prompt/xxx.md`)"
 
    b. **If no update instructions provided**, use the **AskUserQuestion tool** to ask:
-   > "What changes would you like to make to this prompt? (e.g., new requirements, architectural changes, constraint updates)"
+   > "What changes would you like to make to this prompt? (e.g., new requirements,
+   > architectural changes, constraint updates)"
 
    **IMPORTANT**: Do NOT proceed without both the file path and update instructions.
 
@@ -55,7 +60,7 @@ Update Safeguards to add a memory ceiling and an eviction guarantee
    Determine which sections need to be updated based on the change request:
 
    | Change Type | Affected Sections |
-      |-------------|-------------------|
+   |-------------|-------------------|
    | New functional requirement | R, E, A, S, O, possibly N, S |
    | Architectural change | A, S, O, N |
    | New type/relationship | E, S, O |
@@ -72,33 +77,42 @@ Update Safeguards to add a memory ceiling and an eviction guarantee
     - New types → Read existing structs, enums and their error types
     - New patterns → Read existing similar implementations
     - New integrations → Read the traits (ports) and their adapters
-    - A new dependency → Check the target crate's `Cargo.toml` for whether it is already available and under which feature
+    - A new dependency → Check the target crate's `Cargo.toml` for whether it is already
+      available and under which feature
 
 5. **Apply updates to affected sections**
 
    For each affected section:
 
-   a. **Preserve unchanged content** - Do NOT rewrite sections that don't need changes
-   b. **Integrate changes coherently** - Ensure new content fits with existing content
-   c. **Maintain consistency** - Cross-check that changes are reflected across related sections
-   d. **Follow REASONS construction guidance** - Apply the same quality standards as initial generation
+   a. **Preserve unchanged content** - Do NOT rewrite sections that don't need changes b.
+   **Integrate changes coherently** - Ensure new content fits with existing content c.
+   **Maintain consistency** - Cross-check that changes are reflected across related
+   sections d. **Follow REASONS construction guidance** - Apply the same quality standards
+   as initial generation
 
    **Section-specific guidance**:
 
     - **Requirements**: Update if business goal changes
-    - **Entities**: Add/modify types, update the Mermaid diagram (generics are `~T~`; flatten nested generics)
-    - **Approach**: Update strategies, add new architectural decisions — ownership, dispatch and error strategy belong here, not only in Operations
-    - **Structure**: Update trait implementations, dependencies, module tree, crate edges, feature gates
-    - **Operations**: Add new operations, modify existing specifications, keep signatures and error paths exact
+    - **Entities**: Add/modify types, update the Mermaid diagram (generics are `~T~`;
+      flatten nested generics)
+    - **Approach**: Update strategies, add new architectural decisions — ownership,
+      dispatch and error strategy belong here, not only in Operations
+    - **Structure**: Update trait implementations, dependencies, module tree, crate edges,
+      feature gates
+    - **Operations**: Add new operations, modify existing specifications, keep signatures
+      and error paths exact
     - **Norms**: Add new standards, update naming or lint conventions
-    - **Safeguards**: Add new constraints, update existing rules, revisit MSRV/semver/feature impact
+    - **Safeguards**: Add new constraints, update existing rules, revisit
+      MSRV/semver/feature impact
 
 6. **Validate cross-section consistency**
 
    After updates, verify:
     - Types mentioned in Operations exist in the Entities section
-    - Dependencies in Structure match what's described in Operations, and any new crate is recorded
-    - Constraints in Safeguards are enforceable based on Operations, and each names its check
+    - Dependencies in Structure match what's described in Operations, and any new crate is
+      recorded
+    - Constraints in Safeguards are enforceable based on Operations, and each names its
+      check
     - Norms are applied consistently across Operations
     - Error variants referenced in Operations exist in the error type defined in Entities
     - A layering rule in Structure is not contradicted by a module path in Operations
@@ -110,7 +124,7 @@ Update Safeguards to add a memory ceiling and an eviction guarantee
 
 8. **Show update summary**
 
-   ```
+   ```text
    ✅ SPDD prompt updated: `spdd/prompt/<file-name>.md`
 
    📋 Changes made:
@@ -126,7 +140,8 @@ Update Safeguards to add a memory ceiling and an eviction guarantee
 
 9. **Ask for confirmation**
 
-   > "The SPDD prompt has been updated. Would you like me to regenerate the affected code using `/spdd-generate`?"
+   > "The SPDD prompt has been updated. Would you like me to regenerate the affected code
+   > using `/spdd-generate`?"
 
 **Markdown Output Norms** (the prompt file this command rewrites is linted)
 
@@ -161,7 +176,8 @@ what it reports. Do not hand the document to the gate to be rejected.
 
 **Output**
 
-The updated SPDD prompt file with changes integrated while preserving the REASONS Canvas structure.
+The updated SPDD prompt file with changes integrated while preserving the REASONS Canvas
+structure.
 
 **Guardrails**
 
@@ -179,28 +195,40 @@ The updated SPDD prompt file with changes integrated while preserving the REASON
 
 **No Code Block Rules** (CRITICAL):
 
-The SPDD prompt file is a **specification document**, not source code. It describes WHAT to implement, leaving the HOW to the `/spdd-generate` phase.
+The SPDD prompt file is a **specification document**, not source code. It describes WHAT
+to implement, leaving the HOW to the `/spdd-generate` phase.
 
 - **Do NOT include language-specific code blocks** (e.g., ```rust, ```sql, ```toml)
-- **Do NOT include implementation code** - no `impl` blocks, function bodies, SQL queries, or macro invocations in code form
+- **Do NOT include implementation code** - no `impl` blocks, function bodies, SQL queries,
+  or macro invocations in code form
 - **Use natural language, with inline signatures** to describe:
-    - Function signatures: "Method `find_by_id(&self, id: &EntryId) -> Result<Option<Entry>, StoreError>`"
-    - Query logic: "Select entries whose zone matches and whose expiry is in the future, ordered by insertion time descending"
-    - Trait contracts: "Trait `Store` requires `save(&self, entry: Entry) -> Result<(), StoreError>` and `find_by_id(...)`, bounded `Send + Sync + 'static`"
-    - Derives: "Derives `Debug, Clone, PartialEq` — `Clone` because the cache hands out owned copies"
-- **Allowed diagram blocks**: Mermaid diagrams for type relationships are permitted (```mermaid)
+  - Function signatures: "Method
+    `find_by_id(&self, id: &EntryId) -> Result<Option<Entry>, StoreError>`"
+  - Query logic: "Select entries whose zone matches and whose expiry is in the future,
+    ordered by insertion time descending"
+  - Trait contracts: "Trait `Store` requires
+    `save(&self, entry: Entry) -> Result<(), StoreError>` and `find_by_id(...)`, bounded
+    `Send + Sync + 'static`"
+  - Derives: "Derives `Debug, Clone, PartialEq` — `Clone` because the cache hands out
+    owned copies"
+- **Allowed diagram blocks**: Mermaid diagrams for type relationships are permitted
+  (```mermaid)
 - **Describe, don't implement**:
-    - ✅ "Adapter maps the stored row into the domain type via `TryFrom<Row>`, returning `StoreError::Corrupt` on a malformed column"
-    - ❌ a ```rust block containing `impl TryFrom<Row> for Entry { ... }`
-- **Exact signatures are specification, not implementation**: naming the receiver, borrows, bounds and the full `Result` type is what makes the prompt generatable. Withholding them is not abstraction, it is ambiguity
+  - ✅ "Adapter maps the stored row into the domain type via `TryFrom<Row>`, returning
+    `StoreError::Corrupt` on a malformed column"
+  - ❌ a ```rust block containing `impl TryFrom<Row> for Entry { ... }`
+- **Exact signatures are specification, not implementation**: naming the receiver,
+  borrows, bounds and the full `Result` type is what makes the prompt generatable.
+  Withholding them is not abstraction, it is ambiguity
 - **Specification vs Implementation boundary**:
-    - SPDD prompt = specification (describes contracts, behaviors, constraints)
-    - Generated code = implementation (actual source files created by `/spdd-generate`)
+  - SPDD prompt = specification (describes contracts, behaviors, constraints)
+  - Generated code = implementation (actual source files created by `/spdd-generate`)
 
 **Update-Specific Guardrails**:
 
 - **Minimal change principle**: Only modify what's necessary to satisfy the update request
-- **Preserve intent**: Do not change the original design intent unless explicitly requested
+- **Preserve intent**: Do not change the original design intent unless explicitly
+  requested
 - **Backward compatibility**: Consider impact on any existing implementation
 - **Traceability**: Changes should be clearly identifiable in the updated sections
 
@@ -208,7 +236,7 @@ The SPDD prompt file is a **specification document**, not source code. It descri
 
 This command supports the iterative refinement cycle in SPDD:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    SPDD Prompt Lifecycle                                 │
 ├─────────────────────────────────────────────────────────────────────────┤
@@ -265,12 +293,15 @@ This command supports the iterative refinement cycle in SPDD:
 
 5. **Updating Coding Standards**
     - Affects: Norms, Operations (to align with new standards)
-    - Example: "Adopt `thiserror` enums at every crate boundary and reserve `anyhow` for the binary"
+    - Example: "Adopt `thiserror` enums at every crate boundary and reserve `anyhow` for
+      the binary"
 
 6. **Changing Ownership or Dispatch**
     - Affects: Approach, Structure, Operations, Safeguards
-    - Example: "Replace `Arc<Mutex<Matcher>>` with `ArcSwap` so readers never block on reload"
+    - Example: "Replace `Arc<Mutex<Matcher>>` with `ArcSwap` so readers never block on
+      reload"
 
 7. **Changing the Error Model**
     - Affects: Entities, Operations, Safeguards
-    - Example: "Split `StoreError::Io` into `Io` and `Corrupt` so callers can distinguish retryable failures"
+    - Example: "Split `StoreError::Io` into `Io` and `Corrupt` so callers can distinguish
+      retryable failures"
