@@ -904,8 +904,9 @@ the counterpart to, and before the `justfile` that invokes it.*
 3. **Global settings**:
    - `respect_gitignore` on, so build output and untracked scratch files are never
      analysed.
-   - `exclude` covering `.claude/**` and `target/**`. `.claude/commands/*.md` are vendored
-     tool definitions, not documents authored in this project.
+   - `exclude` covering `target/**` and the Fixture E directory, and nothing else. In
+     particular `.claude/commands/**` is **not** excluded: those files are maintained by
+     this project, so they are gated like every other document.
 4. **Hand-written tier — the full rule set.** Set the line-length rule's `line-length` to
    **90**, which is the width the ADRs and this canvas are already wrapped to.
    *Rationale for not taking the default 80*: it would report about a dozen findings that
@@ -913,12 +914,19 @@ the counterpart to, and before the `justfile` that invokes it.*
    **a gate that starts red teaches people to ignore it**. Leave the rule's table
    exemption at its default — a markdown table cannot be wrapped and is not a defect for
    being wide.
-5. **One policy over every document.** No per-path rule exemption. The line-length rule
-   exempts only what cannot be wrapped — tables, fenced code blocks and inline code spans
-   — and prose is exempt nowhere, `spdd/**` included. Record in a comment that the former
-   `spdd/**` exemption was retired by teaching the `/spdd-*` commands the norms and
-   reflowing the existing contracts, so a future reader reaches for that fix rather than
-   for a new exemption.
+5. **One policy over every document, and one principled test for any exemption.** The
+   line-length rule exempts only what cannot be wrapped — tables, fenced code blocks and
+   inline code spans — and prose is exempt nowhere, `spdd/**` included.
+   **The test an exemption must pass**: it is legitimate when the rule *does not apply to
+   the content*, and illegitimate when it papers over content that should simply comply.
+   Record both sides of that in a comment, because the file has carried one of each:
+   - *Illegitimate, retired*: `spdd/**` exempted from line length because the `/spdd-*`
+     commands did not know the wrap width. That was content that should comply, so the
+     fix was to teach the commands and reflow the contracts — not to keep the exemption.
+   - *Legitimate, kept*: `.claude/**` exempted from the indented-heading and
+     indented-rule rules, because the REASONS stage headings in
+     `spdd-reasons-canvas.md` are indented **on purpose**, to nest them inside a step.
+     Two rules, one directory — not an excluded directory.
 6. **The gate checks; it never writes.** The gate recipe runs the tool's *check* mode
    only. Auto-fix lives behind its own recipe (`md-fix`) and prose rewrapping behind
    another (`md-reflow`); neither is ever invoked by `gate`. A gate that edits the working
@@ -1257,11 +1265,16 @@ the counterpart to, and before the `justfile` that invokes it.*
 - Markdown is linted by `rumdl`, pinned to **exactly 0.2.75**, configured by a single
   `rumdl.toml` at the repository root.
 - The markdown line-length rule is set to **90** and applies to **every** document,
-  `spdd/**` included. It exempts only what cannot be wrapped: tables, fenced code blocks
-  and inline code spans. **There is no per-path rule exemption, and adding one is a change
-  to what the gate means** — the same scrutiny as weakening a clippy lint.
-- `.claude/commands/**` is excluded: vendored tool definitions. Note this exclusion is
-  weaker than it was — the `/spdd-*` files there are now maintained by this project.
+  `spdd/**` and `.claude/**` included. It exempts only what cannot be wrapped: tables,
+  fenced code blocks and inline code spans.
+- **Exactly one per-path rule exemption exists**, and it must keep passing the test in
+  Operations 7a step 5: `.claude/**` is exempt from the indented-heading and indented-rule
+  rules, because that indentation is deliberate nesting rather than a defect. Every other
+  rule applies there and those files pass. **Adding a second exemption is a change to what
+  the gate means** — the same scrutiny as weakening a clippy lint, and it must be argued
+  on whether the rule applies to the content, never on how many findings it silences.
+- Nothing is excluded from the markdown gate except build output and the Fixture E
+  directory. `.claude/commands/**` is gated like every other document.
 - **The gate never writes to a file.** Structural auto-fix lives in `md-fix` and prose
   rewrapping in `md-reflow`; `gate` invokes neither. A gate that edits the working tree is
   not a gate.
@@ -1345,11 +1358,13 @@ the counterpart to, and before the `justfile` that invokes it.*
   change to verify, not to absorb. This is milder than the arch-lint hazard in one
   specific respect worth remembering: a markdown rule change makes the gate **noisy**, not
   silently inert.
-- **A per-path rule exemption is the cheap fix whenever a generated document trips a
-  rule, and nothing in the tooling will object to one.** The `spdd/**` wrapping exemption
-  this canvas originally specified has been retired, so the config now has no exemption to
-  widen. Keeping it that way is a standing obligation: the correct fix is almost always to
-  change what the generator emits. Fixture E is what notices if it is not.
+- **A per-path rule exemption is the cheap fix whenever a document trips a rule, and
+  nothing in the tooling will object to one.** The config carries exactly one, on
+  `.claude/**`, and it earns its place by the test in Operations 7a step 5 — the rule does
+  not apply to that content. The `spdd/**` wrapping exemption that failed the same test
+  was retired rather than kept. The standing obligation is to keep asking which kind a new
+  exemption would be, because the tooling cannot tell them apart and the answer is almost
+  always to change what the document emits. Fixture E is what notices.
 - **The `/spdd-*` commands are instructions to a model, not a deterministic formatter.**
   They now carry the wrapping norms, but nothing guarantees compliance the way `cargo fmt`
   guarantees Rust layout. A generated document may still arrive over-width; that is an

@@ -33,27 +33,6 @@ respect_gitignore = true
 
 exclude = [
     "target/**",
-    # Vendored tool definitions. The /spdd-* files here ARE now maintained by
-    # this project, so this exclusion is weaker than it reads.
-    #
-    # They are now down to 14 findings, all of one kind. The cosmetic issues,
-    # the prose wrapping, and the heading structure are all fixed: each file
-    # has an H1 after its frontmatter, and its section markers are real `##`
-    # headings rather than bold paragraphs.
-    #
-    # What remains is MD023 and MD035, 7 each, entirely in
-    # spdd-reasons-canvas.md. Both want the seven REASONS stage headings and
-    # their `***` rules un-indented out of step 3 of the Steps list. **The
-    # indentation is load-bearing**: it is what makes the seven stages read as
-    # sub-content of that step. Flattening them promotes the framework to
-    # top-level sections of the document, which is a misreading rather than a
-    # fix — so the rules are left firing and the exclusion stays.
-    #
-    # The alternative, if these files are ever brought under the gate, is to
-    # disable MD023 and MD035 in this config with that reason recorded — the
-    # same posture as MD013 exempting tables and code blocks, where the rule
-    # simply does not apply to the content.
-    ".claude/**",
     # Fixture E is a DELIBERATE violation and must not fail the normal run.
     #
     # *** IT IS LINTED ANYWAY, AND THE HOW MATTERS. ***
@@ -86,3 +65,34 @@ line-length = 90
 # merely inconvenient to wrap. Prose has no exemption.
 code-blocks = false
 code-spans = false
+
+# ===========================================================================
+# Per-path rule exemptions.
+#
+# There is exactly one, and the distinction it rests on is the important part
+# of this file.
+#
+# A per-path exemption is legitimate when the rule DOES NOT APPLY to the
+# content — the same reason MD013 above exempts tables, code blocks and code
+# spans. It is illegitimate when it papers over content that should simply
+# comply. This file used to carry the illegitimate kind: spdd/** was exempted
+# from MD013 because the /spdd-* commands did not know the wrap width. That was
+# content that should comply, so the exemption was retired by teaching the
+# commands and reflowing the contracts — not by keeping it.
+#
+# The one below is the legitimate kind.
+#
+# MD023 (indented headings) and MD035 (indented horizontal rules) fire on
+# .claude/commands/spdd-reasons-canvas.md, where the seven REASONS stage
+# headings and their `***` rules are indented three spaces inside step 3 of the
+# Steps list. THAT INDENTATION IS LOAD-BEARING: it is what makes the seven
+# stages read as sub-content of that step. Un-indenting them would promote the
+# framework to top-level sections of the document — a misreading, not a fix.
+#
+# Note what is NOT exempted here. Every other rule applies to these files and
+# they pass: they were wrapped, their fences languaged, and each was given an
+# H1 and real `##` section headings. This is a two-rule exemption scoped to one
+# directory, not an excluded directory.
+# ===========================================================================
+[per-file-ignores]
+".claude/**" = ["MD023", "MD035"]
