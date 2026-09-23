@@ -67,6 +67,12 @@ Concretely, this phase must:
 - **Record the three pieces of reasoning that would otherwise be lost** as ADRs: the
   layering model and the arch-lint engine mechanism, the `hickory-proto` exception to the
   from-scratch rule, and the pinned root trust anchor.
+- **Write the durable engineering-norms document every later phase codes against** —
+  `CLAUDE.md` at the repository root, covering this phase's own conventions (ports and
+  adapters, `thiserror`, checked arithmetic, no synchronous I/O, `tracing`) and a
+  Rust-adapted Object Calisthenics ruleset, so that "wrap a primitive when it carries
+  domain rules" is written down once, in phase 0, rather than re-derived by every later
+  phase's generation prompt.
 
 **Value**: the gate is the only continuous feedback signal this project has for most of
 its life. The cutover is last — styx runs on a dev box until v1 is complete, so phases 1
@@ -282,6 +288,15 @@ class ArchitectureDecisionRecord {
   +String consequences
 }
 
+class EngineeringGuidelines {
+  <<CLAUDE.md, repo root>>
+  +String scope "phases 0 through 12"
+  +Vec~String~ repo_conventions
+  +Vec~String~ calisthenics_rules
+  +String primitive_obsession_test
+  +not_mechanically_enforced true
+}
+
 CargoWorkspace "1" *-- "1" SharedFoundationCrate : member
 CargoWorkspace "1" *-- "0..n" FeatureCrate : members
 CargoWorkspace "1" *-- "1" CompositionRoot : member
@@ -316,6 +331,8 @@ HookConfig --> Gate : invokes
 CiWorkflow --> Gate : invokes
 GateSelfTest --> Gate : must be rejected by
 ArchitectureDecisionRecord --> ArchLintConfig : explains
+EngineeringGuidelines ..> FeatureCrate : governs code shape in
+EngineeringGuidelines --> ArchitectureDecisionRecord : references, does not restate
 ```
 
 **Conservative note**: nothing here wraps a simpler thing in a more complex one. The
@@ -577,6 +594,72 @@ trust anchor rollover. Write them where the reasoning is freshest.
   concrete rather than theoretical: `spdd/**` already has one rule switched off, and
   nothing but a fixture proves the rest are still on.
 
+### 9. `CLAUDE.md` — the durable engineering-norms document
+
+- **ADRs record why a past decision was made; `CLAUDE.md` records how code is written
+  going forward.** They serve different readers and different lifespans: an ADR is written
+  once and never edited except by superseding it, while `CLAUDE.md` is the document every
+  later phase's generation prompt is expected to already comply with, and is revised in
+  place as conventions are learned. Both live in the repository, both are gated as prose,
+  and neither substitutes for the other.
+- **Write it in phase 0, not when the first feature crate needs it.** Every rule it states
+  — ports as traits, `thiserror` at boundaries, checked arithmetic, no synchronous I/O in
+  `domain`/`application`, `tracing` over `println!` — is already decided above;
+  `CLAUDE.md` is where those decisions become the guidance a later phase's generation
+  reads before it writes a line of code, the same role Approach and Norms play inside this
+  canvas.
+- **Fold in a Rust-adapted Object Calisthenics ruleset**, because the original nine rules
+  target Java-shaped OOP and several do not survive translation unchanged. Record which
+  do, how, and — as importantly — which are consciously dropped or downgraded, so a later
+  reader does not "fix" a deliberate omission:
+  - *Wrap primitives that carry domain rules* — the rule this phase cares about most. A
+    primitive is wrapped in a newtype when a value has a validated range, a checked
+    arithmetic operation, a non-trivial wire encoding, or named constants attached to it —
+    not merely because it is a primitive. Phase 1's `Ttl`, `RecordType`, `RecordClass` and
+    `ResponseCode` are the precedent this rule generalises from, and `CLAUDE.md` cites them
+    by name rather than inventing a fresh example. A plain named `bool` field on a struct
+    like `Header::authoritative`, with no independent validation and no risk of being
+    confused with an unrelated value at a call site, is not primitive obsession — the test
+    is domain rules attached to the value, not the primitive-ness of its type.
+  - *Guard clauses over nested conditionals* — the "one level of indentation" and "no
+    `else`" rules collapse into one Rust-idiomatic instruction: prefer an early `return`,
+    `?`, or a `match` with each arm doing one thing, over a pyramid of nested `if`/`else`.
+  - *First-class collections* — a type that owns a `Vec<T>` or `HashMap<K, V>` exposes
+    domain-meaningful methods over that collection rather than being a bag of an unrelated
+    collection field plus other state. `TypeBitmap` in Phase 1 is the shape to point at.
+  - *Small, single-purpose modules over god-modules* — split a layer's module by concept
+    into its own file, the way `domain/rdata/basic.rs` and `domain/rdata/dnssec.rs` are
+    already split out of a single `rdata` catch-all, rather than letting one file
+    accumulate every type in a layer.
+  - *No setter that hands back a mutable handle onto enforce-at-construction state* — a
+    type whose invariant is checked in its constructor (`Label::new` rejecting more than
+    63 octets is the precedent) must not also expose a way to mutate the field back into
+    an invalid state. Prefer read accessors and reconstruction over in-place mutation for
+    types with a validated invariant.
+  - *Full words, no abbreviations* — already Norm 1's naming convention; restated here so
+    the ruleset reads as one document rather than two.
+  - **Downgraded to guidance, not a hard rule**: "one dot per line." Rust's `Result`,
+    `Option` and iterator combinators are idiomatically chained, and forbidding it would
+    fight the standard library. `CLAUDE.md` keeps the spirit — do not let a chain cross a
+    domain boundary without a named intermediate binding — and drops the letter.
+  - **Dropped outright**: a hard numeric cap on instance fields per type. Some domain types
+    legitimately carry several named fields with no shared substructure to extract — `Opt`
+    and `Header` are the existing examples — and an arbitrary field-count ceiling would
+    force an artificial wrapper type with no behaviour of its own, the opposite of what the
+    ruleset is for.
+- **`CLAUDE.md` does not restate ADR content.** Where a rule's rationale is already an ADR
+  (the layering model, the `hickory-proto` exception, the trust anchor), it is referenced
+  by path rather than duplicated, so the two documents cannot drift apart silently.
+- **Not mechanically enforced.** No lint in this repository checks "wrap this primitive";
+  unlike the clippy and arch-lint rules above, compliance with the Object Calisthenics
+  section is a review discipline, and `CLAUDE.md` says so in as many words rather than
+  implying a rigour the gate does not provide.
+- **Binds retroactively as precedent, not as a mandate to revise.** Phase 1's `styx-proto`
+  is already implemented and is cited as the worked example the newtype rule generalises
+  from; this phase does not modify it. A later phase that finds Phase 1 in violation of a
+  rule stated here has found a defect in the rule's wording, not licence to silently
+  rewrite shipped code — the SPDD "fix the prompt first" principle applies.
+
 ### Alternatives considered and rejected
 
 - **Amend the committed `arch-lint.toml` instead of replacing it.** Rejected: its
@@ -648,6 +731,7 @@ trust anchor rollover. Write them where the reasoning is freshest.
 ```text
 styx/
 ├── Cargo.toml                  # virtual manifest: members, [workspace.lints], [workspace.dependencies]
+├── CLAUDE.md                   # engineering guidelines every phase codes against
 ├── rust-toolchain.toml         # pinned rustc (the version the 15 lint names were verified against)
 ├── arch-lint.toml              # syn engine — NO [[layers]]
 ├── clippy.toml                 # 4 allow-*-in-tests entries
@@ -1122,6 +1206,46 @@ the counterpart to, and before the `justfile` that invokes it.*
    automated rollover looks like an omission to anyone who does not know the reasoning,
    and the seam that makes it recoverable is a design commitment made now.
 
+### 15. Write `CLAUDE.md` — the engineering-norms document
+
+1. **Responsibility**: give every later phase's generation prompt a single, durable
+   statement of how code in this repository is written, independent of any one phase's own
+   Norms section.
+2. **Steps**:
+   - Write `CLAUDE.md` at the repository root.
+   - **Repository conventions section**: restate, in prose, the conventions already fixed
+     by this phase — crate-per-feature with `domain`/`application`/`infrastructure` as
+     modules; ports as traits in `domain`, adapters in `infrastructure` or the `styx`
+     binary; `thiserror` enums at every fallible boundary, `anyhow` reserved for the
+     composition root; no `unwrap`/`expect`/`panic!` outside tests; checked arithmetic and
+     no indexing outside an audited primitive; no synchronous I/O in `domain` or
+     `application`; `tracing` over `println!`. Link each to the ADR that explains it where
+     one exists, rather than re-deriving the rationale.
+   - **Object Calisthenics section**: the Rust-adapted ruleset from Approach §9 in full —
+     the primitive-obsession/newtype rule stated first and in the most detail, citing
+     Phase 1's `Ttl`, `RecordType`, `RecordClass` and `ResponseCode` by name as the worked
+     example; guard clauses over nested conditionals; first-class collections; small
+     single-purpose modules over god-modules; no setter that reopens an
+     enforced-at-construction invariant; full words over abbreviations; the "one dot per
+     line" downgrade and the dropped field-count-ceiling rule, each stated with the
+     one-line reason it was downgraded or dropped, so a later reader does not silently
+     reinstate it.
+   - **Gate section**: a short pointer to `just gate` and `just gate-selftest` as the
+     mechanically enforced subset, making explicit that the Object Calisthenics rules are
+     **not** independently linted — no tool in this repository checks "wrap this
+     primitive" — and compliance is a review discipline, not an automated gate, unlike the
+     clippy and arch-lint rules above it.
+3. **Constraints**: no code blocks of any language — this is prose guidance, not a
+   generated artefact, and the file is linted by the same `rumdl.toml` as every other
+   hand-written document (it is not `spdd/**`, so the wrapping exemption does not apply to
+   it). It must not duplicate ADR rationale; it must not contradict Phase 1's
+   already-implemented use of newtypes, which it cites as precedent rather than something
+   this phase revises.
+4. **Completion criterion**: `CLAUDE.md` exists at the repository root, `just gate`'s
+   markdown step passes with it included, and it states the primitive-obsession/newtype
+   rule with the exact test — *domain rules attached to the value*, not primitive-ness
+   alone — given in Approach §9.
+
 ---
 
 ## Norms
@@ -1195,6 +1319,16 @@ the counterpart to, and before the `justfile` that invokes it.*
     *only*, because a command decides their width; every structural rule still applies to
     them. New documentation arrives lint-clean, and the gate never rewrites a file to make
     it so.
+
+16. **Primitive obsession is avoided; a newtype wraps a primitive that carries domain
+    rules.** A value gets its own type when it has a validated range, checked arithmetic,
+    a non-trivial wire encoding, or named constants attached to it — not merely because it
+    is a `u16`, a `u32`, a `bool` or a `String`. A plain named field with no independent
+    validation and no risk of being confused with an unrelated value at a call site is not
+    primitive obsession; the test is domain rules attached to the value, not the
+    primitive-ness of its type. `CLAUDE.md` states the full Rust-adapted Object
+    Calisthenics ruleset this generalises from; Phase 1's `Ttl`, `RecordType`,
+    `RecordClass` and `ResponseCode` are its worked examples.
 
 ---
 
@@ -1332,6 +1466,11 @@ the counterpart to, and before the `justfile` that invokes it.*
 - Every markdown file in the repository is lint-clean under `rumdl.toml`, including the
   ADRs this phase writes. A documentation gate that its own phase's documents do not pass
   is not a gate.
+- `CLAUDE.md` exists at the repository root, states the Rust-adapted Object Calisthenics
+  ruleset — the primitive-obsession/newtype rule stated with its exact test, citing Phase
+  1's `Ttl`, `RecordType`, `RecordClass` and `ResponseCode` by name — and is lint-clean
+  under `rumdl.toml` like every other hand-written document. It does not restate ADR
+  content; it references the ADRs it depends on by path.
 
 ### 9. Known limitations carried forward, to be re-verified in later phases
 
@@ -1374,3 +1513,8 @@ the counterpart to, and before the `justfile` that invokes it.*
   boundary around the web layer and the supervised task model arrive in **Phase 12 —
   Cutover hardening**. Weakening the lint before then removes the only protection there
   is.
+- **`CLAUDE.md`'s Object Calisthenics section is not mechanically enforced.** No lint in
+  this repository checks "wrap this primitive" the way clippy checks `.unwrap()`.
+  Compliance is a review discipline; a later phase's generated code can drift from the
+  ruleset without turning the gate red, and catching that drift depends on review, not on
+  `just gate`.
