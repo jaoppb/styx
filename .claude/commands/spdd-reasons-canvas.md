@@ -5,6 +5,8 @@ category: Development
 description: Generate REASONS-Canvas structured prompts for Rust codebases from business context without external template
 ---
 
+# /spdd-reasons-canvas
+
 Generate implementation-ready structured prompts using the built-in REASONS-Canvas
 framework (Requirements, Entities, Approach, Structure, Operations, Norms, Safeguards),
 targeting **Rust** codebases and their conventions.
@@ -33,7 +35,7 @@ Input can be provided in two ways:
 /spdd-reasons-canvas @docs/requirements/cache.md @docs/rfc-notes.md
 ```
 
-**Steps**
+## Steps
 
 1. **Validate and consolidate business context**
 
@@ -607,12 +609,12 @@ the workflow.
 (`just md`, `rumdl`, `markdownlint`), run it against the file you just wrote and fix
 what it reports. Do not hand the document to the gate to be rejected.
 
-**Output**
+## Output
 
 A fully-populated, implementation-ready REASONS-Canvas structured prompt saved to
 `spdd/prompt/<file-name>.md`, then implementation upon user confirmation.
 
-**Guardrails**
+## Guardrails
 
 - Emitted markdown MUST satisfy the **Markdown Output Norms** above: wrapped at 90
   columns, every fence carrying a language, real headings rather than bold lines,

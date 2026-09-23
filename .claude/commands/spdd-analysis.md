@@ -5,6 +5,8 @@ category: Development
 description: Analyze business requirements against a Rust codebase at a strategic level, producing enriched context (business + domain concepts + strategic direction + risks) for REASONS Canvas generation
 ---
 
+# /spdd-analysis
+
 Analyze a business requirement document against the current **Rust** codebase, producing a
 **strategic-level** enriched context that combines business information, domain concept
 identification, high-level approach decisions, and risk analysis — serving as high-quality
@@ -33,7 +35,7 @@ Input can be provided in two ways:
 /spdd-analysis @requirements/billing-report.md additionally needs CSV export support
 ```
 
-**Steps**
+## Steps
 
 1. **Validate and consolidate business input**
 
@@ -368,7 +370,7 @@ the workflow.
 (`just md`, `rumdl`, `markdownlint`), run it against the file you just wrote and fix
 what it reports. Do not hand the document to the gate to be rejected.
 
-**Output**
+## Output
 
 An enriched context document saved to `spdd/analysis/<file-name>.md` that transforms raw
 business requirements into a **strategic-level** analysis containing:
@@ -380,7 +382,7 @@ business requirements into a **strategic-level** analysis containing:
   considered)
 - Risk & gap analysis (ambiguities, edge cases, technical risks, AC coverage assessment)
 
-**Guardrails**
+## Guardrails
 
 - Emitted markdown MUST satisfy the **Markdown Output Norms** above: wrapped at 90
   columns, every fence carrying a language, real headings rather than bold lines,
@@ -420,7 +422,7 @@ business requirements into a **strategic-level** analysis containing:
 - **Preserve original intent** — do not interpret or modify the meaning of provided
   context
 
-**Integration with SPDD Workflow**
+## Integration with SPDD Workflow
 
 This command is the **pre-processing phase** of the SPDD workflow, bridging raw business
 requirements to implementation-ready structured prompts:
@@ -467,7 +469,7 @@ requirements to implementation-ready structured prompts:
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Why This Phase Matters**
+## Why This Phase Matters
 
 Raw business requirements describe **what** to build but lack the technical context needed
 to produce high-quality REASONS Canvas prompts. `/spdd-analysis` bridges this gap by:

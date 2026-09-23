@@ -5,6 +5,8 @@ category: Development
 description: Sync Rust code changes back to the structured SPDD prompt file following the REASONS Canvas methodology
 ---
 
+# /spdd-sync
+
 Synchronize implementation details from refactored or updated Rust code back to the
 structured SPDD (Structured Prompt-Driven Development) prompt file, ensuring the prompt
 remains the accurate source of truth for the system design.
@@ -12,7 +14,7 @@ remains the accurate source of truth for the system design.
 **Input**: The argument after `/spdd-sync` is the path to the structured prompt file
 (e.g., `@spdd/prompt/202602271430-[Feat]-api-create-agent-endpoint.md`).
 
-**Steps**
+## Steps
 
 1. **If no input provided, ask for the prompt file**
 
@@ -191,7 +193,7 @@ remains the accurate source of truth for the system design.
    - Any manual review recommendations
    - Suggestions for further cleanup if needed
 
-**Sync Patterns & Best Practices**
+## Sync Patterns & Best Practices
 
 When syncing different types of changes:
 
@@ -275,14 +277,14 @@ the workflow.
 (`just md`, `rumdl`, `markdownlint`), run it against the file you just wrote and fix
 what it reports. Do not hand the document to the gate to be rejected.
 
-**Output**
+## Output
 
 - Updated structured prompt file with synced content
 - Summary of all changes made to each section
 - List of any inconsistencies found and resolved
 - Recommendations for manual review if needed
 
-**Guardrails**
+## Guardrails
 
 - Emitted markdown MUST satisfy the **Markdown Output Norms** above: wrapped at 90
   columns, every fence carrying a language, real headings rather than bold lines,
@@ -298,7 +300,7 @@ what it reports. Do not hand the document to the gate to be rejected.
 - When in doubt, show the proposed change and ask user to confirm
 - Never change the prompt's unique identifier or metadata
 
-**Integration with SPDD Workflow**
+## Integration with SPDD Workflow
 
 This command completes the bidirectional sync in the SPDD workflow:
 
@@ -339,7 +341,7 @@ This command completes the bidirectional sync in the SPDD workflow:
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**When to Use /spdd-sync**
+## When to Use /spdd-sync
 
 Use this command when:
 

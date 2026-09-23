@@ -5,6 +5,8 @@ category: Development
 description: Generate Rust code from a structured SPDD prompt file following the REASONS Canvas methodology
 ---
 
+# /spdd-generate
+
 Generate Rust implementation code from a structured SPDD (Structured Prompt-Driven
 Development) prompt file, strictly following the Operations sequence and coding norms
 defined in the prompt.
@@ -12,7 +14,7 @@ defined in the prompt.
 **Input**: The argument after `/spdd-generate` is the path to the structured prompt file
 (e.g., `@spdd/prompt/202602271430-[Feat]-api-create-agent-endpoint.md`).
 
-**Steps**
+## Steps
 
 1. **If no input provided, ask for the prompt file**
 
@@ -176,7 +178,7 @@ defined in the prompt.
    - Any deviations or assumptions made
    - Validation results (pass/fail for each check)
 
-**Review & Iteration Loop**
+## Review & Iteration Loop
 
 If issues are discovered after generation (during testing or code review), follow the SPDD
 principle:
@@ -245,14 +247,14 @@ the workflow.
 (`just md`, `rumdl`, `markdownlint`), run it against the file you just wrote and fix
 what it reports. Do not hand the document to the gate to be rejected.
 
-**Output**
+## Output
 
 - All generated source files following the project structure
 - Summary of created files and their responsibilities
 - Validation results
 - Any issues requiring prompt modification
 
-**Guardrails**
+## Guardrails
 
 - Emitted markdown MUST satisfy the **Markdown Output Norms** above: wrapped at 90
   columns, every fence carrying a language, real headings rather than bold lines,
@@ -272,7 +274,7 @@ what it reports. Do not hand the document to the gate to be rejected.
 - Always run the full build/lint/test gate after batch generation and fix what it reports
 - Always commit prompt and code changes together
 
-**Integration with /spdd-analysis and /spdd-reasons-canvas**
+## Integration with /spdd-analysis and /spdd-reasons-canvas
 
 This command is the third phase of the SPDD workflow:
 

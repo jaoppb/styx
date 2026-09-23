@@ -5,6 +5,8 @@ category: Development
 description: Update an existing Rust SPDD prompt file with new requirements or architectural changes while preserving the REASONS Canvas structure
 ---
 
+# /spdd-prompt-update
+
 Update an existing SPDD (Structured Prompt-Driven Development) prompt file for a Rust
 codebase with new requirements, architectural changes, or refinements while maintaining
 the REASONS Canvas structure and following all specification rules.
@@ -28,7 +30,7 @@ Add negative caching with a separate TTL policy
 Update Safeguards to add a memory ceiling and an eviction guarantee
 ```
 
-**Steps**
+## Steps
 
 1. **Validate input**
 
@@ -174,12 +176,12 @@ the workflow.
 (`just md`, `rumdl`, `markdownlint`), run it against the file you just wrote and fix
 what it reports. Do not hand the document to the gate to be rejected.
 
-**Output**
+## Output
 
 The updated SPDD prompt file with changes integrated while preserving the REASONS Canvas
 structure.
 
-**Guardrails**
+## Guardrails
 
 - Emitted markdown MUST satisfy the **Markdown Output Norms** above: wrapped at 90
   columns, every fence carrying a language, real headings rather than bold lines,
@@ -232,7 +234,7 @@ to implement, leaving the HOW to the `/spdd-generate` phase.
 - **Backward compatibility**: Consider impact on any existing implementation
 - **Traceability**: Changes should be clearly identifiable in the updated sections
 
-**Integration with SPDD Workflow**
+## Integration with SPDD Workflow
 
 This command supports the iterative refinement cycle in SPDD:
 
@@ -273,7 +275,7 @@ This command supports the iterative refinement cycle in SPDD:
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Common Update Scenarios**
+## Common Update Scenarios
 
 1. **Adding Architectural Principles**
     - Affects: Approach, Structure, Operations, Norms, Safeguards

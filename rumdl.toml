@@ -36,17 +36,23 @@ exclude = [
     # Vendored tool definitions. The /spdd-* files here ARE now maintained by
     # this project, so this exclusion is weaker than it reads.
     #
-    # They have been brought most of the way in: the cosmetic findings and the
-    # prose wrapping are fixed, leaving 43. Those 43 are all one decision —
-    # whether these files' section markers become real headings. MD036 (24)
-    # wants `**Steps**` / `**Output**` / `**Guardrails**` turned into `##`
-    # headings; MD041 (5) wants an H1 after the YAML frontmatter; MD023 and
-    # MD035 (7 each) want the seven REASONS stage headings and their rules
-    # un-indented out of step 3, which would promote them from content nested
-    # inside one step to top-level sections of the document.
+    # They are now down to 14 findings, all of one kind. The cosmetic issues,
+    # the prose wrapping, and the heading structure are all fixed: each file
+    # has an H1 after its frontmatter, and its section markers are real `##`
+    # headings rather than bold paragraphs.
     #
-    # That is a change to what a model reads when the command runs, not a lint
-    # fix, which is why it has not been made and why this exclusion stays.
+    # What remains is MD023 and MD035, 7 each, entirely in
+    # spdd-reasons-canvas.md. Both want the seven REASONS stage headings and
+    # their `***` rules un-indented out of step 3 of the Steps list. **The
+    # indentation is load-bearing**: it is what makes the seven stages read as
+    # sub-content of that step. Flattening them promotes the framework to
+    # top-level sections of the document, which is a misreading rather than a
+    # fix — so the rules are left firing and the exclusion stays.
+    #
+    # The alternative, if these files are ever brought under the gate, is to
+    # disable MD023 and MD035 in this config with that reason recorded — the
+    # same posture as MD013 exempting tables and code blocks, where the rule
+    # simply does not apply to the content.
     ".claude/**",
     # Fixture E is a DELIBERATE violation and must not fail the normal run.
     #
