@@ -83,16 +83,26 @@ code-spans = false
 # The one below is the legitimate kind.
 #
 # MD023 (indented headings) and MD035 (indented horizontal rules) fire on
-# .claude/commands/spdd-reasons-canvas.md, where the seven REASONS stage
-# headings and their `***` rules are indented three spaces inside step 3 of the
-# Steps list. THAT INDENTATION IS LOAD-BEARING: it is what makes the seven
-# stages read as sub-content of that step. Un-indenting them would promote the
-# framework to top-level sections of the document — a misreading, not a fix.
+# spdd-reasons-canvas's SKILL.md, where the seven REASONS stage headings and
+# their `***` rules are indented three spaces inside step 3 of the Steps list.
+# THAT INDENTATION IS LOAD-BEARING: it is what makes the seven stages read as
+# sub-content of that step. Un-indenting them would promote the framework to
+# top-level sections of the document — a misreading, not a fix.
+#
+# The five /spdd-* skills live at .agents/skills/<name>/SKILL.md, the
+# tool-agnostic location AGENTS.md's own layer of the project points at; each
+# .claude/commands/<name>.md is a symlink back to its SKILL.md, kept only so
+# Claude Code still discovers them as slash commands. rumdl resolves a symlink
+# to its real path before reporting a finding or matching a per-file-ignore
+# glob — confirmed empirically against 0.2.75, not assumed — so this exemption
+# is keyed to the real file, not the symlink that points at it. A glob written
+# against `.claude/**` would silently stop matching the moment the file moved,
+# and the gate would go red with no config change anyone could point at.
 #
 # Note what is NOT exempted here. Every other rule applies to these files and
 # they pass: they were wrapped, their fences languaged, and each was given an
 # H1 and real `##` section headings. This is a two-rule exemption scoped to one
-# directory, not an excluded directory.
+# file, not an excluded directory.
 # ===========================================================================
 [per-file-ignores]
-".claude/**" = ["MD023", "MD035"]
+".agents/skills/spdd-reasons-canvas/**" = ["MD023", "MD035"]

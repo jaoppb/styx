@@ -1687,11 +1687,12 @@ the counterpart to, and before the `justfile` that invokes it.*
   `spdd/**` and `.claude/**` included. It exempts only what cannot be wrapped: tables,
   fenced code blocks and inline code spans.
 - **Exactly one per-path rule exemption exists**, and it must keep passing the test in
-  Operations 7a step 5: `.claude/**` is exempt from the indented-heading and indented-rule
-  rules, because that indentation is deliberate nesting rather than a defect. Every other
-  rule applies there and those files pass. **Adding a second exemption is a change to what
-  the gate means** — the same scrutiny as weakening a clippy lint, and it must be argued
-  on whether the rule applies to the content, never on how many findings it silences.
+  Operations 7a step 5: `.agents/skills/spdd-reasons-canvas/**` is exempt from the
+  indented-heading and indented-rule rules, because that indentation is deliberate
+  nesting rather than a defect. Every other rule applies to it and it passes. **Adding a
+  second exemption is a change to what the gate means** — the same scrutiny as weakening
+  a clippy lint, and it must be argued on whether the rule applies to the content, never
+  on how many findings it silences.
 - Nothing is excluded from the markdown gate except build output and the Fixture E
   directory. `.claude/commands/**` is gated like every other document.
 - **The gate never writes to a file.** Structural auto-fix lives in `md-fix` and prose
