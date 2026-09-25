@@ -78,6 +78,12 @@ The classical "one level of indentation" and "no `else`" rules collapse into one
 Rust-idiomatic instruction: prefer an early `return`, the `?` operator, or a `match` with
 each arm doing one thing, over a pyramid of nested `if`/`else`.
 
+Both halves of "keep it small" are gated: nesting depth by clippy's `excessive_nesting`,
+thresholded at 4 (a function's own block plus each control-flow block nested inside it —
+a plain function may nest three before a fourth trips it), and function length by
+`too_many_lines`, thresholded at 60 code lines. Past either number, restructure — a guard
+clause, an extracted function — rather than reach for `#[allow]` or a raised threshold.
+
 ### First-class collections
 
 A type that owns a `Vec<T>` or a `HashMap<K, V>` exposes domain-meaningful methods over
@@ -91,12 +97,21 @@ Split a layer's module by concept into its own file rather than letting one file
 every type in a layer. `styx-proto`'s `domain/rdata/basic.rs` and `domain/rdata/dnssec.rs`,
 split out of what would otherwise be a single `rdata` catch-all, are the precedent.
 
+Gated at 400 counted lines per `.rs` file by `xtask module-size`, with no per-file
+exemption and no marker comment to raise it: a file over the cap is split by concept, not
+annotated around.
+
 ### No setter that reopens an enforced-at-construction invariant
 
 A type whose invariant is checked in its constructor — `Label::new` rejecting more than 63
 octets is the precedent — must not also expose a way to mutate the field back into an
 invalid state. Prefer read accessors and reconstruction over in-place mutation for types
 with a validated invariant.
+
+Half of this is gated: clippy's `partial_pub_fields` denies a struct that mixes `pub` and
+private fields — it either publishes every field or none. What it cannot see is a fully
+private struct that still exposes a `&mut` accessor or an unvalidated setter; that half
+stays a review item.
 
 ### Full words, no abbreviations
 
@@ -118,13 +133,52 @@ is the opposite of what this ruleset is for.
 
 ## Enforcement
 
-The repository conventions above are, for the most part, mechanically enforced: `just gate`
-runs formatting, clippy's denied lints, `arch-lint check`, the link-graph layering gate, the
-`hickory-dev-only` containment check, the test suite and the headless build, and
-`just gate-selftest` proves that enforcement is live rather than silently inert. See
-`docs/adr/0001-layering-and-arch-lint.md` for why that proof exists at all.
+`just gate` runs formatting, the markdown lint, clippy's denied lints, `arch-lint check`,
+the link-graph layering gate, the `hickory-dev-only` containment check, the module-size
+check, the test suite and the headless build; `just gate-selftest` proves that enforcement
+is live rather than silently inert. See `docs/adr/0001-layering-and-arch-lint.md` for why
+that proof exists at all.
 
-**The Object Calisthenics section is not mechanically enforced.** No lint in this
-repository checks "wrap this primitive" the way clippy checks `.unwrap()`. Compliance is a
-review discipline, and generated code can drift from this ruleset without turning `just
-gate` red. Catching that drift is what review is for.
+*(Revised 2026-09-24: this section originally claimed three things an arch-lint rule did
+not, in fact, fully cover — see the amendment note at the end of this section.)*
+
+**Mechanically enforced**, each named with the tool that checks it:
+
+- Layering and feature isolation — arch-lint's `[[deny-scope-dep]]` and `[[restrict-use]]`
+  rules, corroborated by the independent link-graph gate (`xtask deps`).
+- No `unwrap`, `expect`, `panic!`, `todo!` or `unimplemented!` outside tests — arch-lint's
+  `no-unwrap-expect` and clippy's panicking-lint set.
+- No indexing, no unchecked arithmetic — clippy's `indexing_slicing` and
+  `arithmetic_side_effects`.
+- No synchronous I/O in `domain` or `application`, in every feature crate, and nowhere in
+  `styx-proto` — a `[[restrict-use]]` rule per crate and layer.
+- No `anyhow` outside the `styx` binary and `xtask` — a `[[restrict-use]]` rule per library
+  crate.
+- No print macros as logging — clippy's `print_stdout`, `print_stderr` and `dbg_macro`.
+- Nesting depth, at most 4 (Guard clauses, above) — clippy's `excessive_nesting`.
+- Function length, at most 60 code lines (Guard clauses, above) — clippy's `too_many_lines`.
+- Module length, at most 400 counted lines per file, with no exemption (Small,
+  single-purpose modules, above) — `xtask module-size`.
+- Mixed field visibility (No setter that reopens an invariant, above) — clippy's
+  `partial_pub_fields`.
+
+**Review only** — no lint in this repository checks these the way clippy checks
+`.unwrap()`, and generated code can drift from them without turning `just gate` red;
+catching that drift is what review is for:
+
+- Wrapping a primitive that carries domain rules.
+- First-class collections.
+- Full words over abbreviations.
+- The "one dot per line" guidance.
+- The half of the setter rule `partial_pub_fields` cannot see: a fully private struct that
+  still exposes a `&mut` accessor or an unvalidated setter.
+- No `Box<dyn Error>` on a public boundary.
+
+**The amendment this section records**: Norms 3, 6 and 7 each claimed an arch-lint rule
+already enforced no-synchronous-I/O-by-layer, `tracing`-only logging and no-`anyhow`.
+Read against the arch-lint 0.6.0 source, none of the three claims held in full —
+`no-sync-io` (AL002) does not reliably reach ordinary, idiomatically-imported sync I/O,
+`require-tracing` (AL006) flags only the `log` crate and passes `println!`, and
+`require-thiserror` (AL005) says nothing about `anyhow`. The gaps were closed with the
+`[[restrict-use]]` rules and clippy lints listed above, each with its own
+`gate-selftest` fixture (F through I) proving it actually rejects what it claims to.

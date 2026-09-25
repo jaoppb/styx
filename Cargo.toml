@@ -35,13 +35,15 @@ cargo_metadata = "0.18"
 # The denied lint set, declared once. Every member opts in with
 # `[lints] workspace = true`.
 #
-# Fifteen clippy lints, every name verified to exist and to be non-deprecated
-# under the pinned rustc 1.96.0 (see rust-toolchain.toml) before being
-# committed. An unrecognised lint name degrades to an ignored unknown-lint
-# warning, which would make the count fiction and the enforcement silence.
+# Twenty-one clippy lints, every name verified to exist and to be
+# non-deprecated under the pinned rustc 1.96.0 (see rust-toolchain.toml)
+# before being committed. An unrecognised lint name degrades to an ignored
+# unknown-lint warning, which would make the count fiction and the
+# enforcement silence.
 #
-# Test code is exempted from the panicking subset through clippy.toml's four
-# `allow-*-in-tests` entries, not by weakening anything here.
+# Test code is exempted from the panicking subset and from `print_stdout`
+# through clippy.toml's five `allow-*-in-tests` entries, not by weakening
+# anything here.
 # ---------------------------------------------------------------------------
 [workspace.lints.clippy]
 # -- Unchecked indexing and arithmetic (4) --------------------------------
@@ -73,6 +75,23 @@ cast_possible_truncation = "deny"
 cast_possible_wrap = "deny"
 cast_sign_loss = "deny"
 cast_precision_loss = "deny"
+
+# -- CLAUDE.md conventions, mechanised (6) (amendment, 2026-09-24) --------
+# Norms 3, 6 and 7 each claimed an arch-lint rule already enforced them,
+# and none of the three claims held in full against the arch-lint 0.6.0
+# source: `no-sync-io` (AL002) sees only async contexts, `require-tracing`
+# (AL006) flags only the `log` crate, and `require-thiserror` (AL005) says
+# nothing about `anyhow`. These six close the gaps clippy can reach; the
+# `[[restrict-use]]` rules in arch-lint.toml close the two it cannot
+# (synchronous I/O by layer, `anyhow` by crate). See CLAUDE.md's
+# Enforcement section and `clippy.toml`'s two thresholds, which these six
+# lints depend on.
+print_stdout = "deny"
+print_stderr = "deny"
+dbg_macro = "deny"
+partial_pub_fields = "deny"
+too_many_lines = "deny"
+excessive_nesting = "deny"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -1,0 +1,5 @@
+# Fixture F — a deliberate synchronous std::fs call in a non-async
+# application function.
+[workspace]
+resolver = "2"
+members = ["crates/styx-resolution"]

@@ -1,0 +1,4 @@
+# Fixture G — a deliberate `anyhow` import in a feature crate's domain.
+[workspace]
+resolver = "2"
+members = ["crates/styx-filtering"]

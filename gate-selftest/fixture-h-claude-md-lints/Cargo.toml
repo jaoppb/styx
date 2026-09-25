@@ -1,0 +1,34 @@
+# Fixture H — one module per CLAUDE.md clippy lint, each with exactly one
+# violation.
+#
+# The empty [workspace] table below is load-bearing: without it, Cargo walks
+# up from this manifest, finds the styx workspace root, and — since this path
+# is excluded there rather than listed as a member — refuses to build it as
+# an orphaned package. The empty table makes this crate its own workspace of
+# one, the same role gate-selftest/fixture-a-unwrap-in-domain/Cargo.toml plays
+# for Fixture A, one directory up instead of two.
+[workspace]
+
+[package]
+name = "fixture-h-claude-md-lints"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Mirrors the six CLAUDE.md lints from [workspace.lints.clippy] (root
+# Cargo.toml). It cannot inherit them: this is a standalone crate, outside
+# the styx workspace. `just gate-selftest`'s drift check asserts the root
+# manifest still denies every one of these six names, so this copy cannot
+# drift out of agreement unnoticed.
+#
+# Deliberately no clippy.toml alongside this file: clippy searches upward
+# from the manifest directory for one, so this fixture reads the
+# repository's REAL excessive-nesting-threshold and too-many-lines-threshold
+# rather than a copy that could drift from them.
+[lints.clippy]
+print_stdout = "deny"
+print_stderr = "deny"
+dbg_macro = "deny"
+partial_pub_fields = "deny"
+too_many_lines = "deny"
+excessive_nesting = "deny"

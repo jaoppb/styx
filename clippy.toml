@@ -1,15 +1,16 @@
 # styx clippy configuration.
 #
-# This file carries ONLY the test-allowance configuration. The denied lint set
-# itself lives in [workspace.lints.clippy] in the root Cargo.toml, so that
-# "workspace-wide" is enforced from exactly one place; every member crate opts
-# in with `[lints] workspace = true`.
+# This file carries the test-allowance configuration and the two thresholds
+# that turn on otherwise-inert lints. The denied lint set itself lives in
+# [workspace.lints.clippy] in the root Cargo.toml, so that "workspace-wide" is
+# enforced from exactly one place; every member crate opts in with
+# `[lints] workspace = true`.
 #
-# The four entries below exist so test code can use the panicking constructs
-# that production code is denied — the same exemption posture as arch-lint's
-# `no-unwrap-expect` with `allow_in_tests = true`. A test that cannot assert is
-# not a test, and from phase 2 the suite is socket-level: it unwraps bound
-# ports, fixture bytes and parsed responses constantly.
+# The first four entries below exist so test code can use the panicking
+# constructs that production code is denied — the same exemption posture as
+# arch-lint's `no-unwrap-expect` with `allow_in_tests = true`. A test that
+# cannot assert is not a test, and from phase 2 the suite is socket-level: it
+# unwraps bound ports, fixture bytes and parsed responses constantly.
 #
 # This exempts TEST code. It does not weaken the denial anywhere else, and in
 # particular `panic = deny` stays load-bearing on every non-test path until
@@ -19,3 +20,28 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
+
+# A test printing a diagnostic is not logging — the fifth allowance, added by
+# the 2026-09-24 amendment alongside `print_stdout`/`print_stderr`. There is
+# no `allow-dbg-in-tests`: a `dbg!` is a leftover in any file, test or not.
+allow-print-in-tests = true
+
+# -- Thresholds (amendment, 2026-09-24) ------------------------------------
+# Both lints are inert at their clippy defaults and only start checking
+# anything once a threshold is set here. Fixture H is what notices if either
+# is ever removed: `excessive_nesting` would fall silent even with the lint
+# still denied in Cargo.toml.
+
+# Counts a function's own block plus each control-flow block nested inside
+# it (`if`, `match`, `for`, `while`, `loop`). At 4, a plain function may nest
+# three control-flow blocks before a fourth trips it — verified directly:
+# three nested `if`s under a function passes, four fails — which is where a
+# guard clause or an extracted function should take over. Measured against
+# the repository before choosing: at this threshold the existing code had
+# three violations, all in xtask's hickory-dev-only traversal, and they were
+# fixed by restructuring rather than by raising the number.
+excessive-nesting-threshold = 4
+
+# Counts code lines, not comment or blank lines, so missing_docs-driven
+# documentation is never taxed. The existing code has no violation at 60.
+too-many-lines-threshold = 60

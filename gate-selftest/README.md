@@ -44,10 +44,14 @@ is the failure this whole directory exists to catch.
 | C | `styx-resolution` names `styx-filtering`, in source and in manifest | arch-lint `[[restrict-use]]` (ALD001) **and** the link-graph check |
 | D | `hickory-proto` on a normal dependency path | the `hickory-dev-only` containment check |
 | E | markdown: unlabelled fence, heading punctuation, over-long line | `rumdl`, via the repository's own `rumdl.toml` |
+| F | synchronous `std::fs::read_to_string` in a non-async `application` fn | arch-lint `[[restrict-use]]` `no-sync-io-resolution-application` |
+| G | `anyhow::Result` in a feature crate's `domain` module | arch-lint `[[restrict-use]]` `no-anyhow-filtering` |
+| H | one violation each of the six `CLAUDE.md` clippy lints | clippy, asserted to name each of the six by its doc anchor |
+| I | a `.rs` file with 401 counted lines | `xtask module-size` |
 
-## Why five, when the exit criteria name two
+## Why nine, when the exit criteria name two
 
-The phase's stated exit criteria name A and B. C and D are here because:
+The phase's stated exit criteria name A and B. C through I are here because:
 
 - **C** exercises `[[restrict-use]]`, a rule family a cross-layer `use` does
   not reach. It is also the rule most likely to be silently wrong, because of
@@ -64,6 +68,32 @@ The phase's stated exit criteria name A and B. C and D are here because:
   still the cheap fix every time a generated document trips a rule, and an
   exemption list that quietly grows until it covers everything is
   indistinguishable from a clean repository by exit code. E is what notices.
+- **F through I** were added by the 2026-09-24 amendment, because each
+  mechanises a `CLAUDE.md` rule that previously had no check behind it at
+  all. Norms 3, 6 and 7 each claimed an existing arch-lint rule already
+  enforced synchronous-I/O-by-layer, `tracing`-only logging and
+  `anyhow`-never-in-libraries; read against the arch-lint 0.6.0 source, none
+  of the three claims held in full. A new check without a fixture is the
+  founding failure repeated on purpose, so each of the four new checks
+  (two `[[restrict-use]]` families, six clippy lints, one `xtask` check) gets
+  one:
+  - **F**'s violating function is deliberately **non-async**. Inside an
+    `async fn`, arch-lint's built-in `no-sync-io` (AL002) would reject the
+    same call too, and F would keep passing even with the new
+    `[[restrict-use]]` rules deleted — proving nothing about the rule it
+    exists to guard.
+  - **G** needs no manifest dependency on `anyhow`, because arch-lint reads
+    source text, not the resolved dependency graph.
+  - **H** is asserted more strictly than "rejected": one exit code covers
+    six lints, and a lint silently dropped from the root manifest would
+    still leave the other five failing. `just gate-selftest` greps clippy's
+    output for each lint's documentation anchor to prove all six actually
+    fired, and that the two thresholds in `clippy.toml` were read (an
+    unset `excessive-nesting-threshold` leaves the lint silent even though
+    it is still denied).
+  - **I** is checked with `xtask module-size --root`, pointed at the
+    fixture directly rather than at the repository, so the check runs
+    against a file the cap must reject without disturbing the real scan.
 
 An inert config and a passing config emit the same exit code. This directory is
 the only thing that distinguishes them, which is why `just gate-selftest` runs

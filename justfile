@@ -31,7 +31,7 @@ _default:
 # The gate. Fail-fast, cheapest step first.
 # ---------------------------------------------------------------------------
 [doc("The complete per-push gate. Hermetic, fail-fast.")]
-gate: fmt-check md lint arch deps hickory-dev-only test headless
+gate: fmt-check md lint arch deps hickory-dev-only module-size test headless
     @echo ""
     @echo "gate: GREEN"
 
@@ -120,7 +120,14 @@ hickory-dev-only:
     @echo "── hickory containment ────────────────────────────────────────────"
     cargo run --quiet --package xtask -- hickory-dev-only
 
-# 6. Tests. Socket-level by default from phase 2: real UDP/TCP against an
+# 6. Module size: no .rs file past 400 counted lines. No per-file exemption —
+#    the remedy for a failing file is to split it, never to raise the cap.
+[doc("Cap every .rs file at 400 counted lines (xtask module-size).")]
+module-size:
+    @echo "── module size ────────────────────────────────────────────────────"
+    cargo run --quiet --package xtask -- module-size
+
+# 7. Tests. Socket-level by default from phase 2: real UDP/TCP against an
 #    ephemeral-port server with in-process fakes and an injectable Clock. In
 #    phase 0 there is nothing to run, but the target is already wired.
 [doc("The test suite (socket-level by default from phase 2).")]
@@ -128,7 +135,7 @@ test:
     @echo "── tests ──────────────────────────────────────────────────────────"
     cargo test --workspace --all-features
 
-# 7. The headless build: styx without the web UI.
+# 8. The headless build: styx without the web UI.
 #
 #    Passes near-vacuously until phase 11, when the `web` feature actually
 #    gates code. It is wired now because its cost is lowest now and rises with
@@ -203,12 +210,60 @@ gate-selftest: _arch-version _rumdl-version
     expect_rejected "rumdl structural rules" \
         rumdl check {{ SELFTEST }}/fixture-e-markdown/bad-document.md --no-exclude
 
-    # Fixture A carries its own copy of the clippy lints, because a standalone
-    # workspace cannot inherit the real one's table. Assert the root manifest
-    # still denies the same names, so the copy cannot drift unnoticed.
     echo ""
-    echo "Drift check — fixture A's lints still match the root manifest:"
-    for lint in unwrap_used expect_used panic; do
+    echo "Fixture F — synchronous std::fs call in a non-async application function:"
+    expect_rejected "arch-lint no-sync-io restrict-use" \
+        arch-lint check {{ SELFTEST }}/fixture-f-sync-io-application --config arch-lint.toml
+
+    echo ""
+    echo "Fixture G — anyhow imported in a feature crate's domain:"
+    expect_rejected "arch-lint no-anyhow restrict-use" \
+        arch-lint check {{ SELFTEST }}/fixture-g-anyhow-in-feature --config arch-lint.toml
+
+    # Fixture H is asserted more strictly than "rejected": clippy's output
+    # must NAME each of the six lints, using the documentation anchor it
+    # prints once per lint (#print_stdout and so on). One exit code covers
+    # six lints, and a lint silently dropped from the root manifest would
+    # still leave the others failing — only naming each one proves all six
+    # fired, and that the two thresholds in clippy.toml were actually read
+    # (excessive_nesting stays silent without its threshold).
+    echo ""
+    echo "Fixture H — the six CLAUDE.md clippy lints, one violation each:"
+    fixture_h_log="$(mktemp)"
+    cargo clippy --quiet \
+        --manifest-path {{ SELFTEST }}/fixture-h-claude-md-lints/Cargo.toml \
+        -- -D warnings >"$fixture_h_log" 2>&1
+    fixture_h_status=$?
+    if [[ "$fixture_h_status" -eq 0 ]]; then
+        echo "  ✗ clippy CLAUDE.md lints — ACCEPTED a violation it must reject"
+        failures=$((failures + 1))
+    else
+        echo "  ✓ clippy CLAUDE.md lints — rejected"
+    fi
+    for anchor in print_stdout print_stderr dbg_macro partial_pub_fields too_many_lines excessive_nesting; do
+        if grep -q "#${anchor}" "$fixture_h_log"; then
+            echo "  ✓ names clippy::${anchor}"
+        else
+            echo "  ✗ does not name clippy::${anchor} — cannot prove this lint fired"
+            failures=$((failures + 1))
+        fi
+    done
+    rm -f "$fixture_h_log"
+
+    echo ""
+    echo "Fixture I — a 401-line module:"
+    expect_rejected "xtask module-size" \
+        cargo run --quiet --package xtask -- module-size \
+            --root {{ SELFTEST }}/fixture-i-oversized-module
+
+    # Fixture A carries its own copy of the clippy lints, and Fixture H
+    # carries a second, disjoint copy of six more — both because a standalone
+    # workspace cannot inherit the real one's table. Assert the root manifest
+    # still denies every one of these names, so neither copy can drift out of
+    # agreement unnoticed.
+    echo ""
+    echo "Drift check — fixtures A and H's lints still match the root manifest:"
+    for lint in unwrap_used expect_used panic print_stdout print_stderr dbg_macro partial_pub_fields too_many_lines excessive_nesting; do
         if grep -qE "^${lint} = \"deny\"" Cargo.toml; then
             echo "  ✓ root Cargo.toml denies ${lint}"
         else
