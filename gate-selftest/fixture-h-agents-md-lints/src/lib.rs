@@ -1,4 +1,4 @@
-//! Fixture H: one module per `CLAUDE.md` clippy lint (amendment,
+//! Fixture H: one module per `AGENTS.md` clippy lint (amendment,
 //! 2026-09-24), each with exactly one deliberate violation. `just
 //! gate-selftest` asserts that `cargo clippy` on this crate names every one
 //! of the six lints, using the documentation anchor clippy prints once per

@@ -228,17 +228,17 @@ gate-selftest: _arch-version _rumdl-version
     # fired, and that the two thresholds in clippy.toml were actually read
     # (excessive_nesting stays silent without its threshold).
     echo ""
-    echo "Fixture H — the six CLAUDE.md clippy lints, one violation each:"
+    echo "Fixture H — the six AGENTS.md clippy lints, one violation each:"
     fixture_h_log="$(mktemp)"
     cargo clippy --quiet \
-        --manifest-path {{ SELFTEST }}/fixture-h-claude-md-lints/Cargo.toml \
+        --manifest-path {{ SELFTEST }}/fixture-h-agents-md-lints/Cargo.toml \
         -- -D warnings >"$fixture_h_log" 2>&1
     fixture_h_status=$?
     if [[ "$fixture_h_status" -eq 0 ]]; then
-        echo "  ✗ clippy CLAUDE.md lints — ACCEPTED a violation it must reject"
+        echo "  ✗ clippy AGENTS.md lints — ACCEPTED a violation it must reject"
         failures=$((failures + 1))
     else
-        echo "  ✓ clippy CLAUDE.md lints — rejected"
+        echo "  ✓ clippy AGENTS.md lints — rejected"
     fi
     for anchor in print_stdout print_stderr dbg_macro partial_pub_fields too_many_lines excessive_nesting; do
         if grep -q "#${anchor}" "$fixture_h_log"; then

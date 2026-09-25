@@ -975,7 +975,7 @@ The `styx` binary additionally gains `adapters/filter_policy.rs` holding
 
 ### Arch-lint registration
 
-`styx-filtering` is a new feature crate, so its scopes and its three `CLAUDE.md`
+`styx-filtering` is a new feature crate, so its scopes and its three `AGENTS.md`
 restrict-use rules are a gate obligation (Phase 0's Norm 12): a new feature crate adds its
 `[[scopes]]` per layer, its `no-sync-io-<crate>-domain` and `no-sync-io-<crate>-application`
 rules, and its `no-anyhow-<crate>` rule. **Phase 0's Approach §10 already pre-declares
@@ -1226,7 +1226,7 @@ immediately: it is never cached and never validated.
 2. **`RegexRuleEntry`** — `mask: MaskPair`, `rule_id: RuleId`, `source: String`. One entry
    per compiled pattern. **This replaces what would otherwise be three parallel `Vec`s**
    (masks, rule IDs, sources) indexed by a shared, hand-maintained index — the bag of
-   collections `CLAUDE.md`'s first-class-collections rule exists to catch.
+   collections `AGENTS.md`'s first-class-collections rule exists to catch.
 3. **`RegexRuleSet`**
    - **Fields**: the compiled `RegexSet` and `entries: Vec<RegexRuleEntry>`, constructed
      together so `entries.len()` always equals the pattern count of `set`.
@@ -1889,7 +1889,7 @@ immediately: it is never cached and never validated.
     the label walk. The wire-format test oracle is a **dev-dependency only**, with a CI
     check asserting it appears in no normal or build dependency path.
 15. **Primitive obsession is avoided; a newtype wraps a primitive that carries domain
-    rules**, per `CLAUDE.md`. A value gets its own type when it has a validated range,
+    rules**, per `AGENTS.md`. A value gets its own type when it has a validated range,
     checked arithmetic, a non-trivial wire encoding, or named constants attached to it —
     not merely because it is a `u16`, a `u32`, a `bool` or a `String`. A plain named field
     with no independent validation and no risk of being confused with an unrelated value at
@@ -2054,7 +2054,7 @@ cover. They are additional obligations, not reinterpretations.
   public raw-bit construction.
 - The wire-format test oracle is a dev-dependency only, asserted by a CI check.
 - **Domain values that carry rules are newtypes with a validating constructor and no
-  setter that reopens the invariant**, per `CLAUDE.md`'s Object Calisthenics section —
+  setter that reopens the invariant**, per `AGENTS.md`'s Object Calisthenics section —
   `GroupMask` and `CollapseRatio` are this phase's examples. Wrapping a primitive for this
   reason stays a review discipline — no lint checks "wrap this primitive" — and so does
   the half of the setter rule `partial_pub_fields` cannot see (an all-private struct with

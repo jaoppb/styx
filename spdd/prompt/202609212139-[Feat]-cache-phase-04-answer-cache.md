@@ -1096,7 +1096,7 @@ client query
 11. **Documentation** — every public item carries a doc comment; the bailiwick and
     admission modules carry module-level docs stating the rule and **why** it exists,
     because that rationale is the part most likely to be lost.
-12. **Object Calisthenics** — this phase's code follows `CLAUDE.md`, including its
+12. **Object Calisthenics** — this phase's code follows `AGENTS.md`, including its
     primitive-obsession/newtype test: a primitive is wrapped only when it carries a
     validated range, a checked arithmetic operation, a non-trivial wire encoding or named
     constants — **domain rules attached to the value, not the primitive-ness of its
@@ -1104,7 +1104,7 @@ client query
     `CacheError::ByteAccountingOverflow` rather than wrapping, paired with a saturating
     subtract that never underflows) is this phase's own worked example, alongside
     `Deadline` (checked construction from a `Ttl`, saturating remaining-time arithmetic),
-    which already followed the same discipline before `CLAUDE.md` wrote it down.
+    which already followed the same discipline before `AGENTS.md` wrote it down.
     `CacheStats`'s plain `u64` hit/miss/eviction counters and `CacheCapacity::max_entries`
     stay bare integers deliberately: neither carries a domain rule beyond straightforward
     counting and comparison, and wrapping them would be ceremony with no behaviour behind

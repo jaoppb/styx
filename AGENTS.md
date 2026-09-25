@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Engineering guidelines for `styx`, read before writing code in this repository. An
 architecture decision record explains why a past decision was made and is never edited

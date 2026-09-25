@@ -557,7 +557,7 @@ adapters in `infrastructure`, wiring in the `styx` binary.
   **port** — a trait describing "hand me serving material" without naming a file, a TLS
   library or a key format. Errors are `thiserror` enums; every fallible step returns
   `Result`. `StreamMessageLimit` and `DohResourcePath` are newtypes for exactly the reason
-  CLAUDE.md gives: each wraps a primitive that carries a validated invariant, not a
+  AGENTS.md gives: each wraps a primitive that carries a validated invariant, not a
   primitive wrapped on principle — see Norm 17.
 - **`application`** holds the resolution of that port into an actual serving identity at
   startup — selecting between the configured path and the self-signed fallback, and
@@ -913,7 +913,7 @@ suite goes red one morning for reasons unrelated to any change.
 2. **Provisioning layer (`application`)** — source selection, validity assessment,
    one-time pin emission, budget decisions, all orchestrated by calling the
    `infrastructure` adapters behind `ServingIdentityProvider` for the generate-or-load and
-   persistence steps. **No synchronous I/O executes in this layer's own code** — CLAUDE.md
+   persistence steps. **No synchronous I/O executes in this layer's own code** — AGENTS.md
    forbids it in `domain` and `application` alike — and the adapters it calls run at
    startup only, never on the hot path.
 3. **Domain layer (`domain`)** — the configuration value types, the two-variant
@@ -972,7 +972,7 @@ suite goes red one morning for reasons unrelated to any change.
    `max_streams_per_connection`, `max_queries_per_connection`,
    `max_request_body_bytes: StreamMessageLimit`.
 4. **`StreamMessageLimit` and `DohResourcePath` are newtypes, not the bare `usize` and
-   `String` a first draft would reach for**, per CLAUDE.md's primitive-obsession test —
+   `String` a first draft would reach for**, per AGENTS.md's primitive-obsession test —
    each carries a domain rule the primitive alone does not:
    - `StreamMessageLimit` wraps the cap on a DNS message carried over a stream transport.
      `protocol_max()` returns the fixed ceiling of 65535 bytes — the value the two-octet
@@ -1122,7 +1122,7 @@ suite goes red one morning for reasons unrelated to any change.
      duplicating it duplicates the risk.
    - Every offset and length computation is a checked operation. No slicing, no unchecked
      arithmetic. **That is the intended tax.** `StreamFraming` is this crate's one audited,
-     bounds-checked primitive for stream-offset arithmetic, the role CLAUDE.md says
+     bounds-checked primitive for stream-offset arithmetic, the role AGENTS.md says
      `styx-proto`'s `Cursor` plays for the wire codec — route any new offset or length
      computation this phase adds through it rather than a fresh `checked_*` call site.
    - The existing plaintext TCP tests must pass unchanged after the refactor — that is the
@@ -1644,9 +1644,9 @@ project has.
     not in a separate file. The operator-facing encrypted-inbound page is a deliverable of
     this phase, gated by its exit criteria.
 
-17. **Object Calisthenics, per `CLAUDE.md`**: this phase's code follows the repository's
+17. **Object Calisthenics, per `AGENTS.md`**: this phase's code follows the repository's
     engineering guidelines in full, including the Rust-adapted Object Calisthenics
-    ruleset. Primitive obsession is avoided the way `CLAUDE.md` states it, not the way a
+    ruleset. Primitive obsession is avoided the way `AGENTS.md` states it, not the way a
     literal reading of "wrap every primitive" would: a value earns its own type when it
     carries a validated range, a checked arithmetic operation, a non-trivial encoding or a
     named constant, and **the test is domain rules attached to the value, not the
@@ -1655,7 +1655,7 @@ project has.
     bound and a validated-format path, respectively — each with a validating constructor
     and no setter that reopens the invariant. Plain flags with no independent rule, such as
     `TlsListenerConfig::enabled` and `allow_http1`, stay bare `bool`s: wrapping them would
-    be ceremony with no behaviour behind it, the failure mode `CLAUDE.md` warns against.
+    be ceremony with no behaviour behind it, the failure mode `AGENTS.md` warns against.
 
 ---
 
@@ -1749,7 +1749,7 @@ and expensive to discover later:
 - New dependencies must not trip the `hickory-dev-only` check.
 - **Every domain value this phase introduces that carries a rule — `StreamMessageLimit`,
   `DohResourcePath` — is a newtype with a validating constructor and no invariant-reopening
-  setter, per `CLAUDE.md`.** Primitive wrapping itself stays a review discipline — no lint
+  setter, per `AGENTS.md`.** Primitive wrapping itself stays a review discipline — no lint
   checks "wrap this primitive" the way clippy checks `.unwrap()` — but per **Phase 0 —
   Foundation and gates, Norm 17**, nesting depth, function length, module length and mixed
   field visibility are now gated, and this phase's structure (Operations 14–16, Structure

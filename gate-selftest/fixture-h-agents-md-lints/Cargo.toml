@@ -1,4 +1,4 @@
-# Fixture H — one module per CLAUDE.md clippy lint, each with exactly one
+# Fixture H — one module per AGENTS.md clippy lint, each with exactly one
 # violation.
 #
 # The empty [workspace] table below is load-bearing: without it, Cargo walks
@@ -10,12 +10,12 @@
 [workspace]
 
 [package]
-name = "fixture-h-claude-md-lints"
+name = "fixture-h-agents-md-lints"
 version = "0.0.0"
 edition = "2021"
 publish = false
 
-# Mirrors the six CLAUDE.md lints from [workspace.lints.clippy] (root
+# Mirrors the six AGENTS.md lints from [workspace.lints.clippy] (root
 # Cargo.toml). It cannot inherit them: this is a standalone crate, outside
 # the styx workspace. `just gate-selftest`'s drift check asserts the root
 # manifest still denies every one of these six names, so this copy cannot

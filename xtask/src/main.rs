@@ -31,7 +31,7 @@
     clippy::print_stdout,
     clippy::print_stderr,
     reason = "xtask's output IS the verdict it reports to a human, not a library boundary. \
-              This is the repository's one standing lint exemption — see CLAUDE.md's \
+              This is the repository's one standing lint exemption — see AGENTS.md's \
               Enforcement section."
 )]
 

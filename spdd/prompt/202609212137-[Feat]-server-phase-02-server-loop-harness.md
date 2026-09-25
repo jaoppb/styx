@@ -1054,7 +1054,7 @@ concerns, not a zone-file server.
     (b) which phase implements it, and (c) the reason it exists on the hot path now. The
     forged-answer rule is documented on `ForgedAnswer::build`, not in a separate file.
 
-12. **Primitive obsession is avoided per `CLAUDE.md`; a newtype wraps a primitive that
+12. **Primitive obsession is avoided per `AGENTS.md`; a newtype wraps a primitive that
     carries domain rules.** A value gets its own type when it has a validated range,
     checked arithmetic, a non-trivial wire encoding, or named constants attached to it —
     not merely because it is a `u16`, a `u32`, a `bool` or a `String`. A plain named field
@@ -1146,7 +1146,7 @@ and expensive to discover later:
 - The `styx` binary is the only place a port meets an implementation.
 - **This phase's newly introduced domain values that carry rules are newtypes.**
   `MaxResponseSize` (named constant, checked `fits` comparison) and the reuse of Phase 1's
-  `Ttl` for `ForgedAnswer::build`'s TTL parameter, per `CLAUDE.md`'s primitive-obsession
+  `Ttl` for `ForgedAnswer::build`'s TTL parameter, per `AGENTS.md`'s primitive-obsession
   rule — never a bare `u16` or `u32` standing in for a value with attached domain
   behaviour.
 - **The gate must be verified live before it is trusted.** arch-lint 0.5.0 selects its
@@ -1183,7 +1183,7 @@ and expensive to discover later:
   `partial_pub_fields` is not a live risk: every struct in Entities is already uniformly
   public or uniformly private. Neither is `print_stdout`/`print_stderr`/`dbg_macro`: this
   phase logs exclusively through `tracing`.
-- **`CLAUDE.md`'s Object Calisthenics section is only partly a review discipline.**
+- **`AGENTS.md`'s Object Calisthenics section is only partly a review discipline.**
   Nesting depth, function length, module length and mixed field visibility are gated —
   Phase 0 Norm 17 has the thresholds. Wrapping a primitive that carries domain rules, such
   as `MaxResponseSize` or the reused `Ttl` in `ForgedAnswer::build`, stays review-only: no

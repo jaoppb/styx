@@ -545,21 +545,21 @@ suppressing top-N is writing zero rows into a table that already exists.
 
 ### Primitives that carry domain rules are newtypes
 
-Per `CLAUDE.md`'s primitive-obsession rule, a value is wrapped in a newtype when it has a
+Per `AGENTS.md`'s primitive-obsession rule, a value is wrapped in a newtype when it has a
 validated range, a checked arithmetic operation, a non-trivial encoding, or a named
 constant attached to it — not merely because it is an `i64`, a `u16` or a `String`. This
 phase reuses Phase 1's own worked examples rather than re-deriving them, and adds the few
 newtypes its own tables actually need:
 
 - **`RawQuery.qtype` and `RollupBucket.qtype`** are `styx_proto::domain::RecordType`, not a
-  bare `u16` — the same named-constants type `CLAUDE.md` cites by name, reused because
+  bare `u16` — the same named-constants type `AGENTS.md` cites by name, reused because
   `styx-proto` is shared foundation every crate may depend on.
 - **`RawQuery.rcode`** is `Option<styx_proto::domain::ResponseCode>`, not `Option<u16>` —
   the 12-bit extended RCODE is unrepresentable as a bare integer without a range check.
 - **`LocalRecord.ttl`** is `styx_proto::domain::Ttl`, not a bare `u32`.
 - **`GroupId`** (`group.rs`) wraps the group's `i64` primary key and carries the named
   constant `DEFAULT_GROUP_ID`, the seeded, undeletable group every ungrouped client
-  resolves against — a named constant attached to the value is exactly `CLAUDE.md`'s test.
+  resolves against — a named constant attached to the value is exactly `AGENTS.md`'s test.
 - **`ClientId`** (`client.rs`) wraps `IpAddr`, so a client's identity can never be confused
   at a call site with an unrelated `IpAddr` this codebase also handles — an upstream
   address, a listener address.
@@ -578,7 +578,7 @@ newtypes its own tables actually need:
 `LocalRecordRow.id` and `RawQueryRow.id` carry no validated range, no checked arithmetic
 and no named constant — unlike `GroupId`, nothing distinguishes one surrogate key from
 another, so wrapping them would be ceremony with no behaviour behind it. `GroupRow.is_default`
-is a plain named `bool` with no independent validation, the same shape as `CLAUDE.md`'s own
+is a plain named `bool` with no independent validation, the same shape as `AGENTS.md`'s own
 `Header::authoritative` example, and stays a `bool`. Every `_unix` timestamp other than the
 rollup bucket boundary — `first_seen`, `last_seen`, `created_at`, `applied_at`,
 `updated_at`, `last_attempt`, `last_success`, and `RawQueryRow`'s millisecond `ts_unix_ms`
@@ -927,7 +927,7 @@ crates/styx-storage/
   repository impls are split one-per-file (`repo_group.rs`, `repo_client.rs`,
   `repo_rule.rs`, `repo_adlist.rs`, `repo_local_record.rs`, `repo_settings.rs`) rather than
   bundled into one `repo_policy.rs`: `AdlistRepository` alone carries nine methods, and the
-  six together are exactly the god-module shape `CLAUDE.md`'s "small, single-purpose
+  six together are exactly the god-module shape `AGENTS.md`'s "small, single-purpose
   modules over god-modules" rule targets, now backed by `xtask module-size`'s 400-line
   cap.
 - `SnapshotBuilder` depends on `PolicySource` and `Clock`; it produces `PolicySnapshot`.
@@ -1247,7 +1247,7 @@ every message free of file paths, connection strings and credential material.
 12. **Testing.** Behaviour over implementation. Deterministic via the injected `Clock`.
     The DB-removal test deletes the real file. The boundary test enumerates the real
     schema.
-13. **Primitive obsession is avoided per `CLAUDE.md`; a newtype wraps a primitive that
+13. **Primitive obsession is avoided per `AGENTS.md`; a newtype wraps a primitive that
     carries domain rules.** A value gets its own type when it has a validated range,
     checked arithmetic, a non-trivial encoding, or a named constant attached to it — not
     merely because it is an `i64`, a `u16` or a `String`. The test is domain rules attached
@@ -1319,7 +1319,7 @@ every message free of file paths, connection strings and credential material.
 - Local records carry no DNSSEC status and no signature material.
 - The domain values this phase introduces to carry validated rules — `ClientKey`,
   `UnixTimestamp`, `GroupId`, `ClientId`, and this phase's reuse of Phase 1's `RecordType`,
-  `ResponseCode` and `Ttl` — are newtypes, per `CLAUDE.md`'s primitive-obsession rule, never
+  `ResponseCode` and `Ttl` — are newtypes, per `AGENTS.md`'s primitive-obsession rule, never
   a bare integer or string at a domain boundary.
 
 ### 5. Security and privacy constraints
@@ -1388,7 +1388,7 @@ every message free of file paths, connection strings and credential material.
 - **No operational feedback until the cutover**, which is last. This schema meets real
   household traffic, real client churn and real odd devices only at the moment changing it
   is most expensive.
-- **Object Calisthenics compliance is partly gated, per `CLAUDE.md`'s Enforcement section
+- **Object Calisthenics compliance is partly gated, per `AGENTS.md`'s Enforcement section
   and Phase 0 Norm 17.** Nesting depth, function length, module length and mixed field
   visibility are mechanically enforced; the primitive-obsession rule above, first-class
   collections and full words remain a review discipline that `just gate` cannot turn red

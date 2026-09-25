@@ -676,7 +676,7 @@ Degradation "1" --> "1" DegradationCause : why
   project non-goals; a purge is unattributable by design, and modelling an attribution
   this project cannot produce would be a fiction.
 - **`TopNWidth`, `RingCapacity` and `ChunkSize` are newtypes over `usize`, not bare
-  configuration integers.** Each carries a domain rule — the test `CLAUDE.md` states for
+  configuration integers.** Each carries a domain rule — the test `AGENTS.md` states for
   wrapping a primitive — rather than being wrapped on principle: a zero top-N width is
   meaningless, a zero ring capacity makes `BoundedRing`'s wraparound arithmetic undefined,
   and a zero chunk size would let the retention sweep spin without ever making progress.
@@ -688,7 +688,7 @@ Degradation "1" --> "1" DegradationCause : why
   scattered at each index site inside the ring.
 - **`TopNDomains` exposes `contains` and `is_truncated` rather than being a bag of a
   `Vec<TopNEntry>` plus a counter.** `contains(&CanonicalName) -> bool` mirrors
-  `styx-proto`'s `TypeBitmap::contains`, the first-class-collection precedent `CLAUDE.md`
+  `styx-proto`'s `TypeBitmap::contains`, the first-class-collection precedent `AGENTS.md`
   points at; `is_truncated() -> bool` gives the caller the `truncated_distinct != 0` check
   as a named domain operation instead of a field comparison repeated at every call site.
 
@@ -1003,7 +1003,7 @@ styx-telemetry/
    `no-sync-io-telemetry-domain` and `no-sync-io-telemetry-application`, denying the exact
    synchronous-I/O list Phase 0 Approach §10 fixes, in sync and async code alike; and one
    `[[restrict-use]]` rule, `no-anyhow-telemetry`, denying `anyhow` crate-wide, because
-   `styx-telemetry` is a library crate and `CLAUDE.md`'s ban on `anyhow` outside the
+   `styx-telemetry` is a library crate and `AGENTS.md`'s ban on `anyhow` outside the
    composition root needs the same enforcement every other feature crate has. All five are
    added in the same step that adds the crate to the workspace (Operations 0), not
    deferred until a violation is found.
@@ -1081,7 +1081,7 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
      alike. `infrastructure` gets no such rule: that is where the Turso statements and the
      bounded channel live.
    - Add `no-anyhow-telemetry`, scoped to the whole crate, denying `anyhow` and everything
-     under it. `styx-telemetry` is a library crate, so `CLAUDE.md`'s ban on `anyhow`
+     under it. `styx-telemetry` is a library crate, so `AGENTS.md`'s ban on `anyhow`
      outside the composition root applies here the same as everywhere else.
 3. **Completion criterion**: `arch-lint check` rejects a synchronous `std::fs` call added
    to a throwaway function in `domain` or `application`, and an `anyhow::Result` return
@@ -1716,7 +1716,7 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
     write-time enforcement, and the reason a purge must be explicit — because that
     rationale is the part most likely to be lost and the part whose loss would silently
     undo the design.
-15. **Primitive obsession is avoided per `CLAUDE.md`; a newtype wraps a primitive that
+15. **Primitive obsession is avoided per `AGENTS.md`; a newtype wraps a primitive that
     carries domain rules.** A value gets its own type when it has a validated range,
     checked arithmetic, a non-trivial wire encoding or named constants attached to it —
     not merely because it is a `usize`, a `u64` or a `Duration`. A plain field with no
@@ -1731,7 +1731,7 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
     arithmetic, the role `styx-proto`'s `Cursor` plays. `RollupCounters`'s `AtomicU64`
     fields and `CounterSnapshot`'s `u64` fields are deliberately left unwrapped: they are
     plain value mirrors with no independent range or encoding rule of their own, the same
-    test that leaves `Header::authoritative` a bare `bool` in `CLAUDE.md`'s own example.
+    test that leaves `Header::authoritative` a bare `bool` in `AGENTS.md`'s own example.
 
 ---
 
@@ -1851,7 +1851,7 @@ And the phase scope, verbatim:
   implementation several phases ago specifically so this phase would not have to touch it.
 - **This phase's newly introduced domain values that carry rules are newtypes.**
   `TopNWidth`, `RingCapacity` and `ChunkSize` each validate a non-zero value at
-  construction and expose no setter that could reopen that invariant, per `CLAUDE.md`'s
+  construction and expose no setter that could reopen that invariant, per `AGENTS.md`'s
   primitive-obsession test. **Wrapping a primitive that carries domain rules stays a
   review-only judgement** *(revised 2026-09-24)*: Phase 0 Norm 17 gates nesting depth,
   function length, module length and mixed field visibility, but no lint decides whether a

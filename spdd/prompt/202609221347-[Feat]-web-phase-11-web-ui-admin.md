@@ -1861,7 +1861,7 @@ styx binary (single process, shared Arc state)
     `SessionTokenHash` (a non-trivial encoding that must never be logged or rendered),
     `Argon2idHash` (opaque, redacted `Debug`) and `FailureStreak` (a checked, saturating
     doubling capped rather than wrapped) are this phase's own worked examples, in
-    `CLAUDE.md`'s sense of the rule.
+    `AGENTS.md`'s sense of the rule.
 16. **No secret travels in a URL query string.** Credentials, session tokens, CSRF
     tokens, password-reset or bootstrap tokens, and any other value that grants or
     proves authority are carried in a cookie, a request header or a POST body, never after
@@ -1980,7 +1980,7 @@ Decomposed, with the gap each decomposition closes:
   (Structure).
 - This phase's own domain values that carry rules — `CredentialGeneration`,
   `SessionToken` / `SessionTokenHash`, `Argon2idHash`, `FailureStreak` — are newtypes per
-  `CLAUDE.md`'s Object Calisthenics section, not bare primitives passed around and
+  `AGENTS.md`'s Object Calisthenics section, not bare primitives passed around and
   revalidated at each call site.
 
 ### 5. Performance and resource constraints

@@ -46,7 +46,7 @@ is the failure this whole directory exists to catch.
 | E | markdown: unlabelled fence, heading punctuation, over-long line | `rumdl`, via the repository's own `rumdl.toml` |
 | F | synchronous `std::fs::read_to_string` in a non-async `application` fn | arch-lint `[[restrict-use]]` `no-sync-io-resolution-application` |
 | G | `anyhow::Result` in a feature crate's `domain` module | arch-lint `[[restrict-use]]` `no-anyhow-filtering` |
-| H | one violation each of the six `CLAUDE.md` clippy lints | clippy, asserted to name each of the six by its doc anchor |
+| H | one violation each of the six `AGENTS.md` clippy lints | clippy, asserted to name each of the six by its doc anchor |
 | I | a `.rs` file with 401 counted lines | `xtask module-size` |
 
 ## Why nine, when the exit criteria name two
@@ -69,7 +69,7 @@ The phase's stated exit criteria name A and B. C through I are here because:
   exemption list that quietly grows until it covers everything is
   indistinguishable from a clean repository by exit code. E is what notices.
 - **F through I** were added by the 2026-09-24 amendment, because each
-  mechanises a `CLAUDE.md` rule that previously had no check behind it at
+  mechanises an `AGENTS.md` rule that previously had no check behind it at
   all. Norms 3, 6 and 7 each claimed an existing arch-lint rule already
   enforced synchronous-I/O-by-layer, `tracing`-only logging and
   `anyhow`-never-in-libraries; read against the arch-lint 0.6.0 source, none

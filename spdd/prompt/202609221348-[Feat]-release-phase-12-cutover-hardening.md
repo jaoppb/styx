@@ -1508,7 +1508,7 @@ passed.**
     call site is not primitive obsession — `SmokeOutcome`'s `started`, `bound_listeners`,
     `answered_query` and `clean_exit` booleans are exactly that, and stay bare. The test
     is domain rules attached to the value, not the primitive-ness of its type.
-    `CLAUDE.md` states the full Rust-adapted Object Calisthenics ruleset this
+    `AGENTS.md` states the full Rust-adapted Object Calisthenics ruleset this
     generalises from; `RestartBudget` — a `u32` with a validated `> 0` range enforced at
     construction and no setter that reopens it — is this phase's worked example.
 
@@ -1626,7 +1626,7 @@ passed.**
 5. No resolution behaviour, policy semantics or UI is added by this phase.
 6. This phase's newly introduced domain values that carry rules — `RestartBudget` — are
    newtypes with a validating constructor and no setter that reopens the invariant, per
-   `CLAUDE.md`'s Object Calisthenics section. Per Phase 0 Norm 17, the measurable proxies
+   `AGENTS.md`'s Object Calisthenics section. Per Phase 0 Norm 17, the measurable proxies
    of that section — nesting depth, function length, module length and mixed field
    visibility — are gated; "wrap a primitive that carries domain rules" is not, and stays
    a review discipline that `just gate` passing does not by itself prove.

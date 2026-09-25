@@ -76,14 +76,14 @@ cast_possible_wrap = "deny"
 cast_sign_loss = "deny"
 cast_precision_loss = "deny"
 
-# -- CLAUDE.md conventions, mechanised (6) (amendment, 2026-09-24) --------
+# -- AGENTS.md conventions, mechanised (6) (amendment, 2026-09-24) --------
 # Norms 3, 6 and 7 each claimed an arch-lint rule already enforced them,
 # and none of the three claims held in full against the arch-lint 0.6.0
 # source: `no-sync-io` (AL002) sees only async contexts, `require-tracing`
 # (AL006) flags only the `log` crate, and `require-thiserror` (AL005) says
 # nothing about `anyhow`. These six close the gaps clippy can reach; the
 # `[[restrict-use]]` rules in arch-lint.toml close the two it cannot
-# (synchronous I/O by layer, `anyhow` by crate). See CLAUDE.md's
+# (synchronous I/O by layer, `anyhow` by crate). See AGENTS.md's
 # Enforcement section and `clippy.toml`'s two thresholds, which these six
 # lints depend on.
 print_stdout = "deny"

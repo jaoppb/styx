@@ -1209,7 +1209,7 @@ below — but they are non-negotiable.
 ### 5. Lint and gate constraints
 
 - The per-push gate (`just gate`) must be green: formatting, clippy's 21 denied lints
-  (the original 15 plus the six lints that mechanise `CLAUDE.md`), `arch-lint check`
+  (the original 15 plus the six lints that mechanise `AGENTS.md`), `arch-lint check`
   (including the synchronous-I/O and `anyhow` `[[restrict-use]]` rules), the `cargo tree`
   layering gate, the `hickory-dev-only` check, the `xtask module-size` check, socket-level
   tests, and the `--no-default-features` headless build.

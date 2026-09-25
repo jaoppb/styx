@@ -342,7 +342,7 @@ Descent --> RecursionError : fails with
 - **No new entity wraps something a plain Rust type already expresses.** `Name`, `Ttl`,
   `IpAddr` and the record types come from `styx-proto`; this phase does not re-model them.
 - **`DescentLimits` and `Srtt` are the exceptions, and are wrapped for the reason
-  `CLAUDE.md` states, not on principle.** `DescentLimits` bundles the four
+  `AGENTS.md` states, not on principle.** `DescentLimits` bundles the four
   denial-of-service bounds behind a constructor that rejects a zero-valued limit — a
   validated range attached to the value, not a bare `u8`/`u16`/`Duration` grouping.
   `Srtt` wraps the smoothed round-trip time behind a checked, saturating `update`, so a
@@ -937,7 +937,7 @@ first.**
 10. **Naming** — `RecursionDiagnostics` and `HealthState` are never abbreviated to a
     common word, never aliased to each other, and never combined in a single struct field,
     a single log line, or a single UI panel.
-11. **Primitive obsession is avoided per `CLAUDE.md`; a newtype wraps a primitive that
+11. **Primitive obsession is avoided per `AGENTS.md`; a newtype wraps a primitive that
     carries domain rules.** A value gets its own type when it has a validated range,
     checked arithmetic, a non-trivial wire encoding, or named constants attached to it —
     not merely because it is a `u8`, `u16` or `Duration`. A plain named field with no
@@ -947,7 +947,7 @@ first.**
     zero-valued denial-of-service bound at construction) and `Srtt` (a checked,
     saturating EWMA update rather than a direct field write) are its worked examples,
     alongside `styx-proto`'s `Ttl`, `RecordType`, `RecordClass` and `ResponseCode` that
-    `CLAUDE.md` generalises from.
+    `AGENTS.md` generalises from.
 
 ---
 
@@ -1048,7 +1048,7 @@ constraint 3.
   asserting this must exist before this phase writes its test rig.
 - The infrastructure cache has a configured memory bound. The target box is a Raspberry
   Pi.
-- **`CLAUDE.md`'s Object Calisthenics section is gated where a tool can measure it, per
+- **`AGENTS.md`'s Object Calisthenics section is gated where a tool can measure it, per
   Phase 0 Norm 17** — nesting depth, function length, module length and mixed field
   visibility. `DescentLimits` and `Srtt` are the newly introduced domain values that
   carry rules — a validated range and a checked, saturating update, respectively — and

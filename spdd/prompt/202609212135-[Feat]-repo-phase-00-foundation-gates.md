@@ -68,18 +68,18 @@ Concretely, this phase must:
   layering model and the arch-lint engine mechanism, the `hickory-proto` exception to the
   from-scratch rule, and the pinned root trust anchor.
 - **Write the durable engineering-norms document every later phase codes against** —
-  `CLAUDE.md` at the repository root, covering this phase's own conventions (ports and
+  `AGENTS.md` at the repository root, covering this phase's own conventions (ports and
   adapters, `thiserror`, checked arithmetic, no synchronous I/O, `tracing`) and a
   Rust-adapted Object Calisthenics ruleset, so that "wrap a primitive when it carries
   domain rules" is written down once, in phase 0, rather than re-derived by every later
   phase's generation prompt.
-- **Mechanise every `CLAUDE.md` rule a tool can check** *(amendment, 2026-09-24)* — no
+- **Mechanise every `AGENTS.md` rule a tool can check** *(amendment, 2026-09-24)* — no
   synchronous I/O in `domain`/`application`, `anyhow` only in the `styx` binary and
   `xtask`, `tracing` rather than print macros, and the measurable proxies of three Object
   Calisthenics rules: nesting depth, function length and module length, plus mixed field
   visibility. A convention that is written down but never checked is one that generated
   code can drift from without anyone noticing. The rules that need judgement stay a review
-  discipline, and `CLAUDE.md` says which are which.
+  discipline, and `AGENTS.md` says which are which.
 
 **Value**: the gate is the only continuous feedback signal this project has for most of
 its life. The cutover is last — styx runs on a dev box until v1 is complete, so phases 1
@@ -311,7 +311,7 @@ class ArchitectureDecisionRecord {
 }
 
 class EngineeringGuidelines {
-  <<CLAUDE.md, repo root>>
+  <<AGENTS.md, repo root>>
   +String scope "phases 0 through 12"
   +Vec~String~ repo_conventions
   +Vec~String~ calisthenics_rules
@@ -510,7 +510,7 @@ Therefore:
 - **21 denied clippy lints workspace-wide, 5 `allow-*-in-tests` entries and 2 thresholds
   in `clippy.toml`, all names verified against rustc 1.96.0.** The original 15 guard
   checked arithmetic, panicking and truncation; the 6 added by the 2026-09-24 amendment
-  mechanise `CLAUDE.md` conventions and are argued in §10.
+  mechanise `AGENTS.md` conventions and are argued in §10.
 - Three are fixed by the record and are load-bearing for later phases:
   - `indexing_slicing = deny` and `arithmetic_side_effects = deny` — every label offset
     and TTL decrement in the phase 1 wire codec becomes a checked operation.
@@ -621,18 +621,18 @@ trust anchor rollover. Write them where the reasoning is freshest.
   concrete rather than theoretical: `spdd/**` already has one rule switched off, and
   nothing but a fixture proves the rest are still on.
 
-### 9. `CLAUDE.md` — the durable engineering-norms document
+### 9. `AGENTS.md` — the durable engineering-norms document
 
-- **ADRs record why a past decision was made; `CLAUDE.md` records how code is written
+- **ADRs record why a past decision was made; `AGENTS.md` records how code is written
   going forward.** They serve different readers and different lifespans: an ADR is written
-  once and never edited except by superseding it, while `CLAUDE.md` is the document every
+  once and never edited except by superseding it, while `AGENTS.md` is the document every
   later phase's generation prompt is expected to already comply with, and is revised in
   place as conventions are learned. Both live in the repository, both are gated as prose,
   and neither substitutes for the other.
 - **Write it in phase 0, not when the first feature crate needs it.** Every rule it states
   — ports as traits, `thiserror` at boundaries, checked arithmetic, no synchronous I/O in
   `domain`/`application`, `tracing` over `println!` — is already decided above;
-  `CLAUDE.md` is where those decisions become the guidance a later phase's generation
+  `AGENTS.md` is where those decisions become the guidance a later phase's generation
   reads before it writes a line of code, the same role Approach and Norms play inside this
   canvas.
 - **Fold in a Rust-adapted Object Calisthenics ruleset**, because the original nine rules
@@ -643,7 +643,7 @@ trust anchor rollover. Write them where the reasoning is freshest.
     primitive is wrapped in a newtype when a value has a validated range, a checked
     arithmetic operation, a non-trivial wire encoding, or named constants attached to it —
     not merely because it is a primitive. Phase 1's `Ttl`, `RecordType`, `RecordClass` and
-    `ResponseCode` are the precedent this rule generalises from, and `CLAUDE.md` cites them
+    `ResponseCode` are the precedent this rule generalises from, and `AGENTS.md` cites them
     by name rather than inventing a fresh example. A plain named `bool` field on a struct
     like `Header::authoritative`, with no independent validation and no risk of being
     confused with an unrelated value at a call site, is not primitive obsession — the test
@@ -667,14 +667,14 @@ trust anchor rollover. Write them where the reasoning is freshest.
     the ruleset reads as one document rather than two.
   - **Downgraded to guidance, not a hard rule**: "one dot per line." Rust's `Result`,
     `Option` and iterator combinators are idiomatically chained, and forbidding it would
-    fight the standard library. `CLAUDE.md` keeps the spirit — do not let a chain cross a
+    fight the standard library. `AGENTS.md` keeps the spirit — do not let a chain cross a
     domain boundary without a named intermediate binding — and drops the letter.
   - **Dropped outright**: a hard numeric cap on instance fields per type. Some domain types
     legitimately carry several named fields with no shared substructure to extract — `Opt`
     and `Header` are the existing examples — and an arbitrary field-count ceiling would
     force an artificial wrapper type with no behaviour of its own, the opposite of what the
     ruleset is for.
-- **`CLAUDE.md` does not restate ADR content.** Where a rule's rationale is already an ADR
+- **`AGENTS.md` does not restate ADR content.** Where a rule's rationale is already an ADR
   (the layering model, the `hickory-proto` exception, the trust anchor), it is referenced
   by path rather than duplicated, so the two documents cannot drift apart silently.
 - **Enforced where a tool can measure it, reviewed where it cannot.** *(Updated
@@ -682,7 +682,7 @@ trust anchor rollover. Write them where the reasoning is freshest.
   unenforced. §10 mechanises the measurable part.)* Nesting depth, function length,
   module length and mixed field visibility are gated. "Wrap a primitive that carries
   domain rules", first-class collections and full words are not, because each needs a
-  judgement no lint can make. `CLAUDE.md` names both lists in as many words, rather than
+  judgement no lint can make. `AGENTS.md` names both lists in as many words, rather than
   implying a rigour the gate does not provide or hiding one it does.
 - **Binds retroactively as precedent, not as a mandate to revise.** Phase 1's `styx-proto`
   is already implemented and is cited as the worked example the newtype rule generalises
@@ -690,7 +690,7 @@ trust anchor rollover. Write them where the reasoning is freshest.
   rule stated here has found a defect in the rule's wording, not licence to silently
   rewrite shipped code — the SPDD "fix the prompt first" principle applies.
 
-### 10. Mechanising the `CLAUDE.md` conventions (amendment, 2026-09-24)
+### 10. Mechanising the `AGENTS.md` conventions (amendment, 2026-09-24)
 
 **What prompted this**: Norms 3, 6 and 7 each claimed an arch-lint rule enforced them.
 Read against the arch-lint 0.6.0 source, none of the three claims holds in full:
@@ -773,7 +773,7 @@ founding failure: a check that is believed to exist, but does not.
 **Judgement stays in review**: "wrap a primitive that carries domain rules", first-class
 collections, full words, and the downgraded "one dot per line". No lint can decide
 whether a `u16` has domain rules attached. A proxy such as `struct_excessive_bools` would
-push against `CLAUDE.md`'s explicit permission for plain named `bool` fields.
+push against `AGENTS.md`'s explicit permission for plain named `bool` fields.
 
 ### Alternatives considered and rejected
 
@@ -808,8 +808,8 @@ push against `CLAUDE.md`'s explicit permission for plain named `bool` fields.
 - **Trust `arch-lint check` exiting 0 as evidence the gate works.** Rejected: this is
   precisely the failure already recorded against the committed file.
 - **Lint "wrap this primitive" with a custom `dylint` library.** Rejected: whether a value
-  carries domain rules is exactly the judgement `CLAUDE.md` asks for, and a heuristic
-  that flags bare integers in signatures would fire on the plain fields `CLAUDE.md`
+  carries domain rules is exactly the judgement `AGENTS.md` asks for, and a heuristic
+  that flags bare integers in signatures would fire on the plain fields `AGENTS.md`
   explicitly permits. The gate would start red and be taught to be ignored.
 - **Enforce module size with clippy `too_many_lines` alone.** Rejected: it measures
   functions, not files, and a module of thirty short functions is exactly the god-module
@@ -857,7 +857,7 @@ push against `CLAUDE.md`'s explicit permission for plain named `bool` fields.
 ```text
 styx/
 ├── Cargo.toml                  # virtual manifest: members, [workspace.lints], [workspace.dependencies]
-├── CLAUDE.md                   # engineering guidelines every phase codes against
+├── AGENTS.md                   # engineering guidelines every phase codes against
 ├── rust-toolchain.toml         # pinned rustc (the version the 21 lint names were verified against)
 ├── arch-lint.toml              # syn engine — NO [[layers]]
 ├── clippy.toml                 # 5 allow-*-in-tests entries, nesting and function-length thresholds
@@ -1146,7 +1146,7 @@ Tasks are ordered by dependency. Each is independently verifiable.
    unwrap/expect outside tests. **Every name must be confirmed to exist and to be
    non-deprecated under the pinned rustc 1.96.0 before it is committed**; an unrecognised
    lint name degrades to an ignored warning and the count becomes fiction.
-4. **The six `CLAUDE.md` lints** *(amendment, 2026-09-24)*, all `deny`, each argued in
+4. **The six `AGENTS.md` lints** *(amendment, 2026-09-24)*, all `deny`, each argued in
    Approach §10: `print_stdout`, `print_stderr`, `dbg_macro`, `partial_pub_fields`,
    `too_many_lines` and `excessive_nesting`. The last is warn-by-default and would fail
    under `-D warnings` anyway. It is still declared `deny` explicitly, so the lint table
@@ -1341,7 +1341,7 @@ the counterpart to, and before the `justfile` that invokes it.*
    - **Fixture G — `anyhow` in a feature crate** *(amendment)*: a `styx-filtering`
      skeleton whose `domain` module imports `anyhow::Result`. Must be rejected by
      arch-lint. It needs no manifest dependency, because arch-lint reads source text.
-   - **Fixture H — the `CLAUDE.md` clippy lints** *(amendment)*: one standalone crate
+   - **Fixture H — the `AGENTS.md` clippy lints** *(amendment)*: one standalone crate
      with one module per lint, each containing exactly one violation: a `println!`, an
      `eprintln!`, a `dbg!`, a struct mixing `pub` and private fields, a function past 60
      code lines, and a block nested past depth 4. Like Fixture A, it carries its own copy
@@ -1369,7 +1369,7 @@ the counterpart to, and before the `justfile` that invokes it.*
    be entirely unproven when it first matters. E is added because the markdown gate
    carries a standing exemption — `spdd/**` has one rule switched off — and an over-broad
    exemption is indistinguishable from a clean repository from an exit code. F through I
-   are added because each mechanises a rule that `CLAUDE.md` previously stated with no
+   are added because each mechanises a rule that `AGENTS.md` previously stated with no
    check behind it. A new check without a fixture is the founding failure repeated on
    purpose.
 5. **Completion criterion**: `just gate-selftest` passes, meaning every fixture was
@@ -1430,13 +1430,13 @@ the counterpart to, and before the `justfile` that invokes it.*
    automated rollover looks like an omission to anyone who does not know the reasoning,
    and the seam that makes it recoverable is a design commitment made now.
 
-### 15. Write `CLAUDE.md` — the engineering-norms document
+### 15. Write `AGENTS.md` — the engineering-norms document
 
 1. **Responsibility**: give every later phase's generation prompt a single, durable
    statement of how code in this repository is written, independent of any one phase's own
    Norms section.
 2. **Steps**:
-   - Write `CLAUDE.md` at the repository root.
+   - Write `AGENTS.md` at the repository root.
    - **Repository conventions section**: restate, in prose, the conventions already fixed
      by this phase — crate-per-feature with `domain`/`application`/`infrastructure` as
      modules; ports as traits in `domain`, adapters in `infrastructure` or the `styx`
@@ -1475,7 +1475,7 @@ the counterpart to, and before the `justfile` that invokes it.*
    it). It must not duplicate ADR rationale; it must not contradict Phase 1's
    already-implemented use of newtypes, which it cites as precedent rather than something
    this phase revises.
-4. **Completion criterion**: `CLAUDE.md` exists at the repository root, `just gate`'s
+4. **Completion criterion**: `AGENTS.md` exists at the repository root, `just gate`'s
    markdown step passes with it included, and it states the primitive-obsession/newtype
    rule with the exact test — *domain rules attached to the value*, not primitive-ness
    alone — given in Approach §9, and its Enforcement section lists every check that
@@ -1567,7 +1567,7 @@ the counterpart to, and before the `justfile` that invokes it.*
     is a `u16`, a `u32`, a `bool` or a `String`. A plain named field with no independent
     validation and no risk of being confused with an unrelated value at a call site is not
     primitive obsession; the test is domain rules attached to the value, not the
-    primitive-ness of its type. `CLAUDE.md` states the full Rust-adapted Object
+    primitive-ness of its type. `AGENTS.md` states the full Rust-adapted Object
     Calisthenics ruleset this generalises from; Phase 1's `Ttl`, `RecordType`,
     `RecordClass` and `ResponseCode` are its worked examples.
 
@@ -1665,7 +1665,7 @@ the counterpart to, and before the `justfile` that invokes it.*
 ### 3. Lint constraints
 
 - 21 denied clippy lints, workspace-wide, including `indexing_slicing = deny`,
-  `arithmetic_side_effects = deny` and `panic = deny`, and the six `CLAUDE.md` lints
+  `arithmetic_side_effects = deny` and `panic = deny`, and the six `AGENTS.md` lints
   `print_stdout`, `print_stderr`, `dbg_macro`, `partial_pub_fields`, `too_many_lines` and
   `excessive_nesting`.
 - 5 `allow-*-in-tests` entries in `clippy.toml` — the original four plus
@@ -1751,12 +1751,12 @@ the counterpart to, and before the `justfile` that invokes it.*
 - Every markdown file in the repository is lint-clean under `rumdl.toml`, including the
   ADRs this phase writes. A documentation gate that its own phase's documents do not pass
   is not a gate.
-- `CLAUDE.md` exists at the repository root, states the Rust-adapted Object Calisthenics
+- `AGENTS.md` exists at the repository root, states the Rust-adapted Object Calisthenics
   ruleset — the primitive-obsession/newtype rule stated with its exact test, citing Phase
   1's `Ttl`, `RecordType`, `RecordClass` and `ResponseCode` by name — and is lint-clean
   under `rumdl.toml` like every other hand-written document. It does not restate ADR
   content; it references the ADRs it depends on by path.
-- `CLAUDE.md`'s Enforcement section lists the mechanically enforced rules and the
+- `AGENTS.md`'s Enforcement section lists the mechanically enforced rules and the
   review-only rules separately. Every threshold it states matches `clippy.toml` and
   `xtask`. A document that names a number the gate does not enforce is the prose form of
   an inert config.
@@ -1802,7 +1802,7 @@ the counterpart to, and before the `justfile` that invokes it.*
   boundary around the web layer and the supervised task model arrive in **Phase 12 —
   Cutover hardening**. Weakening the lint before then removes the only protection there
   is.
-- **`CLAUDE.md`'s Object Calisthenics section is only partly mechanically enforced.**
+- **`AGENTS.md`'s Object Calisthenics section is only partly mechanically enforced.**
   Nesting depth, function length, module length and mixed field visibility are gated
   (Approach §10). No lint checks "wrap this primitive", first-class collections or full
   words the way clippy checks `.unwrap()`. Compliance with those is a review discipline.

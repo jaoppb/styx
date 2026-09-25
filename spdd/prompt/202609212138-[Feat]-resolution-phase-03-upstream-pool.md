@@ -332,7 +332,7 @@ PoolConfig ..> ConfigError : fails with
   recursor's, without asking the pool a second question.
 - `Weight`, `FailureCount` and `EdnsBufferSize` are newtypes rather than a bare `u32` or
   `u16` because each carries a checked-arithmetic operation or a validated range — the
-  same test `CLAUDE.md` states and Phase 1's `Ttl` sets the precedent for. `raced_count`
+  same test `AGENTS.md` states and Phase 1's `Ttl` sets the precedent for. `raced_count`
   stays a plain `u8`: it is a count with no independent rule of its own, not a value this
   test reaches.
 
@@ -837,7 +837,7 @@ Ordered by dependency. Each task is independently completable and independently 
    both outlive their use inside `UpstreamConfig` — `Weight` is also read by
    `application::strategies::Weighted` and `EdnsBufferSize` by `Do53Forwarder` — and
    because bundling two unrelated validated newtypes into the config file is exactly the
-   catch-all shape `CLAUDE.md`'s "small, single-purpose modules" rule exists to split.
+   catch-all shape `AGENTS.md`'s "small, single-purpose modules" rule exists to split.
 2. **Types**:
    - `PoolConfig { strategy: StrategyName, members: Vec<UpstreamConfig>, probe: ProbeConfig, circuit: CircuitConfig }`.
    - `UpstreamConfig { name, kind, addr, weight: Weight, canary: Option<CanaryConfig>, timeouts }`.
@@ -975,8 +975,8 @@ Ordered by dependency. Each task is independently completable and independently 
       socket-level tests, and the `--no-default-features` headless build. Enforced by
       lefthook on pre-commit/pre-push **and** by GitHub Actions — a lint that only runs
       locally is not enforcement.
-11. **`CLAUDE.md` compliance**
-    - This phase's code follows `CLAUDE.md` in full, including its primitive-obsession
+11. **`AGENTS.md` compliance**
+    - This phase's code follows `AGENTS.md` in full, including its primitive-obsession
       rule: a value is wrapped in a newtype when it carries a validated range, a checked
       arithmetic operation, a non-trivial wire encoding, or named constants — not merely
       because it is a `u16`, a `u32` or a `String`. The test is domain rules attached to
@@ -988,7 +988,7 @@ Ordered by dependency. Each task is independently completable and independently 
       `RecordClass` and `ResponseCode`.
     - Plain named fields with no independent rule — `UpstreamResponse::via_tcp`,
       `UpstreamResponse::raced_count` — stay bare. Wrapping them would be ceremony with no
-      behaviour behind it, the failure mode `CLAUDE.md` warns against.
+      behaviour behind it, the failure mode `AGENTS.md` warns against.
 
 ---
 
@@ -1036,7 +1036,7 @@ Scope, verbatim, from the same specification:
   `FailureCount` and `EdnsBufferSize`, per the Norms entry above. Per Phase 0 Norm 17,
   wrapping a primitive stays a review-only rule — no lint judges whether a value carries
   domain rules — while nesting depth, function length, module length and mixed field
-  visibility are now gated; `CLAUDE.md`'s Enforcement section names which list each rule
+  visibility are now gated; `AGENTS.md`'s Enforcement section names which list each rule
   is on.
 - **This phase's code must pass the extended gate (Phase 0 §10).** The rules most likely
   to bind here: `excessive_nesting`/`too_many_lines` on `HealthState::observe`,

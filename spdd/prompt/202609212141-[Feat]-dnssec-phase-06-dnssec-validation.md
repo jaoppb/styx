@@ -263,7 +263,7 @@ the `styx` binary. `Validator` is pure: its only inputs are a decoded message, t
 ports, and an injected `Clock`. `DenialProof` is the single type through which both
 NSEC and NSEC3 denial reach the chain logic, so a proven-unsigned delegation and a
 proven NXDOMAIN travel the same path. `Nsec3IterationsCap` and `Nsec3Flags` are the
-newtypes `CLAUDE.md`'s primitive-obsession rule calls for on this phase's two
+newtypes `AGENTS.md`'s primitive-obsession rule calls for on this phase's two
 attacker-facing NSEC3 primitives — see Norm 14.
 
 ---
@@ -353,7 +353,7 @@ attacker-facing NSEC3 primitives — see Norm 14.
   thresholds. The *existence* of the cap is not open; only the number is. Pick it,
   name it as a constant or config field, and write it down.
 - **Expressed as the `Nsec3IterationsCap` newtype, not a bare `u16`**, per
-  `CLAUDE.md`'s primitive-obsession rule: the value chosen above lives as a named
+  `AGENTS.md`'s primitive-obsession rule: the value chosen above lives as a named
   associated constant on the type, and the type exists precisely so the cap can never
   be expressed as an `Option` or paired with a sentinel meaning "unlimited" — the
   domain rule this rule wraps for, not the primitive-ness of `u16` on its own.
@@ -469,7 +469,7 @@ attacker-facing NSEC3 primitives — see Norm 14.
 
 1. **`domain`** — pure types and rules, no I/O, no async, no external crates beyond
    `styx-proto` and error/logging plumbing, split by concept into its own file per
-   `CLAUDE.md`'s small-single-purpose-modules rule, the same way `styx-proto` splits
+   `AGENTS.md`'s small-single-purpose-modules rule, the same way `styx-proto` splits
    `domain/rdata/basic.rs` from `domain/rdata/dnssec.rs` rather than collecting every
    `rdata` type into one file:
    - `domain/verdict.rs` — `ValidationVerdict`, `VerdictReason`, `ValidationOutcome`,
@@ -773,7 +773,7 @@ attacker-facing NSEC3 primitives — see Norm 14.
    any of it.
 2. Attributes: `hash_algorithm`, `flags: Nsec3Flags`, `iterations: u16`,
    `salt: Vec<u8>`.
-3. `Nsec3Flags` wraps the wire's flags octet, per `CLAUDE.md`'s primitive-obsession
+3. `Nsec3Flags` wraps the wire's flags octet, per `AGENTS.md`'s primitive-obsession
    rule: it carries the named opt-out bit rather than leaving every caller to mask a
    bare `u8` by hand. Constructor `Nsec3Flags::new(raw: u8) -> Self` (every octet value
    is wire-valid, so construction cannot fail); read accessor `is_opt_out() -> bool`;
@@ -1035,7 +1035,7 @@ attacker-facing NSEC3 primitives — see Norm 14.
 13. **Document the open numbers next to the code that uses them** — specifically the
     NSEC3 iterations cap value chosen in 6c.1.
 14. **Primitive obsession is avoided; a newtype wraps a primitive that carries domain
-    rules**, per `CLAUDE.md`. A value gets its own type when it has a validated range,
+    rules**, per `AGENTS.md`. A value gets its own type when it has a validated range,
     a checked arithmetic or comparison operation, a non-trivial wire encoding, or named
     constants attached to it — not merely because it is a `u16`, a `u8` or a `bool`;
     the test is domain rules attached to the value, not the primitive-ness of its type.
@@ -1216,10 +1216,10 @@ Approach sections; nothing outside this document is needed to read them.)*
 ### 12. Object Calisthenics compliance
 
 - This phase's newly introduced domain values that carry rules — `Nsec3IterationsCap`
-  and `Nsec3Flags` — are newtypes, not bare `u16`/`u8` fields, per `CLAUDE.md`'s
+  and `Nsec3Flags` — are newtypes, not bare `u16`/`u8` fields, per `AGENTS.md`'s
   primitive-obsession rule and Norm 14.
 - **Wrapping these two primitives stays a review discipline; the shape rules around them
-  are gated.** Per `CLAUDE.md`'s Enforcement section and Phase 0 Norm 17, nesting depth,
+  are gated.** Per `AGENTS.md`'s Enforcement section and Phase 0 Norm 17, nesting depth,
   function length, module length and mixed field visibility are mechanically checked by
   `just gate` — see the Technical constraints bullet above for which parts of this crate
   that reaches. Whether `Nsec3IterationsCap` and `Nsec3Flags` *should* be newtypes at all

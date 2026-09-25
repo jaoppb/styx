@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "fixture-h-claude-md-lints"
+name = "fixture-h-agents-md-lints"
 version = "0.0.0"
