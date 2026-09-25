@@ -116,7 +116,8 @@ class Opcode {
 }
 
 class ResponseCode {
-    +u16 value
+    -u16 value
+    +value() u16
     +from_parts(header_nibble, opt_upper) ResponseCode
     +split() (u8, u8)
 }
@@ -156,87 +157,132 @@ class RData {
 }
 
 class SoaRdata {
-    +Name mname
-    +Name rname
-    +u32 serial
-    +u32 refresh
-    +u32 retry
-    +u32 expire
-    +u32 minimum
+    -Name mname
+    -Name rname
+    -u32 serial
+    -u32 refresh
+    -u32 retry
+    -u32 expire
+    -u32 minimum
+    +mname() Name
+    +rname() Name
+    +serial() u32
+    +refresh() u32
+    +retry() u32
+    +expire() u32
+    +minimum() u32
 }
 
 class MxRdata {
-    +u16 preference
-    +Name exchange
+    -u16 preference
+    -Name exchange
+    +preference() u16
+    +exchange() Name
 }
 
 class TxtRdata {
-    +Vec~CharacterString~ strings
+    -Vec~CharacterString~ strings
+    +strings() Vec~CharacterString~
 }
 
 class SrvRdata {
-    +u16 priority
-    +u16 weight
-    +u16 port
-    +Name target
+    -u16 priority
+    -u16 weight
+    -u16 port
+    -Name target
+    +priority() u16
+    +weight() u16
+    +port() u16
+    +target() Name
 }
 
 class DnskeyRdata {
-    +u16 flags
-    +u8 protocol
-    +u8 algorithm
-    +Vec~u8~ public_key
+    -u16 flags
+    -u8 protocol
+    -u8 algorithm
+    -Vec~u8~ public_key
+    +flags() u16
+    +protocol() u8
+    +algorithm() u8
+    +public_key() Vec~u8~
     +key_tag() u16
 }
 
 class DsRdata {
-    +u16 key_tag
-    +u8 algorithm
-    +u8 digest_type
-    +Vec~u8~ digest
+    -u16 key_tag
+    -u8 algorithm
+    -u8 digest_type
+    -Vec~u8~ digest
+    +key_tag() u16
+    +algorithm() u8
+    +digest_type() u8
+    +digest() Vec~u8~
 }
 
 class RrsigRdata {
-    +RecordType type_covered
-    +u8 algorithm
-    +u8 labels
-    +u32 original_ttl
-    +u32 signature_expiration
-    +u32 signature_inception
-    +u16 key_tag
-    +Name signer_name
-    +Vec~u8~ signature
+    -RecordType type_covered
+    -u8 algorithm
+    -u8 labels
+    -u32 original_ttl
+    -u32 signature_expiration
+    -u32 signature_inception
+    -u16 key_tag
+    -Name signer_name
+    -Vec~u8~ signature
+    +type_covered() RecordType
+    +algorithm() u8
+    +labels() u8
+    +original_ttl() u32
+    +signature_expiration() u32
+    +signature_inception() u32
+    +key_tag() u16
+    +signer_name() Name
+    +signature() Vec~u8~
 }
 
 class NsecRdata {
-    +Name next_domain
-    +TypeBitmap types
+    -Name next_domain
+    -TypeBitmap types
+    +next_domain() Name
+    +types() TypeBitmap
 }
 
 class Nsec3Rdata {
-    +u8 hash_algorithm
-    +u8 flags
-    +u16 iterations
-    +Vec~u8~ salt
-    +Vec~u8~ next_hashed_owner
-    +TypeBitmap types
+    -u8 hash_algorithm
+    -u8 flags
+    -u16 iterations
+    -Vec~u8~ salt
+    -Vec~u8~ next_hashed_owner
+    -TypeBitmap types
+    +hash_algorithm() u8
+    +flags() u8
+    +iterations() u16
+    +salt() Vec~u8~
+    +next_hashed_owner() Vec~u8~
+    +types() TypeBitmap
     +opt_out() bool
 }
 
 class Nsec3ParamRdata {
-    +u8 hash_algorithm
-    +u8 flags
-    +u16 iterations
-    +Vec~u8~ salt
+    -u8 hash_algorithm
+    -u8 flags
+    -u16 iterations
+    -Vec~u8~ salt
+    +hash_algorithm() u8
+    +flags() u8
+    +iterations() u16
+    +salt() Vec~u8~
 }
 
 class UnknownRdata {
-    +RecordType rtype
-    +Vec~u8~ octets
+    -RecordType rtype
+    -Vec~u8~ octets
+    +rtype() RecordType
+    +octets() Vec~u8~
 }
 
 class TypeBitmap {
-    +Vec~u8~ windows
+    -Vec~u8~ windows
     +contains(RecordType) bool
 }
 
@@ -245,7 +291,7 @@ class CharacterString {
 }
 
 class Name {
-    +Vec~Label~ labels
+    -Vec~Label~ labels
     +root() Name
     +from_ascii(str) Result~Name, NameError~
     +wire_len() usize
@@ -257,20 +303,22 @@ class Name {
 }
 
 class Label {
-    +Vec~u8~ octets
+    -Vec~u8~ octets
     +new(octets) Result~Label, NameError~
     +as_lowercase() Label
 }
 
 class Ttl {
-    +u32 seconds
+    -u32 seconds
+    +seconds() u32
     +checked_decrement(u32) Option~Ttl~
     +saturating_decrement(u32) Ttl
     +clamp_to(u32) Ttl
 }
 
 class RecordType {
-    +u16 value
+    -u16 value
+    +value() u16
     +is_pseudo() bool
 }
 
@@ -285,11 +333,16 @@ class RecordClass {
 }
 
 class Opt {
-    +u16 udp_payload_size
-    +u8 extended_rcode
-    +u8 version
-    +bool dnssec_ok
-    +Vec~EdnsOption~ options
+    -u16 udp_payload_size
+    -u8 extended_rcode
+    -u8 version
+    -bool dnssec_ok
+    -Vec~EdnsOption~ options
+    +udp_payload_size() u16
+    +extended_rcode() u8
+    +version() u8
+    +dnssec_ok() bool
+    +options() Vec~EdnsOption~
 }
 
 class EdnsOption {
@@ -317,8 +370,8 @@ class Encoder {
 }
 
 class Cursor {
-    +usize position
-    +usize len
+    -usize position
+    -usize len
     +advance(n) Result~usize, DecodeError~
     +seek(offset) Result~(), DecodeError~
 }
@@ -878,10 +931,25 @@ Tasks are ordered by dependency. Each is independently verifiable.
      attacker-supplied count alone. This is memory amplification on a Raspberry Pi-class
      target.
    - Lift the OPT record out of the additional section into `Message::opt`.
-3. **Constraints**: **never panics** on any input, including adversarial input. Returns
+3. **Shape constraint** *(amendment, 2026-09-24)*: `read_name()` is not one branching
+   loop. It drives an iterative walk that calls a small `read_label_or_pointer()` helper
+   per step, which returns early — one guard clause per case — for a plain label, the
+   terminating root label, or a compression pointer. A pointer hop is handled by a
+   separate `resolve_pointer_target(offset)` helper that guard-clauses, in order: the
+   offset at or beyond the buffer (`PointerOutOfRange`), a forward offset (rejected), an
+   offset into the middle of a label (rejected), an offset already visited
+   (`CompressionLoop`), and a running total past `expansion_budget`
+   (`ExpansionBudgetExceeded`) — each returning its typed error immediately rather than
+   being tested in a combined condition. `Message::decode` likewise calls one small helper
+   per section (questions, answers, authorities, additionals) rather than inlining all
+   four loops together with the bounded pre-allocation and OPT-lifting logic. This is the
+   shape the workspace's gated nesting-depth and function-length thresholds require (Phase
+   0 Norm 17), and it is specified here because compression-pointer resolution is the
+   single most adversarial-input-facing routine in the crate.
+4. **Constraints**: **never panics** on any input, including adversarial input. Returns
    `Ok(Message)` or a typed `DecodeError`. No recursion in name resolution — an iterative
    loop with an explicit bound, because deep recursion is itself a stack-overflow vector.
-4. **Instrumentation**: `tracing` at `debug` for decode failures with the error variant
+5. **Instrumentation**: `tracing` at `debug` for decode failures with the error variant
    and byte offset; **never** log full packet contents at default levels — the query-log
    privacy modes exist because qnames are sensitive.
 
@@ -1140,9 +1208,26 @@ below — but they are non-negotiable.
 
 ### 5. Lint and gate constraints
 
-- The per-push gate (`just gate`) must be green: formatting, clippy's 15 denied lints,
-  `arch-lint check`, the `cargo tree` layering gate, the `hickory-dev-only` check,
-  socket-level tests, and the `--no-default-features` headless build.
+- The per-push gate (`just gate`) must be green: formatting, clippy's 21 denied lints
+  (the original 15 plus the six lints that mechanise `CLAUDE.md`), `arch-lint check`
+  (including the synchronous-I/O and `anyhow` `[[restrict-use]]` rules), the `cargo tree`
+  layering gate, the `hickory-dev-only` check, the `xtask module-size` check, socket-level
+  tests, and the `--no-default-features` headless build.
+- **This phase's code must pass the extended gate from Phase 0 Norm 17**, and the rules
+  that actually bind on a wire codec are not the same ones that would bind on a CLI.
+  `excessive_nesting` (threshold 4) and `too_many_lines` (threshold 60) bind hardest on
+  `application::decoder`'s compression-pointer resolution and section parsing — the most
+  adversarial-input-facing code in the crate — which is why Operations §9 specifies it as
+  named, guard-clause helpers rather than one branching function. `xtask module-size`
+  (400 lines) is the reason `domain::rdata` is already split into `basic.rs` and
+  `dnssec.rs` rather than one catch-all file (see *Structure → Module layout*).
+  `partial_pub_fields` binds on every domain type with a constructor-enforced invariant —
+  `Label`, `Name`, `Ttl`, `RecordType`, `Opt` and every `RData` variant — none of which may
+  mix a `pub` field next to a private one; a type either exposes every field, having no
+  invariant to protect, or none, guarding its invariant behind the constructor.
+  `print_stdout`/`print_stderr`/`dbg_macro` and the `anyhow` `[[restrict-use]]` rule bind
+  trivially here: this crate is pure computation with no CLI and no I/O of any kind, so
+  nothing in it reaches for either.
 - **The architecture gate may be silently inert, and this was a recorded project risk,
   spiked 2026-09-21 against arch-lint 0.5.0.** arch-lint has two mutually exclusive
   engines, selected by whether the config contains `[[layers]]`. With `[[layers]]`, the

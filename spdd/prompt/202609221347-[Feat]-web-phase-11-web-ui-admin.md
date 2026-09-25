@@ -485,16 +485,23 @@ classDiagram
 direction TB
 
 class AdminCredential {
-    +CredentialId id
-    +Argon2idHash hash
-    +CredentialGeneration generation
-    +Timestamp created_at
-    +Timestamp rotated_at
+    -CredentialId id
+    -Argon2idHash hash
+    -CredentialGeneration generation
+    -Timestamp created_at
+    -Timestamp rotated_at
+    +from_stored(CredentialId, Argon2idHash, CredentialGeneration, Timestamp, Timestamp) AdminCredential
+    +rotated(Argon2idHash, Timestamp) AdminCredential
+    +id() CredentialId
+    +hash() Argon2idHash
+    +generation() CredentialGeneration
+    +created_at() Timestamp
+    +rotated_at() Timestamp
     +verify(SecretString, PasswordHasher) Result~bool, AuthError~
 }
 
 class CredentialGeneration {
-    +u64 value
+    -u64 value
     +next() CredentialGeneration
 }
 
@@ -537,11 +544,12 @@ class BootstrapOutcome {
 }
 
 class Session {
-    +SessionId id
-    +SessionTokenHash token_hash
-    +CredentialGeneration issued_under
-    +Timestamp created_at
-    +Timestamp last_seen_at
+    -SessionId id
+    -SessionTokenHash token_hash
+    -CredentialGeneration issued_under
+    -Timestamp created_at
+    -Timestamp last_seen_at
+    +id() SessionId
     +is_valid(Instant, SessionLifetime, CredentialGeneration) SessionValidity
 }
 
@@ -569,7 +577,7 @@ class SessionCookie {
 }
 
 class OriginPolicy {
-    +Vec~AllowedOrigin~ allowed
+    -Vec~AllowedOrigin~ allowed
     +from_listen_addrs_and_config(Vec~SocketAddr~, Vec~String~) Result~OriginPolicy, OriginConfigError~
     +check(Option~HeaderValue~, Option~HeaderValue~) OriginDecision
 }
@@ -588,9 +596,10 @@ class OriginDecision {
 }
 
 class AdminContext {
-    +SessionId session
-    +AllowedOrigin origin
-    +Instant now
+    -SessionId session
+    -AllowedOrigin origin
+    -Instant now
+    +session() SessionId
 }
 
 class ServerFnGuard {
@@ -648,6 +657,13 @@ class LoginThrottle {
     +record_failure(IpAddr, Instant)
     +record_success(IpAddr)
     +failure_count() u64
+}
+
+class FailureStreak {
+    -u32 count
+    +increment() FailureStreak
+    +reset() FailureStreak
+    +backoff(Duration, Duration) Duration
 }
 
 class DashboardView {
@@ -926,6 +942,7 @@ ServerFnGuard --> GuardRejection : or rejects with
 ServiceReadiness --> CredentialState : derived from
 WebError --> GuardRejection : wraps
 LoginThrottle --> AdminContext : gates issuance of
+LoginThrottle --> FailureStreak : tracks, per source IP
 DashboardView "1" -- "N" StaleAdlistCard : hoists
 StaleAdlistCard --> StaleReason : carries
 StaleAdlistCard --> EnforcementConsequence : classified as
@@ -1187,7 +1204,7 @@ styx-web/
     │   ├── origin.rs            OriginPolicy, AllowedOrigin, OriginDecision
     │   ├── guard.rs             AdminContext, ServerFnGuard trait, GuardRejection
     │   ├── readiness.rs         ServiceReadiness, RefusalReason
-    │   ├── throttle.rs          LoginThrottle
+    │   ├── throttle.rs          LoginThrottle, FailureStreak
     │   ├── port.rs              CredentialStore, SessionStore, PasswordHasher,
     │   │                        FilteringAdmin, QueryLogAdmin, PolicyAdmin, DiagnosticsRead
     │   └── error.rs             WebError, AuthError, GuardRejection, BootstrapError,
@@ -1219,8 +1236,16 @@ styx-web/
     │   │   ├── readiness.rs     the 503 refuse-to-serve layer
     │   │   ├── sse.rs           live-view SSE endpoint
     │   │   └── router.rs        Leptos + Axum route table
-    │   └── adapters.rs          FilteringAdmin / QueryLogAdmin / PolicyAdmin /
-    │                            DiagnosticsRead impls over feature application layers
+    │   └── adapters/            one file per port impl, not one file for all four —
+    │       ├── mod.rs           each adapter is a distinct concept with its own set of
+    │       │                    feature-crate methods, and combined they would plausibly
+    │       │                    exceed the 400-counted-line module-size cap (Phase 0
+    │       │                    Norm 17)
+    │       ├── filtering_admin.rs   FilteringAdmin impl over styx-filtering::application
+    │       ├── query_log_admin.rs   QueryLogAdmin impl over the query-log application layer
+    │       ├── policy_admin.rs      PolicyAdmin impl over styx-storage::application
+    │       └── diagnostics_read.rs  DiagnosticsRead impl over the `HealthState` /
+    │                                `RecursionDiagnostics` read models
     └── ui/
         ├── mod.rs
         ├── app.rs               root Leptos component and routes
@@ -1311,13 +1336,32 @@ styx binary (single process, shared Arc state)
 1. Responsibility: make the web UI removable and keep the headless build honest.
 2. `styx-web/Cargo.toml`: a library crate; Leptos SSR, Axum, `tower`, `argon2`, `cookie`,
    `thiserror`, `tracing`, `arc-swap`, `time` as normal dependencies.
-3. `styx/Cargo.toml`:
+3. `arch-lint.toml`, per Phase 0 Norm 12 — a new crate adds its own scopes and
+   restrict-use rules, not just the one cross-feature allowance this phase is famous for:
+   - Add `[[scopes]]` for `styx-web` × `domain`, `application` and `infrastructure`.
+   - Add two `[[restrict-use]]` rules, `no-sync-io-web-domain` and
+     `no-sync-io-web-application`, one per layer, each denying the exact list Phase 0
+     Approach §10 fixed: `std::fs` and everything under it; the blocking socket types
+     `std::net::TcpStream`, `std::net::TcpListener`, `std::net::UdpSocket` and
+     `std::net::ToSocketAddrs`; the traits `std::io::Read`, `std::io::Write`,
+     `std::io::BufRead` and `std::io::Seek`; `std::io::prelude`; and `std::io::stdin`,
+     `std::io::stdout` and `std::io::stderr`. Value types such as `std::net::IpAddr`
+     stay usable in both layers.
+   - Add one `no-anyhow-web` `[[restrict-use]]` rule, scoped to the whole crate, denying
+     `anyhow` and everything under it — `styx-web` is a library crate and gets no
+     exemption; only the `styx` binary and `xtask` are exempt, by construction.
+   - This is additive to, and independent of, the narrower `application`-granularity
+     allowance that lets `styx-web` itself name a feature crate's `application` module
+     (Approach §1, Norms 2): that allowance governs what `styx-web::infrastructure` may
+     name in *other* crates, while these three rules govern what `styx-web`'s own
+     `domain` and `application` may do internally.
+4. `styx/Cargo.toml`:
    - `[dependencies] styx-web = { path = "../styx-web", optional = true }`
    - `[features] default = ["web"]`, `web = ["dep:styx-web"]`
-4. `styx/src/web_seam.rs` gated by a single `#[cfg(feature = "web")]` at the module
+5. `styx/src/web_seam.rs` gated by a single `#[cfg(feature = "web")]` at the module
    declaration in `main.rs`. It owns router construction, `Arc` state injection, task
    spawn and shutdown.
-5. Constraints: **no** `styx-web` type appears in any signature outside `web_seam`. **No**
+6. Constraints: **no** `styx-web` type appears in any signature outside `web_seam`. **No**
    `use styx_web::…` anywhere else. `cargo build --no-default-features` and
    `cargo test --no-default-features` both pass, and a CI check asserts no `styx-web`
    symbol links into the headless binary.
@@ -1331,8 +1375,17 @@ styx binary (single process, shared Arc state)
 3. Methods:
    - `AdminCredential::verify(&self, candidate: &SecretString, hasher: &dyn PasswordHasher) -> Result<bool, AuthError>`
      — delegates to the port; never compares bytes itself.
-   - `CredentialGeneration::next(self) -> CredentialGeneration` — monotonic, used on
-     rotation.
+   - `AdminCredential::rotated(self, hash: Argon2idHash, now: Timestamp) -> AdminCredential`
+     — the **only** way to change the hash. It replaces the hash, sets `rotated_at`, and
+     bumps `generation` through `CredentialGeneration::next`, in one call. All fields are
+     private, so no caller can change the hash while leaving the generation behind, which
+     would keep every existing session valid across a rotation.
+     `AdminCredential::from_stored(..)` rebuilds a persisted row for the storage adapter
+     and performs no rotation. The accessors (`id`, `hash`, `generation`, `created_at`,
+     `rotated_at`) are read-only.
+   - `CredentialGeneration::next(self) -> CredentialGeneration` — a saturating increment,
+     never a wrapping one, so a generation counter cannot roll over into reuse; monotonic,
+     used on rotation.
    - `CredentialState::is_servable(&self) -> bool` — `true` only for `Present`.
    - `PasswordPolicy::validate(&self, s: &SecretString) -> Result<(), PasswordPolicyError>`
      — rejects empty, whitespace-only, and `len < 12`.
@@ -1403,7 +1456,15 @@ styx binary (single process, shared Arc state)
    - `record_failure(&self, ip: IpAddr, now: Instant)` /
      `record_success(&self, ip: IpAddr)`.
    - `failure_count(&self) -> u64` — the total surfaced on the dashboard.
-3. Constraints: a **global concurrent-verification limit of 1** wraps Argon2id
+3. `FailureStreak { count: u32 }` — the per-source-IP consecutive-failure counter
+   `LoginThrottle` tracks internally; this is the newtype the doubling-and-capped rule
+   above binds to, rather than a bare `u32` incremented ad hoc at each call site.
+   - `increment(self) -> FailureStreak` / `reset(self) -> FailureStreak` — return a new
+     value rather than mutating in place, the same shape as `CredentialGeneration::next`.
+   - `backoff(self, base: Duration, cap: Duration) -> Duration` — computes the doubling via
+     a checked, saturating operation: a sustained attacker drives the result to saturate at
+     `cap`, never to overflow into a huge or a wrapped-to-zero duration.
+4. Constraints: a **global concurrent-verification limit of 1** wraps Argon2id
    verification, so an attacker cannot convert the hash cost into a denial of service
    against a box that is also serving DNS.
 
@@ -1480,8 +1541,9 @@ styx binary (single process, shared Arc state)
 2. `logout(&self, ctx: &AdminContext) -> Result<(), WebError>` — deletes that session
    only.
 3. `rotate_password(&self, ctx: &AdminContext, current: SecretString, next: SecretString) -> Result<(), WebError>`
-   — verifies `current`, validates `next` against the policy, hashes, stores,
-   **bumps the credential generation**, calls `revoke_all`, and re-signs with a fresh
+   — verifies `current`, validates `next` against the policy, hashes, builds the new
+   credential with `AdminCredential::rotated` (which **bumps the credential generation**
+   in the same step), stores it, calls `revoke_all`, and re-signs with a fresh
    cookie key. Every other session is logged out; this is the system's only revocation
    primitive and it must be real.
 4. `revoke_all_sessions(&self, ctx: &AdminContext) -> Result<usize, WebError>` — exposed
@@ -1527,18 +1589,37 @@ styx binary (single process, shared Arc state)
 
 1. Responsibility: assemble the densest screen, and hoist the things that would otherwise
    be invisible.
-2. `assemble(&self, ctx: &AdminContext) -> Result<DashboardView, WebError>`
-   - Logic: read exact rollup totals; read every adlist's state and build a
-     `StaleAdlistCard` for each stale one, mapping the ingestion failure to a
-     `StaleReason` and classifying `EnforcementConsequence` as `EnforcingFrozenCopy`
-     (enabled and assigned), `StaleButDisabled`, or `StaleAndUnassigned`; when **all**
-     lists are stale with the same reason, collapse them into one grouped card and hoist
-     any list whose reason differs; read pool cards and attach `StrategyHazard`; read
-     `RecursionDiagnostics` **directly**, never through the pool; assemble
-     `DetailIntegrity`; read the privacy level, blocking mode and failed-login count.
+2. `assemble(&self, ctx: &AdminContext) -> Result<DashboardView, WebError>` is a short
+   pipeline over named helpers, each independently testable, rather than one function
+   inlining every concern — the shape the 60-code-line function cap (Phase 0 Norm 17)
+   asks for here regardless:
+   - `read_rollup_totals(&self, ctx: &AdminContext) -> Result<RollupTotals, WebError>`.
+   - `build_stale_adlist_cards(&self, ctx: &AdminContext) ->
+     Result<Vec<StaleAdlistCard>, WebError>` — maps each stale adlist's ingestion failure
+     to a `StaleReason` and classifies its `EnforcementConsequence` as
+     `EnforcingFrozenCopy` (enabled and assigned), `StaleButDisabled`, or
+     `StaleAndUnassigned`, one guard clause per case rather than a nested `if`/`else`
+     chain.
+   - `collapse_uniformly_stale(cards: Vec<StaleAdlistCard>) -> Vec<StaleAdlistCard>` — a
+     guard clause returns `cards` unchanged unless **all** are stale with the same
+     reason; only then does it collapse them into one grouped card plus any card whose
+     reason differs, hoisted.
+   - `build_pool_cards(&self, ctx: &AdminContext) -> Result<Vec<PoolCard>, WebError>` —
+     attaches `StrategyHazard` per pool via `StrategyHazard::for_strategy`.
+   - `read_recursion_diagnostics(&self, ctx: &AdminContext) ->
+     Result<RecursionDiagnosticsCard, WebError>` — reads `RecursionDiagnostics`
+     **directly**, never through the pool, kept as its own helper so a later edit cannot
+     fold it into `build_pool_cards` unnoticed.
+   - `assemble_detail_integrity(&self, ctx: &AdminContext) -> Result<DetailIntegrity,
+     WebError>`.
+   - `read_privacy_and_blocking(&self, ctx: &AdminContext) ->
+     Result<(PrivacyLevel, BlockingMode, u64), WebError>` — privacy level, blocking mode
+     and failed-login count.
 3. Constraints: the card **always** carries the reason string; a boolean stale flag alone
    is a defect. `HealthState` and `RecursionDiagnostics` render in separate,
-   differently-labelled panels so the two are never conflated.
+   differently-labelled panels so the two are never conflated. Each helper above stays
+   under the 60-code-line cap; one that grows past it is split again by concept, never
+   exempted.
 
 ### 16. Implement `application::view::adlists` — stale reasons and shrink acceptance
 
@@ -1738,8 +1819,10 @@ styx binary (single process, shared Arc state)
    of secrets and signatures are constant-time.
 6. **Time** — the injected `Clock` only. `Instant::now()` and `SystemTime::now()` do not
    appear in this crate, in production code or in tests.
-7. **I/O** — no synchronous I/O anywhere (`no-sync-io`). Every store call is async and
-   every one is fallible.
+7. **I/O** — no synchronous I/O in `domain` or `application`, in sync or async code alike.
+   Enforced by a `[[restrict-use]]` per layer (Operation 1); arch-lint's `no-sync-io` only
+   sees async contexts, so it covers the remainder of the crate (Phase 0 Approach §10).
+   Every store call is async and every one is fallible.
 8. **Logging** — `tracing` throughout (`require-tracing`). A span per request carrying the
    route and the outcome; `warn` on every guard rejection with the reason and source IP;
    `warn` on every failed login; `info` on bootstrap, rotation, purge and matcher reload.
@@ -1767,6 +1850,26 @@ styx binary (single process, shared Arc state)
     action and the `race` warning each carry module-level docs stating the rule
     **and why it exists**, because that rationale is the part most likely to be lost and
     each of these is a place where the obvious simplification is the wrong one.
+15. **Primitive obsession is avoided; a newtype wraps a primitive that carries domain
+    rules.** A value in this crate gets its own type when it has a validated range, a
+    checked arithmetic operation, a non-trivial wire encoding, or named constants attached
+    to it — not merely because it is a `u32`, a `u64`, a `bool` or a `String`. A plain
+    named field with no independent validation and no risk of being confused with an
+    unrelated value at a call site is not primitive obsession; the test is domain rules
+    attached to the value, not the primitive-ness of its type. `CredentialGeneration`
+    (saturating, monotonic, never reused after rotation), `SessionToken` /
+    `SessionTokenHash` (a non-trivial encoding that must never be logged or rendered),
+    `Argon2idHash` (opaque, redacted `Debug`) and `FailureStreak` (a checked, saturating
+    doubling capped rather than wrapped) are this phase's own worked examples, in
+    `CLAUDE.md`'s sense of the rule.
+16. **No secret travels in a URL query string.** Credentials, session tokens, CSRF
+    tokens, password-reset or bootstrap tokens, and any other value that grants or
+    proves authority are carried in a cookie, a request header or a POST body, never after
+    the `?`. A request URI is treated as loggable: Phase 12's panic boundary records the
+    full URI as a caught panic's `route`, and reverse proxies and browser history keep it
+    too. A future feature that seems to need a secret in a link (an emailed reset link,
+    say) must exchange it for a cookie on first use, or be redesigned. It must not
+    weaken this rule.
 
 ---
 
@@ -1835,6 +1938,10 @@ Decomposed, with the gap each decomposition closes:
   attempts counted and logged with the source IP and surfaced on the dashboard.
 - Secrets are never rendered, never serialized into a view model, never logged; secret and
   signature comparisons are constant-time.
+- No route, server function or form reads a secret from the URL query string (Norm 16).
+  A test enumerates every registered route and server function and asserts that none
+  declares a query parameter named or typed as a credential, token or password. This is
+  what makes it safe for Phase 12 to log the full request URI when a handler panics.
 - Error responses expose **no** internal detail — no SQL, no file paths, no parameters, no
   stack context. Detail goes to `tracing`.
 - No qname or client identifier is logged at a level that contradicts the active privacy
@@ -1856,6 +1963,25 @@ Decomposed, with the gap each decomposition closes:
   this phase is built around.
 - `styx-web` introduces no new persistent schema beyond the credential and session rows
   the Phase 9 schema already defines.
+- This phase's code must pass the Phase 0 Approach §10 extended gate, and the rules that
+  actually bear on this crate's risks are named here rather than the whole list: `anyhow`
+  is denied by a `[[restrict-use]]` rule because `styx-web` is a library crate, so every
+  fallible path stays a `WebError` variant, never an `anyhow::Result` reached for under
+  deadline pressure. `print_stdout`, `print_stderr` and `dbg_macro` are denied, so a guard
+  rejection, a failed login or a bootstrap event is logged via `tracing`, never `println!`
+  reached for while developing the long-lived SSE handler. `excessive_nesting` (threshold
+  4) and `too_many_lines` (threshold 60) bind `guard_service::authorize`'s check sequence
+  and `dashboard::assemble`'s pipeline, both specified as named helpers with guard clauses
+  for exactly this reason (Operations 13 and 15). `partial_pub_fields` binds every
+  `*View`/`*Card`/`*Row` projection: each is either wholly `pub` — the common case, a
+  plain read-shaped struct — or wholly private behind a constructor, as `AdminContext` and
+  `Session` already are, never a mix. The 400-counted-line module cap is why
+  `infrastructure::adapters` is one file per port rather than one file for all four
+  (Structure).
+- This phase's own domain values that carry rules — `CredentialGeneration`,
+  `SessionToken` / `SessionTokenHash`, `Argon2idHash`, `FailureStreak` — are newtypes per
+  `CLAUDE.md`'s Object Calisthenics section, not bare primitives passed around and
+  revalidated at each call site.
 
 ### 5. Performance and resource constraints
 
@@ -1923,3 +2049,8 @@ Decomposed, with the gap each decomposition closes:
   the end, when they are most expensive to act on. Phase 11 is the first phase a human can
   look at, which makes it the first place assumptions from phases 8–10 get tested — and
   any that are wrong are wrong in schema designed once, deliberately, two phases earlier.
+- **Object Calisthenics compliance in this crate is partly gated, partly a review
+  discipline.** Per Phase 0 Norm 17, nesting depth, function length, module length and
+  mixed field visibility are mechanically enforced; wrapping a primitive that carries
+  domain rules, first-class collections and full words are not, and a later change to
+  `styx-web` can still drift from the newtype rule above without turning `just gate` red.

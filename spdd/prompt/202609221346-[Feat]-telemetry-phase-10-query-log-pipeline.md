@@ -299,13 +299,14 @@ class CacheOutcome {
 }
 
 class BucketGranularity {
-    +Duration width
+    -Duration width
     +hourly() BucketGranularity
     +bucket_start(Instant) Result~BucketStart~
 }
 
 class BucketStart {
-    +Instant value
+    -Instant value
+    +value() Instant
     +next(BucketGranularity) Result~BucketStart~
 }
 
@@ -317,11 +318,11 @@ class BucketKey {
 }
 
 class RollupCounters {
-    +AtomicU64 queries
-    +AtomicU64 blocked
-    +AtomicU64 cache_hits
-    +AtomicU64 dropped_detail_in_bucket
-    +AtomicU64 elapsed_micros_total
+    -AtomicU64 queries
+    -AtomicU64 blocked
+    -AtomicU64 cache_hits
+    -AtomicU64 dropped_detail_in_bucket
+    -AtomicU64 elapsed_micros_total
     +record(QueryEvent) Result~()~
     +note_drop() Result~()~
     +snapshot() CounterSnapshot
@@ -349,16 +350,23 @@ class RollupRecord {
     +Option~TopNDomains~ top_domains
 }
 
+class TopNWidth {
+    -usize value
+    +value() usize
+}
+
 class TopNCollector {
-    +TopNWidth width
-    +usize tracked_capacity
+    -TopNWidth width
+    -usize tracked_capacity
     +offer(CanonicalName) Result~()~
     +finish() TopNDomains
 }
 
 class TopNDomains {
-    +Vec~TopNEntry~ entries
-    +u64 truncated_distinct
+    -Vec~TopNEntry~ entries
+    -u64 truncated_distinct
+    +contains(CanonicalName) bool
+    +is_truncated() bool
 }
 
 class TopNEntry {
@@ -412,8 +420,13 @@ class RawRow {
     +Duration elapsed
 }
 
+class RingCapacity {
+    -usize value
+    +value() usize
+}
+
 class DetailSender {
-    +AtomicU64 dropped_detail
+    -AtomicU64 dropped_detail
     +try_send(QueryEvent) SendOutcome
     +dropped_total() u64
 }
@@ -432,7 +445,7 @@ class LiveRing {
 }
 
 class BoundedRing {
-    +RingCapacity capacity
+    -RingCapacity capacity
     +push(RedactedEvent)
     +recent(usize) Vec~RedactedEvent~
 }
@@ -454,6 +467,11 @@ class QueryLogObserver {
 
 class QueryLogPipeline {
     +on_query(QueryEvent)
+}
+
+class ChunkSize {
+    -usize value
+    +value() usize
 }
 
 class RawRowStore {
@@ -546,6 +564,7 @@ class TelemetryError {
     PrivacyConfigUnavailable
     PurgeFenceTimedOut
     ShutdownFlushIncomplete
+    InvalidTuningValue
 }
 
 class Clock {
@@ -571,6 +590,7 @@ RollupRegistry "1" o-- "0..*" TopNCollector : per bucket
 RollupCounters ..> CounterSnapshot : snapshots to
 RollupRecord "1" --> "1" CounterSnapshot : counts
 RollupRecord "1" --> "0..1" TopNDomains : domains
+TopNCollector "1" --> "1" TopNWidth : bounded by
 TopNCollector ..> TopNDomains : finishes into
 TopNDomains "1" o-- "0..*" TopNEntry : entries
 DetailSender ..> SendOutcome : returns
@@ -581,6 +601,7 @@ DetailConsumer "1" --> "1" LiveRing : pushes always
 DetailConsumer "1" --> "1" RawRowStore : Detailed mode only
 DetailConsumer "1" --> "1" BatchPolicy : batches by
 LiveRing <|.. BoundedRing : implements
+BoundedRing "1" --> "1" RingCapacity : bounded by
 BoundedRing "1" o-- "0..*" RedactedEvent : holds
 RedactionPolicy ..> RawRow : produces or suppresses
 RedactionPolicy ..> RedactedEvent : produces
@@ -591,6 +612,7 @@ PrivacyConfigSource ..> PrivacySnapshot : publishes
 RollupFlusher "1" --> "1" RollupRegistry : drains closed buckets
 RollupFlusher "1" --> "1" RollupStore : persists
 RollupFlusher "1" --> "1" PrivacySnapshot : gates top-N
+RetentionSweeper "1" --> "1" ChunkSize : bounded by
 RetentionSweeper "1" --> "1" RawRowStore : chunked delete
 PurgeService "1" --> "1" DetailConsumer : fences first
 PurgeService "1" --> "1" RawRowStore : hard delete
@@ -653,6 +675,22 @@ Degradation "1" --> "1" DegradationCause : why
 - **There is no audit-record type.** Multi-user admin, roles and an audit trail are
   project non-goals; a purge is unattributable by design, and modelling an attribution
   this project cannot produce would be a fiction.
+- **`TopNWidth`, `RingCapacity` and `ChunkSize` are newtypes over `usize`, not bare
+  configuration integers.** Each carries a domain rule — the test `CLAUDE.md` states for
+  wrapping a primitive — rather than being wrapped on principle: a zero top-N width is
+  meaningless, a zero ring capacity makes `BoundedRing`'s wraparound arithmetic undefined,
+  and a zero chunk size would let the retention sweep spin without ever making progress.
+  Each has a validating constructor that rejects zero with
+  `TelemetryError::InvalidTuningValue` and a read accessor; none exposes a setter that
+  could reopen the invariant. `RingCapacity` additionally serves as this crate's one
+  audited, bounds-checked primitive for `BoundedRing`'s raw index arithmetic — the role
+  `styx-proto`'s `Cursor` plays for wire-parsing offsets — so no `checked_*` call is
+  scattered at each index site inside the ring.
+- **`TopNDomains` exposes `contains` and `is_truncated` rather than being a bag of a
+  `Vec<TopNEntry>` plus a counter.** `contains(&CanonicalName) -> bool` mirrors
+  `styx-proto`'s `TypeBitmap::contains`, the first-class-collection precedent `CLAUDE.md`
+  points at; `is_truncated() -> bool` gives the caller the `truncated_distinct != 0` check
+  as a named domain operation instead of a field comparison repeated at every call site.
 
 ---
 
@@ -897,12 +935,14 @@ styx-telemetry/
       bucket.rs       BucketGranularity, BucketStart, BucketKey
       counters.rs     RollupCounters, CounterSnapshot, RollupRecord
       topn.rs         TopNCollector, TopNWidth, TopNDomains, TopNEntry
-      privacy.rs      LogMode, PrivacyLevel, PrivacySnapshot, RedactionPolicy,
-                      RawRow, RedactedEvent
+      privacy.rs      LogMode, PrivacyLevel, PrivacySnapshot
+      redaction/
+        mod.rs        RedactionPolicy, RawRow, RedactedEvent
+        tests.rs      the eight-way LogMode x PrivacyLevel matrix (Operations 20.1)
       readmodel.rs    HistoryQuery, HistoryView, Degradation, DegradationCause
       purge.rs        PurgeReport
       port.rs         trait RawRowStore, trait RollupStore, trait LiveRing,
-                      trait PrivacyConfigSource
+                      trait PrivacyConfigSource, ChunkSize
       error.rs        TelemetryError (thiserror)
     application/
       pipeline.rs     QueryLogPipeline — the observer implementation (the fork)
@@ -919,7 +959,7 @@ styx-telemetry/
       store/
         raw_rows.rs   Turso-backed RawRowStore
         rollups.rs    Turso-backed RollupStore
-      privacy_cfg.rs  SnapshotPrivacyConfig — ArcSwap<PrivacySnapshot>
+      privacy_config.rs SnapshotPrivacyConfig — ArcSwap<PrivacySnapshot>
       metrics.rs      tracing spans, counters, dropped_detail exposure
 ```
 
@@ -955,6 +995,18 @@ styx-telemetry/
 6. **`styx-web` (the next phase) may depend on this crate's `application` layer**, because
    the web crate is presentation rather than a peer feature. It consumes `HistoryService`,
    `PurgeService` and the live ring; it does not reach into `infrastructure`.
+7. **Arch-lint mechanises points 1–3 and 5** *(amendment, 2026-09-24)*, rather than leaving
+   them a stated convention: three `[[scopes]]` entries (`domain`, `application`,
+   `infrastructure`) and the `[[deny-scope-dep]]` layering rules that go with them; one
+   `[[restrict-use]]` rule forbidding `styx_telemetry` from naming any other feature crate
+   (`styx_proto` excepted); two `[[restrict-use]]` rules,
+   `no-sync-io-telemetry-domain` and `no-sync-io-telemetry-application`, denying the exact
+   synchronous-I/O list Phase 0 Approach §10 fixes, in sync and async code alike; and one
+   `[[restrict-use]]` rule, `no-anyhow-telemetry`, denying `anyhow` crate-wide, because
+   `styx-telemetry` is a library crate and `CLAUDE.md`'s ban on `anyhow` outside the
+   composition root needs the same enforcement every other feature crate has. All five are
+   added in the same step that adds the crate to the workspace (Operations 0), not
+   deferred until a violation is found.
 
 ### Layer responsibilities
 
@@ -1006,6 +1058,36 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
 
 ## Operations
 
+### 0. Create the crate `styx-telemetry` and its arch-lint rules *(amendment, 2026-09-24)*
+
+1. **Responsibility**: bring the crate into the workspace with every layering and
+   use-restriction rule Phase 0 requires of a new feature crate, before any domain type
+   exists to need them — an omitted rule here is invisible until a later phase's code
+   quietly violates it.
+2. **Steps**:
+   - Add `styx-telemetry` as a workspace member with `domain`, `application` and
+     `infrastructure` as modules inside it, `[lints] workspace = true`, and the wire-codec
+     crate as its only cross-crate dependency.
+   - Add three arch-lint `[[scopes]]` entries, one per layer, and the `[[deny-scope-dep]]`
+     layering rules the other feature crates already carry.
+   - Add one `[[restrict-use]]` rule forbidding `styx_telemetry` from naming any other
+     feature crate; `styx_proto` is explicitly permitted.
+   - Add `no-sync-io-telemetry-domain` and `no-sync-io-telemetry-application`, each scoped
+     to that layer, denying `std::fs` and everything under it; the blocking socket types
+     `std::net::TcpStream`, `std::net::TcpListener`, `std::net::UdpSocket` and
+     `std::net::ToSocketAddrs`; the traits `std::io::Read`, `std::io::Write`,
+     `std::io::BufRead` and `std::io::Seek`; `std::io::prelude` and everything under it;
+     and `std::io::stdin`, `std::io::stdout` and `std::io::stderr` — in sync and async code
+     alike. `infrastructure` gets no such rule: that is where the Turso statements and the
+     bounded channel live.
+   - Add `no-anyhow-telemetry`, scoped to the whole crate, denying `anyhow` and everything
+     under it. `styx-telemetry` is a library crate, so `CLAUDE.md`'s ban on `anyhow`
+     outside the composition root applies here the same as everywhere else.
+3. **Completion criterion**: `arch-lint check` rejects a synchronous `std::fs` call added
+   to a throwaway function in `domain` or `application`, and an `anyhow::Result` return
+   type added anywhere in the crate; it passes on the crate skeleton with none of the
+   above present.
+
 ### 1. Create `domain::event` — `QueryEvent` and its dimensions
 
 1. **Responsibility**: the single value that comes into being on the response path and
@@ -1041,11 +1123,16 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
    `arithmetic_side_effects = deny` bites in exactly one module.
 2. **`BucketGranularity`**: wraps a `Duration`. `hourly()` is the shipped default and the
    granularity is configurable, because the final granularity is explicitly a keyboard
-   call.
+   call. Its field is private; nothing outside this module reads the raw `Duration`, so no
+   accessor is exposed — every consumer goes through `bucket_start`.
    - `bucket_start(&self, at: Instant) -> Result<BucketStart, TelemetryError>`: floors the
      instant to the granularity using checked arithmetic; returns
      `TelemetryError::BucketArithmetic` on overflow rather than panicking.
-3. **`BucketStart`**: the absolute instant a bucket opens.
+3. **`BucketStart`**: the absolute instant a bucket opens. Its field is private — the value
+   is set once, from `observed_at` or from `next`, and never reopened.
+   - `value(&self) -> Instant`: the read accessor; `HistoryService` and the read models it
+     feeds (`Degradation`, `HistoryView`) use it to render which bucket a degradation or
+     row belongs to.
    - `next(&self, granularity) -> Result<BucketStart, TelemetryError>`: checked addition.
    - `has_closed(&self, now, granularity, grace) -> Result<bool, TelemetryError>`: true
      once `now` is past the bucket end plus the grace margin. The grace margin is what
@@ -1063,7 +1150,10 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
 1. **Responsibility**: the exact, never-dropped totals. These are the authoritative
    numbers: everything on the dashboard that claims to be a count comes from here.
 2. **`RollupCounters`**: `queries`, `blocked`, `cache_hits`, `dropped_detail_in_bucket`,
-   `elapsed_micros_total`, all `AtomicU64`.
+   `elapsed_micros_total`, all `AtomicU64` and all private. `record`, `note_drop` and
+   `snapshot` are the only interface — a public atomic field would let a caller increment
+   one counter without the others, corrupting the exact-and-coherent guarantee this phase
+   is checked by.
    - `record(&self, event: &QueryEvent) -> Result<(), TelemetryError>`: increments
      `queries` unconditionally; increments `blocked` when the decision is `Blocked`;
      increments `cache_hits` on `CacheOutcome::Hit`; adds the elapsed microseconds. Uses
@@ -1093,15 +1183,26 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
 1. **Responsibility**: the most-queried domains within a bucket — the one aggregate that
    carries qname material, and therefore the one aggregate the privacy levels must reach
    into.
-2. **`TopNWidth`**: how many domains are finally retained per bucket. Configurable; the
-   width is explicitly a keyboard call.
-3. **`TopNCollector`**: `{ width: TopNWidth, tracked_capacity: usize, .. }`.
+2. **`TopNWidth`**: a newtype over `usize` — how many domains are finally retained per
+   bucket. Configurable; the width is explicitly a keyboard call, but the value itself
+   carries a domain rule, not just a tuning knob: `new(width: usize) -> Result<TopNWidth,
+   TelemetryError>` rejects zero with `TelemetryError::InvalidTuningValue`, and
+   `value(&self) -> usize` is the only accessor. There is no setter — a changed width is a
+   new `TopNWidth`, not a mutation of an existing one.
+3. **`TopNCollector`**: `{ width: TopNWidth, tracked_capacity: usize, .. }`, all fields
+   private — `offer` and `finish` are the only way in or out, so `tracked_capacity` can
+   never be widened after construction and reopen the memory bound it exists to enforce.
    - `offer(&self, domain: &CanonicalName) -> Result<(), TelemetryError>`: increments that
      domain's count. **When the number of tracked distinct domains reaches
      `tracked_capacity`, the collector evicts its current minimum rather than growing**,
      and increments `truncated_distinct`.
    - `finish(self) -> TopNDomains`: the top `width` entries by count, plus
      `truncated_distinct`.
+   - `TopNDomains` is a first-class collection, not a bag of a `Vec<TopNEntry>` plus a
+     counter: both fields are private, and `contains(&self, domain: &CanonicalName) -> bool`
+     mirrors `styx-proto`'s `TypeBitmap::contains`, while `is_truncated(&self) -> bool`
+     names the `truncated_distinct != 0` check instead of leaving every caller to repeat
+     the field comparison or reach into the entry list directly.
 4. **Why `tracked_capacity` is separate from `width`**: a device doing random-subdomain
    lookups presents effectively unbounded distinct domains inside one bucket. A collector
    bounded only in what it *finally stores* still grows without limit in what it *tracks*.
@@ -1148,9 +1249,16 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
    and the client. **The optionality is the privacy level made structural** — the
    suppressed field does not exist in the value handed to the writer, so there is no code
    path by which it can reach disk.
-7. **Constraints**: this module is pure and exhaustively unit-tested across the full
-   `LogMode × PrivacyLevel` matrix — eight combinations, all of them asserted, because
-   this is where the project's privacy promise is either kept or broken.
+7. **Constraints**: this module is pure. **Split by concept** *(amendment, 2026-09-24)*,
+   so that the configuration types and the write-time enforcement logic do not share one
+   file: `LogMode`, `PrivacyLevel` and `PrivacySnapshot` stay in `privacy.rs`;
+   `RedactionPolicy`, `RawRow` and `RedactedEvent` move to `redaction/mod.rs`. It is
+   exhaustively unit-tested across the full `LogMode × PrivacyLevel` matrix — eight
+   combinations, all of them asserted, because this is where the project's privacy
+   promise is either kept or broken — and that suite lives in `redaction/tests.rs` rather
+   than an inline `#[cfg(test)] mod tests`, per Phase 0 Norm 17: an inline test module
+   counts toward `xtask module-size`'s 400-line cap, and this matrix is large enough to
+   threaten it on its own.
 
 ### 6. Create `domain::port` — the ports
 
@@ -1171,14 +1279,20 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
    Vec<RedactedEvent>`, `len(&self) -> usize`.
 4. **`PrivacyConfigSource`**: `current(&self) -> Arc<PrivacySnapshot>`, `refresh(&self) ->
    Result<(), TelemetryError>`.
-5. **Constraints**: these traits are object-safe so the binary can hold `Arc<dyn _>`. They
+5. **`ChunkSize`**: a newtype over `usize`, not a bare parameter on `delete_older_than` and
+   `RetentionSweeper`. `new(size: usize) -> Result<ChunkSize, TelemetryError>` rejects zero
+   with `TelemetryError::InvalidTuningValue` — a zero-sized chunk would let the retention
+   sweep call `delete_older_than` forever without ever making progress, which is a
+   correctness bug, not a tuning preference. `value(&self) -> usize` is the only accessor;
+   there is no setter.
+6. **Constraints**: these traits are object-safe so the binary can hold `Arc<dyn _>`. They
    name no Turso type and no database concept; `domain` must remain storage-agnostic.
 
 ### 7. Create `domain::error` — `TelemetryError`
 
 1. A `thiserror` enum with variants: `BucketArithmetic`, `CounterOverflow`,
    `RollupStoreUnavailable`, `RawRowStoreUnavailable`, `PrivacyConfigUnavailable`,
-   `PurgeFenceTimedOut`, `ShutdownFlushIncomplete`.
+   `PurgeFenceTimedOut`, `ShutdownFlushIncomplete`, `InvalidTuningValue`.
 2. **Constraints**: no variant carries a qname or a client identity in its message. An
    error string is an outbound surface and a privacy level applies to it exactly as it
    applies to a row. No bare `String` errors anywhere in the crate.
@@ -1208,7 +1322,8 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
 1. **Responsibility**: the single bounded queue carrying events to the raw-row writer and
    the ring — the seam that keeps the hot path free of both I/O and backpressure.
 2. **`DetailSender`**: wraps a bounded async channel sender plus an `AtomicU64
-   dropped_detail`.
+   dropped_detail`, both private — `try_send` is the only writer of the counter, so
+   `dropped_detail` cannot be incremented by anything the channel did not itself refuse.
    - `try_send(&self, event: QueryEvent) -> SendOutcome`: on success `Accepted`; on a full
      channel, increment `dropped_detail` with `fetch_add` and return `Dropped`.
      **It never blocks and never awaits.**
@@ -1220,25 +1335,36 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
    one. Backpressure on the detail path becomes latency on the resolution path, so the
    capability simply must not exist in the API surface.
 
-### 10. Create `infrastructure::ring` — `BoundedRing`
+### 10. Create `infrastructure::ring` — `BoundedRing`, `RingCapacity`
 
 1. **Responsibility**: the always-present buffer of the most recent redacted events,
    serving the live view **in both modes**. Its presence is what makes `Private` mode
    still useful rather than blind.
-2. **Design**: a fixed-capacity circular buffer **bounded by count, not by memory** — it
+2. **`RingCapacity`**: a newtype over `usize`, not a bare field on `BoundedRing`.
+   `new(capacity: usize) -> Result<RingCapacity, TelemetryError>` rejects zero with
+   `TelemetryError::InvalidTuningValue` — a zero-capacity ring has no well-defined
+   wraparound arithmetic — and `value(&self) -> usize` is the only accessor; there is no
+   setter. `RingCapacity` is also this crate's **one audited, bounds-checked primitive**
+   for `BoundedRing`'s raw index arithmetic, the role `styx-proto`'s
+   `application::cursor::Cursor` plays for wire-parsing offsets: every position `push` and
+   `recent` compute is routed through it, rather than a `checked_*` call scattered at each
+   index site.
+3. **Design**: a fixed-capacity circular buffer **bounded by count, not by memory** — it
    is the live view's backing store, a human looks at a few hundred recent queries at
    most, and a count bound is trivially reasoned about under `indexing_slicing = deny`.
-   Capacity is configurable.
-3. **Methods**: `push(&self, e: RedactedEvent)` overwrites the oldest slot when full;
+   Capacity is configurable, carried as a private `RingCapacity` field — public would let a
+   caller with `&mut BoundedRing` swap in a capacity that no longer matches the allocated
+   buffer, reopening exactly the wraparound invariant `RingCapacity` exists to close.
+4. **Methods**: `push(&self, e: RedactedEvent)` overwrites the oldest slot when full;
    `recent(&self, n) -> Vec<RedactedEvent>` returns newest-first, clamped to `len()`.
-4. **Concurrency**: the live view reads while the consumer writes. Every index is a
-   checked operation and a torn read must be **impossible, not merely unlikely** — the
-   ring is guarded such that a reader either sees a complete element or does not see it at
-   all.
-5. **Constraints**: never persisted. Index arithmetic is expressed so the bound is
-   structural rather than asserted.
+5. **Concurrency**: the live view reads while the consumer writes. Every index is a
+   checked operation performed through `RingCapacity` and a torn read must be
+   **impossible, not merely unlikely** — the ring is guarded such that a reader either
+   sees a complete element or does not see it at all.
+6. **Constraints**: never persisted. Index arithmetic is expressed so the bound is
+   structural rather than asserted, and it has exactly one entry point: `RingCapacity`.
 
-### 11. Create `infrastructure::privacy_cfg` — `SnapshotPrivacyConfig`
+### 11. Create `infrastructure::privacy_config` — `SnapshotPrivacyConfig`
 
 1. **Responsibility**: make the current `PrivacySnapshot` readable
    **without a database round trip**, from both the drain path and the aggregate path.
@@ -1337,6 +1463,11 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
      since its first row, whichever comes first. The time trigger is what stops a quiet
      network from holding rows indefinitely.
    - On cancellation, flush the pending batch and return.
+   - **Shape** *(amendment, 2026-09-24)*: `run` is a short loop dispatching to two named
+     helpers rather than inlining all four steps — `handle_event(&event, &snapshot)` for
+     the live-ring push and the redacted push onto the pending batch, and
+     `maybe_flush(&mut batch, &policy, now)` for the size-or-time trigger — so the loop
+     body stays inside clippy's `too_many_lines` 60-line cap without an `#[allow]`.
 4. **Why the snapshot is read at drain**: events queued under the old setting drain under
    the new one, so **the stricter setting wins for anything not yet written**. Capturing
    the policy at enqueue would write, under a newly-stricter setting, rows the user has
@@ -1384,7 +1515,9 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
 2. **`sweep(&self, now) -> Result<DeleteProgress, TelemetryError>`**: compute the cutoff
    from `now` and `snapshot.retention` (default 7 days), then call
    `delete_older_than(cutoff, chunk)` repeatedly, **yielding between chunks**, until no
-   rows remain or a per-pass budget is exhausted.
+   rows remain or a per-pass budget is exhausted. `chunk` is the `ChunkSize` the sweeper
+   was constructed with — validated non-zero at construction in `domain::port` — so this
+   loop cannot spin without making progress.
 3. **Why chunked**: a 7-day window on a busy network is a lot of rows, and a large delete
    against a local database file can be slow. Bounded, chunked deletion on a background
    task, never on a request path and never on the hot path.
@@ -1445,6 +1578,13 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
      has rolled past, and a purge — so their absence is an expected state, not a fault,
      and an error response would be the component reporting a bug where the system is
      working exactly as configured.
+   - **Shape** *(amendment, 2026-09-24)*: the four bullets above are two named helpers,
+     not one inlined function — `resolve_absence_cause(&snapshot, &raw_rows, earliest)
+     -> Option<DegradationCause>` for the first three, and
+     `dropped_detail_degradations(&aggregates) -> Vec<Degradation>` for the per-bucket
+     scan — with `history` itself reduced to loading aggregates, calling both helpers and
+     assembling the `HistoryView`. This is what keeps it under clippy's `too_many_lines`
+     60-line cap rather than growing into one long function.
 4. **Why the cause is carried**: silent degradation is indistinguishable from "there were
    no queries". A household running in `Private` mode would see what looks like a broken
    dashboard instead of a correctly-configured one.
@@ -1463,7 +1603,8 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
      the injected `Clock`.
    - Checked arithmetic at the edges: no bucket or counter operation panics for any input.
    - **The full `LogMode × PrivacyLevel` matrix** — all eight combinations — asserted
-     against `RedactionPolicy::apply`, `apply_to_domain`, `client_key` and `to_live`.
+     against `RedactionPolicy::apply`, `apply_to_domain`, `client_key` and `to_live`, in
+     `redaction/tests.rs` (Operations 5).
    - `TopNCollector` under an unbounded stream of distinct domains: memory stays bounded
      by `tracked_capacity` and `truncated_distinct` is non-zero.
 2. **Socket-level behaviour tests** (the default harness: real UDP/TCP against an
@@ -1575,6 +1716,22 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
     write-time enforcement, and the reason a purge must be explicit — because that
     rationale is the part most likely to be lost and the part whose loss would silently
     undo the design.
+15. **Primitive obsession is avoided per `CLAUDE.md`; a newtype wraps a primitive that
+    carries domain rules.** A value gets its own type when it has a validated range,
+    checked arithmetic, a non-trivial wire encoding or named constants attached to it —
+    not merely because it is a `usize`, a `u64` or a `Duration`. A plain field with no
+    independent validation and no risk of being confused with an unrelated value at a
+    call site is not primitive obsession; the test is domain rules attached to the value,
+    not the primitive-ness of its type. `BucketGranularity` and `BucketStart` — checked,
+    never-panicking bucket arithmetic, with `BucketGranularity::hourly()` a named
+    constant — are this phase's carry-over precedent, and its own worked examples are
+    `TopNWidth`, `RingCapacity` and `ChunkSize`: each rejects a zero value at
+    construction rather than accepting a bare `usize`, and `RingCapacity` additionally
+    serves as `BoundedRing`'s one audited, bounds-checked primitive for raw index
+    arithmetic, the role `styx-proto`'s `Cursor` plays. `RollupCounters`'s `AtomicU64`
+    fields and `CounterSnapshot`'s `u64` fields are deliberately left unwrapped: they are
+    plain value mirrors with no independent range or encoding rule of their own, the same
+    test that leaves `Header::authoritative` a bare `bool` in `CLAUDE.md`'s own example.
 
 ---
 
@@ -1692,6 +1849,22 @@ And the phase scope, verbatim:
   phase needs none.
 - **The hot path's observer trait is not modified.** It was declared with a no-op
   implementation several phases ago specifically so this phase would not have to touch it.
+- **This phase's newly introduced domain values that carry rules are newtypes.**
+  `TopNWidth`, `RingCapacity` and `ChunkSize` each validate a non-zero value at
+  construction and expose no setter that could reopen that invariant, per `CLAUDE.md`'s
+  primitive-obsession test. **Wrapping a primitive that carries domain rules stays a
+  review-only judgement** *(revised 2026-09-24)*: Phase 0 Norm 17 gates nesting depth,
+  function length, module length and mixed field visibility, but no lint decides whether a
+  `usize` carries domain rules, so this newtype choice is still caught by review, not by
+  `just gate`.
+- **This phase's code must pass the extended gate** *(amendment, 2026-09-24)*: the module
+  split in Structure — `privacy.rs` versus `redaction/mod.rs`, with the eight-way
+  `LogMode`/`PrivacyLevel` matrix suite in `redaction/tests.rs` rather than inline — keeps
+  the crate's largest module under `xtask module-size`'s 400-line cap. `DetailConsumer::run`
+  (Operations 15) and `HistoryService::history` (Operations 19) are decomposed into named
+  helpers so each stays inside clippy's `too_many_lines` 60-line cap. No struct in this
+  crate mixes `pub` and private fields, so `partial_pub_fields` is satisfied by the
+  newtype-or-plain-data split already in place (Norm 15).
 
 ### 8. Verification constraints
 

@@ -80,8 +80,7 @@ class Recursor {
     +Arc~dyn Clock~ clock
     +Arc~DiagnosticsPublisher~ diagnostics
     +RecursorConfig config
-    +resolve(Question) Result~Response, RecursionError~
-    +canary_descent() Result~Response, RecursionError~
+    +resolve(Question) Result~Message, RecursionError~
 }
 
 class Descent {
@@ -117,13 +116,22 @@ class ResponseKind {
 }
 
 class DescentBudget {
-    +u8 max_depth
-    +u16 max_outbound_queries
-    +u8 max_cname_chain
-    +Duration wall_clock
-    +Instant started_at
+    -DescentLimits limits
+    -Instant started_at
     +charge_query() Result~(), BudgetExceeded~
     +descend() Result~(), BudgetExceeded~
+}
+
+class DescentLimits {
+    -u8 max_depth
+    -u16 max_outbound_queries
+    -u8 max_cname_chain
+    -Duration wall_clock
+    +new(u8, u16, u8, Duration) Result~DescentLimits, ConfigError~
+    +max_depth() u8
+    +max_outbound_queries() u16
+    +max_cname_chain() u8
+    +wall_clock() Duration
 }
 
 class ZoneCut {
@@ -133,12 +141,18 @@ class ZoneCut {
 }
 
 class Delegation {
-    +Name parent_zone
-    +Name child_zone
-    +NsSet nameservers
-    +Ttl ttl
-    +Vec~DsRecord~ ds_records
-    +learned_at Instant
+    -Name parent_zone
+    -Name child_zone
+    -NsSet nameservers
+    -Ttl ttl
+    -Vec~DsRecord~ ds_records
+    -learned_at Instant
+    +parent_zone() Name
+    +child_zone() Name
+    +nameservers() NsSet
+    +ttl() Ttl
+    +ds_records() Vec~DsRecord~
+    +learned_at() Instant
 }
 
 class NsSet {
@@ -169,6 +183,13 @@ class NameserverMetrics {
     +Instant last_seen
     +record_success(Duration)
     +record_failure(FailureKind)
+}
+
+class Srtt {
+    -Duration smoothed
+    +initial(Duration) Srtt
+    +update(Duration) Srtt
+    +smoothed() Duration
 }
 
 class EdnsCapability {
@@ -219,8 +240,8 @@ class FallbackDecision {
 }
 
 class CnameChain {
-    +Vec~Name~ seen
-    +u8 length
+    -Vec~Name~ seen
+    -u8 length
     +push(Name) Result~(), RecursionError~
 }
 
@@ -228,6 +249,7 @@ class ChainMaterial {
     +Vec~DsRecord~ ds_rrsets
     +Vec~SignedReferral~ referrals
     +push_ds(Name, Vec~DsRecord~)
+    +push_referral(SignedReferral)
 }
 
 class RecursionDiagnostics {
@@ -255,8 +277,9 @@ class TldStatus {
 }
 
 class RootHints {
-    +Vec~Nameserver~ seed
+    -Vec~Nameserver~ seed
     +from_config_path(Path) Result~RootHints, ConfigError~
+    +seed() Vec~Nameserver~
 }
 
 class RecursionError {
@@ -278,6 +301,7 @@ Recursor "1" --> "1" RecursionDiagnostics : publishes
 Descent "1" --> "1" MinimisationState : composes every query through
 Descent "1" --> "1" ZoneCut : advances
 Descent "1" --> "1" DescentBudget : bounded by
+DescentBudget "1" --> "1" DescentLimits : bounded by
 Descent "1" --> "1" CnameChain : accumulates
 Descent "1" --> "1" ChainMaterial : collects en route
 Descent --> DescentAction : yields
@@ -292,6 +316,7 @@ NsSet "1" --> "*" Nameserver : members
 Nameserver --> GlueOrigin : address provenance
 NameserverMetrics --> EdnsCapability : observed
 NameserverMetrics --> MinimisationVerdict : observed
+NameserverMetrics "1" --> "1" Srtt : maintains
 ZoneCut "1" --> "1" NsSet : authoritative servers
 RecursionDiagnostics "1" --> "*" RootServerStatus : contains
 RecursionDiagnostics "1" --> "*" TldStatus : contains
@@ -316,6 +341,19 @@ Descent --> RecursionError : fails with
   consumer, different lifetime.
 - **No new entity wraps something a plain Rust type already expresses.** `Name`, `Ttl`,
   `IpAddr` and the record types come from `styx-proto`; this phase does not re-model them.
+- **`DescentLimits` and `Srtt` are the exceptions, and are wrapped for the reason
+  `CLAUDE.md` states, not on principle.** `DescentLimits` bundles the four
+  denial-of-service bounds behind a constructor that rejects a zero-valued limit — a
+  validated range attached to the value, not a bare `u8`/`u16`/`Duration` grouping.
+  `Srtt` wraps the smoothed round-trip time behind a checked, saturating `update`, so a
+  single hostile or pathological RTT sample cannot corrupt the running average — the same
+  shape of rule as `styx-proto`'s `Ttl`. Neither exposes a setter: both return a new value
+  rather than mutating one in place.
+- **`Srtt` is local to this crate and shares nothing with the pool's `HealthState`.**
+  Phase 3's `HealthState` (SRTT EWMA, consecutive failures, circuit state) belongs to
+  `styx-resolution` and cannot be imported here — feature crates never depend on each
+  other. This phase's `Srtt` looks similar because the same networking concept recurs
+  independently, not because the type is shared.
 
 ---
 
@@ -503,10 +541,14 @@ from the UI.**
 
 ### Trait (port) relationships
 
-1. `Upstream` (defined in `styx-resolution`'s domain, phase 3) declares
-   `async fn resolve(&self, question: Question) -> Result<Response, UpstreamError>` plus
-   the canary hook used for probing. **`Recursor` implements `Upstream`** — the same port
-   the Do53 forwarder implements.
+1. `Upstream` (defined in `styx-resolution`'s domain, phase 3) declares `id()`, `kind()`
+   and
+   `async fn resolve(&self, query: &Question, deadline: Instant) -> Result<UpstreamResponse, UpstreamError>`.
+   **`Recursor` implements `Upstream`** — the same port the Do53 forwarder implements —
+   and its `kind()` returns `UpstreamKind::Recursor`. That is the whole of this crate's
+   part in provenance: the pool stamps `kind` on the response, and Phase 4's cache stage
+   maps `Recursor` to `AnswerSource::Recursion`. So the query log distinguishes recursive
+   answers from forwarded ones without this crate naming `AnswerSource` at all.
 2. `Clock` (defined in phase 2) is injected into `Recursor` and into the infrastructure
    cache. Every timeout, RTT sample, TTL expiry and minimisation-verdict expiry reads time
    through it. It cannot be retrofitted; it is a parameter from the first line of this
@@ -542,21 +584,48 @@ from the UI.**
 
 ### Module layering inside `styx-recursion`
 
-1. **`domain`** — `Descent`, `DescentAction`, `ResponseKind`, `DescentBudget`,
-   `MinimisationState`, `MinimisationMode`, `FallbackDecision`, `ZoneCut`, `Delegation`,
-   `NsSet`, `Nameserver`, `GlueOrigin`, `CnameChain`, `ChainMaterial`, bailiwick
-   predicates, `RecursionError`, and the `Transport` / `DiagnosticsSink` /
-   `ChainMaterialSink` traits. Depends on `styx-proto` and nothing else. No `async`, no
-   I/O, no clock reads.
-2. **`application`** — `Recursor`, the descent driver loop, the `Upstream` implementation,
-   server selection over `NameserverMetrics`, metric recording, diagnostics assembly,
-   `tracing` instrumentation. May depend on `domain`.
-3. **`infrastructure`** — `InfraCache` implementation, `Do53Transport`, `RootHints`
-   loader. May depend on `domain` and `application`.
+1. **`domain`** — split by concept into its own file, the way `styx-proto`'s
+   `domain/rdata/basic.rs` and `domain/rdata/dnssec.rs` are split out of a single `rdata`
+   catch-all, rather than one module collecting every type in the layer:
+   - `domain/descent.rs` — `Descent`, `DescentAction`, `ResponseKind`, `DescentBudget`,
+     `DescentLimits`.
+   - `domain/minimisation.rs` — `MinimisationState`, `MinimisationMode`,
+     `FallbackDecision`.
+   - `domain/topology.rs` — `ZoneCut`, `Delegation`, `NsSet`, `Nameserver`,
+     `GlueOrigin`, `NameserverMetrics`, `Srtt`, `EdnsCapability`, `MinimisationVerdict`,
+     and the bailiwick predicates.
+   - `domain/cname_chain.rs` — `CnameChain`.
+   - `domain/chain_material.rs` — `ChainMaterial`.
+   - `domain/ports.rs` — the `Transport`, `DiagnosticsSink` and `ChainMaterialSink`
+     traits.
+   - `domain/error.rs` — `RecursionError`.
+   Every file depends on `styx-proto` and nothing else. No `async`, no I/O, no clock
+   reads anywhere under `domain`.
+2. **`application`** — split by concept, for the same reason `domain` is:
+   - `application/recursor.rs` — `Recursor`, the `Upstream` implementation, the descent
+     driver loop, canary probing, metric recording and `tracing` instrumentation.
+   - `application/selection.rs` — server selection over `NameserverMetrics` (lowest SRTT,
+     skipping servers marked lame for a zone or in failure backoff).
+   - `application/diagnostics.rs` — `RecursionDiagnostics` assembly and publication
+     through `DiagnosticsSink`.
+   May depend on `domain`.
+3. **`infrastructure`** — split by concept the same way:
+   - `infrastructure/infra_cache.rs` — the `InfraCache` implementation.
+   - `infrastructure/do53_transport.rs` — `Do53Transport`.
+   - `infrastructure/root_hints.rs` — the `RootHints` loader.
+   May depend on `domain` and `application`.
 4. Arch-lint enforces that `domain` names nothing in `application` or `infrastructure`,
    and the `cargo tree` gate independently enforces that `styx-recursion` links no other
    feature crate. Both are needed:
    **arch-lint reads source text while `cargo tree` reads the link graph.**
+5. This crate also carries its own `[[restrict-use]]` rules, added alongside its scopes
+   per Phase 0 Norm 12: `no-sync-io-recursion-domain` and
+   `no-sync-io-recursion-application` deny the synchronous-I/O list from Phase 0 Approach
+   §10 (`std::fs`, the blocking socket types, `std::io::{Read, Write, BufRead, Seek}`,
+   `std::io::prelude`, `std::io::{stdin, stdout, stderr}`) in `domain` and `application`;
+   `no-anyhow-recursion` denies `anyhow` crate-wide. These keep `Descent`'s I/O-free
+   property and the `thiserror`-only error boundary enforced by a lint, not merely by
+   convention.
 
 ---
 
@@ -570,13 +639,20 @@ Tasks are ordered by dependency. Each is independently verifiable.
    modules, depending only on `styx-proto` plus runtime/util crates.
 2. **Contents**: module tree, `thiserror` `RecursionError`, `tracing` setup usage,
    crate-level docs stating the two structural commitments (minimisation from the first
-   test; the infrastructure cache is private to this crate).
-3. **Constraints**: workspace lint policy applies unchanged — the 15 denied clippy lints,
-   including `indexing_slicing`, `arithmetic_side_effects` and `panic`. `hickory-proto` in
-   `[dev-dependencies]` only.
-4. **Done when**: `just gate` passes on an empty crate, and a deliberately introduced
-   `domain → infrastructure` reference is *rejected* by arch-lint. An inert config looks
-   identical to a passing one, so this negative test is mandatory.
+   test; the infrastructure cache is private to this crate); and this crate's arch-lint
+   configuration — `[[scopes]]` for `domain`, `application` and `infrastructure`, the two
+   sync-I/O `[[restrict-use]]` rules (`no-sync-io-recursion-domain`,
+   `no-sync-io-recursion-application`) and the `anyhow` `[[restrict-use]]` rule
+   (`no-anyhow-recursion`), all added to `arch-lint.toml` per Phase 0 Norm 12.
+3. **Constraints**: workspace lint policy applies unchanged — the 21 denied clippy lints,
+   including `indexing_slicing`, `arithmetic_side_effects`, `panic`, and the
+   `excessive-nesting` (threshold 4) and `too-many-lines` (threshold 60) settings in
+   `clippy.toml`. `hickory-proto` in `[dev-dependencies]` only.
+4. **Done when**: `just gate` passes on an empty crate, and each of three deliberately
+   introduced violations is *rejected* by arch-lint: a `domain → infrastructure`
+   reference, a synchronous `std::fs` call in `application`, and an `anyhow` import in
+   `domain`. An inert config looks identical to a passing one, so these negative tests are
+   mandatory.
 
 ### 2. Create domain types — delegation and topology
 
@@ -643,15 +719,22 @@ first.**
 
 1. **Responsibility**: make every descent finite. An unbounded recursor is a
    denial-of-service amplifier against third parties and against itself.
-2. **Attributes**: `max_depth`, `max_outbound_queries`, `max_cname_chain`, `wall_clock`,
-   `started_at`.
+2. **Attributes**: `limits` (a `DescentLimits` — bundling `max_depth`,
+   `max_outbound_queries`, `max_cname_chain` and `wall_clock` behind
+   `new(u8, u16, u8, Duration) -> Result<DescentLimits, ConfigError>`, which rejects a
+   zero-valued limit), `started_at`.
 3. **Methods**: `charge_query()`, `descend()`, `elapsed(now)` — each returning
    `Result<(), BudgetExceeded>`.
 4. **Constraints**: all four limits are
    **named constants with a written rationale in the source**, configurable from the TOML
-   file, never scattered literals — they are the denial-of-service boundary. A
-   glue-resolving sub-descent draws from the **same** outbound query budget as its parent,
-   or nesting defeats the limit.
+   file, never scattered literals — they are the denial-of-service boundary, and
+   `DescentLimits::new` is the one place that boundary is validated. A glue-resolving
+   sub-descent draws from the **same** outbound query budget as its parent, or nesting
+   defeats the limit. Both fields are private: the budget is spent only through
+   `charge_query`, `descend` and `elapsed`, so no caller can reset a descent's
+   consumption or swap its limits partway through. `CnameChain` follows the same rule:
+   `seen` and `length` are private and change only through `push`, which is where a
+   repeat becomes `CnameLoop`.
 
 ### 6. Create `Descent` — the I/O-free state machine
 
@@ -692,7 +775,10 @@ first.**
      delegation, falling back to the root. This is what makes a warm descent short.
    - Delegation lifetime follows NS TTLs, read against the injected `Clock`.
    - `NameserverMetrics` lifetime follows *observed behaviour* with its own expiry:
-     `EdnsCapability` and `MinimisationVerdict` are learned facts, not records.
+     `EdnsCapability` and `MinimisationVerdict` are learned facts, not records. Its
+     `Srtt` is advanced through `record_success`, which calls `Srtt::update` — a
+     checked, saturating EWMA step, never a direct field write — so a single
+     pathological RTT sample cannot corrupt the running average.
    - Bounded by a configured memory budget with an eviction policy; the box is a Raspberry
      Pi, and this store grows with the breadth of names resolved.
 4. **Constraints**: **stores no answers**; the global answer cache stores no topology.
@@ -716,7 +802,9 @@ first.**
 ### 9. Create `Recursor` — the driver and the `Upstream` implementation
 
 1. **Responsibility**: run descents, and be an ordinary pool member.
-2. **Core method**: `resolve(question) -> Result<Response, RecursionError>`
+2. **Core method**: `resolve(&self, question: &Question) -> Result<Message, RecursionError>`,
+   the inherent descent driver. The `Upstream` implementation wraps it, converting a
+   `RecursionError` to an `UpstreamError` at that boundary.
    - Seed a `Descent` from `InfraCache::closest_enclosing_cut` (root hints if cold).
    - Loop: select a server from the NS set by `NameserverMetrics` (lowest SRTT, skipping
      servers marked lame for this zone or in failure backoff) → compose the question
@@ -725,14 +813,21 @@ first.**
    - Accumulate `ChainMaterial` from DO=1 referrals and push it to `ChainMaterialSink`.
    - Return the answer, or a `RecursionError` the `Upstream` boundary converts to an
      RCODE.
-3. **Canary**: `Upstream`'s probe hook performs a **full descent**, not a single query —
-   that is the correct test of a recursor. Probes run only against members idle beyond a
-   window and members currently marked down.
+3. **Canary**: there is no probe hook on the port; Phase 3's `Upstream` has exactly
+   three methods. Probing is the pool calling `Upstream::resolve` with the member's
+   canary question, and for a recursor that call performs a **full descent**, not a
+   single query — the correct test of a recursor. Probes run only against members idle
+   beyond a window and members currently marked down.
 4. **Instrumentation**: one `tracing` span per descent; one child span per outbound query
    recording the zone cut, **the question as actually sent**, the server, and the
    classification.
 5. **Constraints**: returns `Result`, never panics, never blocks the runtime on a lock
-   held across an await.
+   held across an await. `resolve()` is decomposed into named helpers in
+   `application/recursor.rs` and `application/selection.rs` — `select_server`,
+   `compose_question`, `send_and_classify`, `record_outcome` — each returning early on
+   failure via a guard clause, so the loop body reads as a sequence of calls rather than a
+   nested match pyramid, and the driver stays under the 60-code-line and 4-level-nesting
+   thresholds from Phase 0 Approach §10.
 
 ### 10. Create `RecursionDiagnostics` and its publication path
 
@@ -800,7 +895,10 @@ first.**
 1. **Crate and module layout** — one crate per feature; `domain` / `application` /
    `infrastructure` are modules inside it. `domain` names nothing above it. Feature crates
    never depend on each other; `styx-proto` is the single shared-foundation exception, and
-   the arch-lint `[[restrict-use]]` rules must be written so as not to forbid it.
+   the arch-lint `[[restrict-use]]` rules must be written so as not to forbid it. Every
+   layer is further split by concept into its own file — Structure gives the list — rather
+   than one file per layer, which is also what keeps each file under the `xtask
+   module-size` cap of 400 counted lines (Phase 0 Approach §10).
 2. **Ports are traits** — declared in the consumer's `domain`, implemented by adapters,
    wired in the `styx` binary. No crate wires another crate. There are
    **no annotations and no framework-managed injection**: dependencies are constructor
@@ -809,11 +907,14 @@ first.**
    `#[error("…")]` messages that name the zone and the question class but never a client
    identity. No `unwrap`, no `expect`, no `panic!` in shipping code, no `Box<dyn Error>`
    in a public signature.
-4. **Lints** — the workspace's 15 denied clippy lints apply unchanged, with four
-   `allow-*-in-tests` entries in `clippy.toml`. `indexing_slicing` and
+4. **Lints** — the workspace's 21 denied clippy lints apply unchanged, with five
+   `allow-*-in-tests` entries and the `excessive-nesting` (threshold 4) and
+   `too-many-lines` (threshold 60) settings in `clippy.toml`. `indexing_slicing` and
    `arithmetic_side_effects` are denied, so every label offset, TTL decrement and counter
    increment is a checked operation. That is the intended tax; it makes parsing verbose
-   and pointer-loop detection fiddly, and **fuzzing is not optional**.
+   and pointer-loop detection fiddly, and **fuzzing is not optional**. The descent driver
+   in `application/recursor.rs` is this crate's most likely place to brush the nesting and
+   length thresholds; Operations 9 specifies the decomposition that keeps it under both.
 5. **Time** — never `Instant::now()` or `SystemTime::now()` in this crate. Every time read
    goes through the injected `Clock`. It cannot be retrofitted; a validator or a cache
    that assumes ambient time is a rewrite, not a patch.
@@ -836,6 +937,17 @@ first.**
 10. **Naming** — `RecursionDiagnostics` and `HealthState` are never abbreviated to a
     common word, never aliased to each other, and never combined in a single struct field,
     a single log line, or a single UI panel.
+11. **Primitive obsession is avoided per `CLAUDE.md`; a newtype wraps a primitive that
+    carries domain rules.** A value gets its own type when it has a validated range,
+    checked arithmetic, a non-trivial wire encoding, or named constants attached to it —
+    not merely because it is a `u8`, `u16` or `Duration`. A plain named field with no
+    independent validation and no risk of being confused with an unrelated value at a
+    call site is not primitive obsession; the test is domain rules attached to the value,
+    not the primitive-ness of its type. This phase's own `DescentLimits` (rejects a
+    zero-valued denial-of-service bound at construction) and `Srtt` (a checked,
+    saturating EWMA update rather than a direct field write) are its worked examples,
+    alongside `styx-proto`'s `Ttl`, `RecordType`, `RecordClass` and `ResponseCode` that
+    `CLAUDE.md` generalises from.
 
 ---
 
@@ -890,9 +1002,10 @@ constraint 3.
   before the phase is called done. A disagreement is never dismissed on the strength of
   "DNS moved". The corpus is curated toward names with stable delegation structure, so
   that movement is rare enough for a failure to be notable rather than routine.
-- The per-push gate remains hermetic and fast: formatting, the 15 denied clippy lints,
-  `arch-lint check`, the `cargo tree` layering gate, the `hickory-dev-only` check,
-  socket-level tests, and the `--no-default-features` headless build.
+- The per-push gate remains hermetic and fast: formatting, the 21 denied clippy lints,
+  `arch-lint check` (including this crate's sync-I/O and `anyhow` `[[restrict-use]]`
+  rules), the `cargo tree` layering gate, the `hickory-dev-only` check, the module-size
+  check, socket-level tests, and the `--no-default-features` headless build.
 
 ### 4. Security constraints
 
@@ -935,6 +1048,24 @@ constraint 3.
   asserting this must exist before this phase writes its test rig.
 - The infrastructure cache has a configured memory bound. The target box is a Raspberry
   Pi.
+- **`CLAUDE.md`'s Object Calisthenics section is gated where a tool can measure it, per
+  Phase 0 Norm 17** — nesting depth, function length, module length and mixed field
+  visibility. `DescentLimits` and `Srtt` are the newly introduced domain values that
+  carry rules — a validated range and a checked, saturating update, respectively — and
+  are newtypes for exactly that reason; that pattern itself stays review-only, alongside
+  first-class collections and full words, and catching drift from it is what review is
+  for, not `just gate`.
+- **This phase's code must pass the extended gate from Phase 0 Approach §10**, on the
+  rules its own risk profile actually touches: `excessive_nesting` (threshold 4) and
+  `too_many_lines` (threshold 60) against the descent driver loop and the minimisation
+  state machine, the two most branch-heavy pieces of this crate; the `xtask module-size`
+  cap (400 lines), which is why `domain` and now `application` are split by concept in
+  Structure; the sync-I/O `[[restrict-use]]` rules for `domain` and `application`, which
+  put a lint behind the "the descent is I/O-free" invariant instead of leaving it to
+  convention; and the `anyhow` `[[restrict-use]]` rule, which keeps `RecursionError` the
+  one error type at the crate boundary. `partial_pub_fields` is satisfied by construction:
+  `DescentLimits` and `Srtt` keep their validated fields private behind a constructor, not
+  mixed with public ones.
 
 ### 7. Configuration constraints
 

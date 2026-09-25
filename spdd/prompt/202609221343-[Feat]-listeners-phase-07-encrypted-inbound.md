@@ -139,12 +139,16 @@ leaving it unwritten is exactly how this resurfaces as a bug report six months l
    resolver stays on Pi-hole until v1 is complete. Nothing mid-build has to be shippable,
    breaking changes stay free, and phases are ordered by dependency and risk rather than
    usability.
-9. **Lint policy:** 15 denied clippy lints workspace-wide including `indexing_slicing`,
-   `arithmetic_side_effects` and a deny-level panic lint, with four `allow-*-in-tests`
-   entries. arch-lint additionally enforces `no-unwrap-expect` (allowed in tests),
-   `require-tracing`, `tracing-env-init`, `no-sync-io` and `require-thiserror`, and runs
-   under lefthook on pre-commit and pre-push **and** in GitHub Actions — a lint that only
-   runs locally is not enforcement.
+9. **Lint policy:** 21 denied clippy lints workspace-wide including `indexing_slicing`,
+   `arithmetic_side_effects`, a deny-level panic lint, and, per Phase 0's 2026-09-24
+   amendment, `print_stdout`, `print_stderr`, `dbg_macro`, `partial_pub_fields`,
+   `too_many_lines` (threshold 60) and `excessive_nesting` (threshold 4), with five
+   `allow-*-in-tests` entries. arch-lint additionally enforces `no-unwrap-expect` (allowed
+   in tests), `require-tracing`, `tracing-env-init`, `no-sync-io`, `require-thiserror`, and
+   the same amendment's `[[restrict-use]]` rules banning synchronous I/O in every feature
+   crate's `domain`/`application` and `anyhow` in every library crate. All of it runs under
+   lefthook on pre-commit and pre-push **and** in GitHub Actions — a lint that only runs
+   locally is not enforcement.
 10. **TDD cycles run at socket level by default.** Feature tests drive real UDP/TCP
     against an ephemeral-port server, with in-process fake servers and an injectable
     `Clock`. `hickory-proto` is the test oracle and a `[dev-dependencies]`-only entry; a
@@ -176,9 +180,12 @@ phase of this same build, not code that predates the project.
 
 - **Phase 0 — Foundation and gates.** The Cargo workspace skeleton; a working
   `arch-lint.toml` on the syn engine with `[[scopes]]` per crate × module layer,
-  `[[deny-scope-dep]]` for layering and `[[restrict-use]]` to keep feature crates from
-  naming each other; `clippy.toml` with the 15 denied lints; lefthook; GitHub Actions; the
-  `just gate` target; the `hickory-dev-only` check; and the independent
+  `[[deny-scope-dep]]` for layering, `[[restrict-use]]` to keep feature crates from naming
+  each other, and, per Phase 0's 2026-09-24 amendment, a `[[restrict-use]]` per feature
+  crate × `domain`/`application` banning synchronous I/O and a `[[restrict-use]]` per
+  library crate banning `anyhow`; `clippy.toml` with the 21 denied lints and the nesting
+  and function-length thresholds; lefthook; GitHub Actions; the `just gate` target; the
+  `hickory-dev-only` check; the `xtask module-size` cap; and the independent
   `cargo tree --edges normal` layering gate. **This phase adds the first substantial
   third-party dependencies to the resolver crate, so those two dependency gates become
   live constraints here rather than formalities.**
@@ -233,7 +240,7 @@ class TlsListenerConfig {
   +Option~PathBuf~ key_path
   +PathBuf self_signed_dir
   +Vec~String~ self_signed_names
-  +String doh_path
+  +DohResourcePath doh_path
   +bool allow_http1
   +ConnectionBudget budget
   +from_toml_section(value) Result~TlsListenerConfig, ConfigError~
@@ -247,8 +254,21 @@ class ConnectionBudget {
   +usize max_concurrent_connections
   +u32 max_streams_per_connection
   +u64 max_queries_per_connection
-  +usize max_request_body_bytes
+  +StreamMessageLimit max_request_body_bytes
   +defaults() ConnectionBudget
+}
+
+class StreamMessageLimit {
+  -u16 octets
+  +octets() u16
+  +protocol_max() StreamMessageLimit
+  +from_configured(usize) Result~StreamMessageLimit, ConfigError~
+}
+
+class DohResourcePath {
+  -String path
+  +new(String) Result~DohResourcePath, ConfigError~
+  +matches(str) bool
 }
 
 class CertificateSource {
@@ -282,7 +302,7 @@ class ValidityState {
 }
 
 class SpkiPin {
-  +Sha256Digest digest
+  -Sha256Digest digest
   +from_spki_der(bytes) Result~SpkiPin, CertificateError~
   +from_certificate(CertificateDer) Result~SpkiPin, CertificateError~
   +to_base64() String
@@ -310,9 +330,11 @@ class CertificateProvisioner {
 }
 
 class TlsServerSetup {
-  +Arc~ServerTlsConfig~ dot_config
-  +Arc~ServerTlsConfig~ doh_config
+  -Arc~ServerTlsConfig~ dot_config
+  -Arc~ServerTlsConfig~ doh_config
   +build(ServingIdentity, TlsListenerConfig) Result~TlsServerSetup, TlsError~
+  +dot_config() Arc~ServerTlsConfig~
+  +doh_config() Arc~ServerTlsConfig~
 }
 
 class AlpnProtocol {
@@ -356,7 +378,7 @@ class DohListener {
 }
 
 class StreamFraming {
-  +read_message(reader, usize) Result~Vec~u8~, FramingError~
+  +read_message(reader, StreamMessageLimit) Result~Vec~u8~, FramingError~
   +write_message(writer, bytes) Result~(), FramingError~
 }
 
@@ -367,9 +389,10 @@ class DohRequestForm {
 }
 
 class DohRequest {
-  +DohRequestForm form
-  +Vec~u8~ wire_message
-  +extract(method, path, query, headers, body, usize) Result~DohRequest, DohError~
+  -DohRequestForm form
+  -Vec~u8~ wire_message
+  +extract(method, path, query, headers, body, StreamMessageLimit) Result~DohRequest, DohError~
+  +wire_message() Vec~u8~
 }
 
 class DohResponse {
@@ -468,6 +491,8 @@ class Clock {
 }
 
 TlsListenerConfig "1" *-- "1" ConnectionBudget : bounds connections with
+TlsListenerConfig "1" *-- "1" DohResourcePath : serves resource at
+ConnectionBudget "1" *-- "1" StreamMessageLimit : caps request body with
 TlsListenerConfig --> CertificateSource : resolves to
 ServingIdentityProvider <|.. CertificateProvisioner : implemented by
 CertificateProvisioner "1" *-- "1" FilesystemCertificateReader : operator path
@@ -486,8 +511,11 @@ DotListener --> StreamFraming : reuses TCP length prefix
 DotListener --> ConnectionRegistry : bounded by
 DohListener --> ConnectionRegistry : bounded by
 ConnectionRegistry --> ConnectionPermit : issues
+StreamFraming --> StreamMessageLimit : bounded by
 DohListener --> DohRequest : extracts
+DohRequest --> StreamMessageLimit : bounded by
 DohRequest --> DohRequestForm : arrived as
+DohListener --> DohResourcePath : matches against
 DohListener --> DohResponse : emits
 DotListener --> RequestContext : constructs
 DohListener --> RequestContext : constructs
@@ -523,16 +551,22 @@ The shape follows the project's own rule — one crate per feature, with `domain
 `application` and `infrastructure` as **modules inside it**, ports as traits in `domain`,
 adapters in `infrastructure`, wiring in the `styx` binary.
 
-- **`domain`** holds the pure concepts: `TlsListenerConfig`, `ConnectionBudget`, the
-  `CertificateSource` enumeration, `ServingIdentity`, `SpkiPin`, `EncryptedTransport`, and
-  the `ServingIdentityProvider` **port** — a trait describing "hand me serving material"
-  without naming a file, a TLS library or a key format. Errors are `thiserror` enums;
-  every fallible step returns `Result`.
+- **`domain`** holds the pure concepts: `TlsListenerConfig`, `ConnectionBudget`,
+  `StreamMessageLimit`, `DohResourcePath`, the `CertificateSource` enumeration,
+  `ServingIdentity`, `SpkiPin`, `EncryptedTransport`, and the `ServingIdentityProvider`
+  **port** — a trait describing "hand me serving material" without naming a file, a TLS
+  library or a key format. Errors are `thiserror` enums; every fallible step returns
+  `Result`. `StreamMessageLimit` and `DohResourcePath` are newtypes for exactly the reason
+  CLAUDE.md gives: each wraps a primitive that carries a validated invariant, not a
+  primitive wrapped on principle — see Norm 17.
 - **`application`** holds the resolution of that port into an actual serving identity at
-  startup — read the configured path, or fall back to generating and persisting
-  self-signed material — and the one-time emission of the SPKI pin through `tracing`. It
-  also owns connection-budget policy as plain values, **not** as TLS-library
-  configuration, so the budgets are testable without a socket.
+  startup — selecting between the configured path and the self-signed fallback, and
+  delegating the actual read, generation and persistence to the `infrastructure` adapters
+  behind the port — plus the one-time emission of the SPKI pin through `tracing`. **No
+  synchronous I/O executes in `application`'s own code**; the adapters it calls run at
+  startup only, never on the hot path. It also owns connection-budget policy as plain
+  values, **not** as TLS-library configuration, so the budgets are testable without a
+  socket.
 - **`infrastructure`** holds the two accept loops and the TLS/HTTP plumbing: the DoT loop
   (TLS over TCP, inner stream carrying the existing two-octet length prefix) and the DoH
   endpoint (HTTP/2, one resource, wire-format message in and out), plus the concrete
@@ -767,10 +801,18 @@ suite goes red one morning for reasons unrelated to any change.
 1. **`styx-proto`** *(exists, Phase 1)* — shared foundation, not a feature crate. The wire
    codec. Unchanged by this phase; both new transports carry the messages it produces.
 2. **`styx-resolution`** *(exists, Phase 2; this phase extends it)* —
-   - `domain::tls` — `TlsListenerConfig`, `ConnectionBudget`, `CertificateSource`,
-     `ServingIdentity`, `ValidityState`, `SpkiPin`, `AlpnProtocol`, `EncryptedTransport`,
-     and the `ServingIdentityProvider` trait. **No I/O, no async, no TLS-library types in
-     signatures, no dependency on `application` or `infrastructure`.**
+   - `domain::tls::config` — `TlsListenerConfig`, `ConnectionBudget`,
+     `StreamMessageLimit`, `DohResourcePath`: the file-owned description of encrypted
+     inbound, split into its own file the way `domain::rdata::basic` and
+     `domain::rdata::dnssec` are already split out of a single `rdata` catch-all in Phase
+     1, one concept per file rather than one module accumulating every type in the layer.
+   - `domain::tls::certificate` — `CertificateSource`, `ServingIdentity`, `ValidityState`,
+     `SpkiPin`, and the `ServingIdentityProvider` trait: the certificate concern the
+     Entities diagram already calls out as its own half.
+   - `domain::tls::transport` — `AlpnProtocol`, `EncryptedTransport`: the small set of
+     transport-facing domain enumerations.
+   - **All three files**: **no I/O, no async, no TLS-library types in signatures, no
+     dependency on `application` or `infrastructure`.**
    - `domain::request` *(existing)* — `Transport` gains `Dot` and `Doh`. `RequestContext`
      and `ClientId` are **unchanged**; this is deliberate and is the proof that the
      transports converge on one pipeline.
@@ -788,7 +830,15 @@ suite goes red one morning for reasons unrelated to any change.
    - `infrastructure::tls` — `TlsServerSetup`: builds the TLS server configuration from a
      `ServingIdentity`, sets the ALPN list per listener, applies the handshake timeout.
    - `infrastructure::dot` — `DotListener`.
-   - `infrastructure::doh` — `DohListener`, `DohRequest`, `DohResponse`.
+   - `infrastructure::doh::request` — `DohRequest`, `DohRequestForm`: request extraction
+     and validation, split into its own file rather than sharing one with the listener
+     because it is **the single largest new attacker-reachable parsing surface in the
+     phase** (Operation 15) — the same "split by concept" precedent as
+     `domain::tls::config`/`certificate`/`transport` above and `domain::rdata::basic`/
+     `dnssec` from Phase 1, and the file most at risk of the `xtask module-size` cap if
+     left merged with the listener.
+   - `infrastructure::doh::listener` — `DohListener`, `DohResponse`: the accept loop,
+     per-stream handling and response construction.
    - `infrastructure::conn` — `ConnectionRegistry`, `ConnectionPermit`.
 3. **`styx`** *(the binary)* — reads the TLS section of the TOML, constructs the
    `CertificateProvisioner` with the `SystemClock`, resolves the `ServingIdentity`
@@ -860,9 +910,12 @@ suite goes red one morning for reasons unrelated to any change.
 1. **Listener layer (`infrastructure`)** — sockets, TLS handshakes, ALPN, HTTP/2 streams,
    framing, timeouts, cancellation, per-connection accounting. Decodes and encodes. **Owns
    no business rules** and makes no resolution decision.
-2. **Provisioning layer (`application`)** — source selection, generate-or-load,
-   persistence, validity assessment, one-time pin emission, budget decisions.
-   **Performs its I/O at startup only, never on the hot path.**
+2. **Provisioning layer (`application`)** — source selection, validity assessment,
+   one-time pin emission, budget decisions, all orchestrated by calling the
+   `infrastructure` adapters behind `ServingIdentityProvider` for the generate-or-load and
+   persistence steps. **No synchronous I/O executes in this layer's own code** — CLAUDE.md
+   forbids it in `domain` and `application` alike — and the adapters it calls run at
+   startup only, never on the hot path.
 3. **Domain layer (`domain`)** — the configuration value types, the two-variant
    certificate source, the serving identity, the pin, the ALPN set, the port trait and the
    error taxonomy. Pure: no async, no sockets, no clock reads,
@@ -897,7 +950,7 @@ suite goes red one morning for reasons unrelated to any change.
    will plausibly want to surface the transport. Make the variant nameable in a log field
    without restructuring call sites.
 
-### 2. Define `TlsListenerConfig` and `ConnectionBudget` — `styx-resolution::domain::tls`
+### 2. Define `TlsListenerConfig` and `ConnectionBudget` — `styx-resolution::domain::tls::config`
 
 1. **Responsibility**: the file-owned description of encrypted inbound.
 2. **Fields on `TlsListenerConfig`**:
@@ -911,23 +964,43 @@ suite goes red one morning for reasons unrelated to any change.
    - `self_signed_dir: PathBuf` — where generated material is persisted and re-read.
    - `self_signed_names: Vec<String>` — the subject alternative names minted into the
      self-signed certificate.
-   - `doh_path: String` — the single DNS resource path.
+   - `doh_path: DohResourcePath` — the single DNS resource path.
    - `allow_http1: bool` — **default `false`**.
    - `budget: ConnectionBudget`.
 3. **Fields on `ConnectionBudget`**, each a named TOML value with a documented default:
    `handshake_timeout`, `idle_timeout`, `max_concurrent_connections`,
-   `max_streams_per_connection`, `max_queries_per_connection`, `max_request_body_bytes`
-   (capped at the 65535-byte DNS-over-stream maximum; a larger configured value is a
-   configuration error, not a silent clamp).
-4. **Methods**:
-   - `from_toml_section(value) -> Result<TlsListenerConfig, ConfigError>`
+   `max_streams_per_connection`, `max_queries_per_connection`,
+   `max_request_body_bytes: StreamMessageLimit`.
+4. **`StreamMessageLimit` and `DohResourcePath` are newtypes, not the bare `usize` and
+   `String` a first draft would reach for**, per CLAUDE.md's primitive-obsession test —
+   each carries a domain rule the primitive alone does not:
+   - `StreamMessageLimit` wraps the cap on a DNS message carried over a stream transport.
+     `protocol_max()` returns the fixed ceiling of 65535 bytes — the value the two-octet
+     big-endian length prefix can represent at all — as a named constant, the same shape as
+     Phase 1's `Ttl`. `from_configured(raw: usize) -> Result<StreamMessageLimit,
+     ConfigError>` is its only constructor and rejects zero and anything above
+     `protocol_max()`; there is no setter, so a value that passed construction cannot be
+     mutated back out of range. It replaces the bare `usize` that `ConnectionBudget`,
+     `StreamFraming::read_message` and `DohRequest::extract` would otherwise each cap
+     independently against the same unstated number.
+   - `DohResourcePath` wraps the configured DoH resource path. `new(raw: String) ->
+     Result<DohResourcePath, ConfigError>` rejects anything that is not an absolute HTTP
+     path, and `matches(candidate: &str) -> bool` is the one operation callers need — so
+     `DohRequest::extract` (Operation 15) compares through the type instead of two bare
+     strings. There is no setter.
+5. **Methods on `TlsListenerConfig`**:
+   - `from_toml_section(value) -> Result<TlsListenerConfig, ConfigError>` — constructs
+     `doh_path` via `DohResourcePath::new` and each `ConnectionBudget` field that has one
+     via its newtype constructor, so a malformed value fails here rather than later.
    - `validate() -> Result<(), ConfigError>` — rejects: `cert_path` set without `key_path`
-     or vice versa; `enabled` with neither a DoT nor a DoH address; a `doh_path` that is
-     not an absolute path; any zero or absurd budget value; `max_request_body_bytes` above
-     the stream maximum.
+     or vice versa; `enabled` with neither a DoT nor a DoH address; any zero or absurd
+     value among the budget fields that are not already newtypes. It does **not** re-check
+     `doh_path` absoluteness or the request-body ceiling — `DohResourcePath` and
+     `StreamMessageLimit` already make an invalid value unconstructible, and restating the
+     check in `validate()` would be the same rule enforced twice.
    - `certificate_source() -> CertificateSource` — `OperatorSupplied` when **both** paths
      are present, `SelfSigned` otherwise.
-5. **Constraints**:
+6. **Constraints**:
    - **This block lives in the TOML file and nowhere else.** The hard config boundary is
      that the file owns infrastructure and the database owns policy; no overlap means no
      precedence rule, and it guarantees a dead database cannot touch resolution.
@@ -937,7 +1010,7 @@ suite goes red one morning for reasons unrelated to any change.
    - No `Option` is resolved by falling back to a database value. There is no second store
      to consult.
 
-### 3. Define `CertificateSource`, `ServingIdentity`, `ValidityState` — `styx-resolution::domain::tls`
+### 3. Define `CertificateSource`, `ServingIdentity`, `ValidityState` — `styx-resolution::domain::tls::certificate`
 
 1. **`CertificateSource`**: a closed enum with **exactly two variants** —
    `OperatorSupplied { cert_path, key_path }` and `SelfSigned { dir }`. Document on the
@@ -963,7 +1036,7 @@ suite goes red one morning for reasons unrelated to any change.
      HTTP response. Implement `Debug` by hand and redact it.
    - No TLS-library type appears in this module's public signatures.
 
-### 4. Define `SpkiPin` — `styx-resolution::domain::tls`
+### 4. Define `SpkiPin` — `styx-resolution::domain::tls::certificate`
 
 1. **Responsibility**: the publishable, derived property of whichever certificate is
    serving — **the only usable trust path for the self-signed variant.**
@@ -985,7 +1058,7 @@ suite goes red one morning for reasons unrelated to any change.
      a re-issue of the same key and is safe to publish.
    - `Display` renders the directive form. There is no way to print the private key.
 
-### 5. Declare the `ServingIdentityProvider` port — `styx-resolution::domain::tls`
+### 5. Declare the `ServingIdentityProvider` port — `styx-resolution::domain::tls::certificate`
 
 1. **Trait**: `Send + Sync + 'static`, with
    `resolve(&self, config: &TlsListenerConfig) -> Result<ServingIdentity, CertificateError>`.
@@ -1030,13 +1103,15 @@ suite goes red one morning for reasons unrelated to any change.
    message on a stream, as **one implementation over a generic async stream**, used by the
    plaintext TCP listener and by DoT.
 2. **Methods**:
-   - `read_message(reader, max_len) -> Result<Vec<u8>, FramingError>` — reads the prefix,
-     validates it, reads exactly that many bytes, handling partial reads across packets.
+   - `read_message(reader, limit: StreamMessageLimit) -> Result<Vec<u8>, FramingError>` —
+     reads the prefix, validates it against `limit`, reads exactly that many bytes,
+     handling partial reads across packets.
    - `write_message(writer, bytes) -> Result<(), FramingError>` — writes the prefix then
-     the body; refuses a body above 65535 rather than truncating the length.
+     the body; refuses a body above `StreamMessageLimit::protocol_max()` rather than
+     truncating the length.
 3. **Logic**:
    - A declared length of zero is `ZeroLengthMessage`, not an empty read.
-   - A declared length above `max_len` is `DeclaredLengthExceedsMaximum` **before any
+   - A declared length above `limit` is `DeclaredLengthExceedsMaximum` **before any
      allocation**; never allocate on an attacker-declared size.
    - A prefix that does not complete is `ShortPrefix`; a body that does not complete is
      `UnexpectedEof`. Both close the connection; neither panics.
@@ -1046,7 +1121,10 @@ suite goes red one morning for reasons unrelated to any change.
      under `indexing_slicing = deny` and `arithmetic_side_effects = deny` scrutiny, and
      duplicating it duplicates the risk.
    - Every offset and length computation is a checked operation. No slicing, no unchecked
-     arithmetic. **That is the intended tax.**
+     arithmetic. **That is the intended tax.** `StreamFraming` is this crate's one audited,
+     bounds-checked primitive for stream-offset arithmetic, the role CLAUDE.md says
+     `styx-proto`'s `Cursor` plays for the wire codec — route any new offset or length
+     computation this phase adds through it rather than a fresh `checked_*` call site.
    - The existing plaintext TCP tests must pass unchanged after the refactor — that is the
      proof the framing did not shift.
    - Extend the existing fuzz target to drive this function over arbitrary byte streams.
@@ -1068,9 +1146,12 @@ suite goes red one morning for reasons unrelated to any change.
    - Extract `not_before`, `not_after` and `subject_names` from the leaf.
    - Derive the `SpkiPin` from the leaf's public key.
    - Return with `origin: OperatorSupplied`, `freshly_generated: false`.
-4. **Constraints**: this is startup-only synchronous I/O and must sit where `no-sync-io`
-   permits it — in `infrastructure`, called once before any listener binds, never from a
-   request path.
+4. **Constraints**: this is startup-only synchronous I/O and must sit in `infrastructure`,
+   called once before any listener binds, never from a request path — the only layer with
+   no `[[restrict-use]]` ban on `std::fs`. Phase 0's 2026-09-24 amendment adds that ban to
+   `domain` and `application` directly, so it holds in both sync and async code there; the
+   pre-existing `no-sync-io` still separately covers blocking calls in async `infrastructure`
+   code.
 
 ### 9. Implement `SelfSignedGenerator` — `styx-resolution::infrastructure::cert_fs`
 
@@ -1153,7 +1234,11 @@ suite goes red one morning for reasons unrelated to any change.
    where it differs from the admin password, which is a genuine secret and genuinely
    cannot be reprinted.
 4. **Constraints**: read-only with respect to the certificate directory; no socket; no
-   generation; no key material on stdout.
+   generation; no key material on stdout. **The output write must not use the `println!`
+   or `print!` macros** — clippy's `print_stdout` is denied workspace-wide by Phase 0's
+   2026-09-24 amendment, and `styx` is not the exemption; only `xtask` carries one, because
+   its output is a verdict for a human rather than a DNS binary's CLI surface. Write the
+   directive through `std::io::Write` on the process's stdout handle instead.
 
 ### 12. Implement `TlsServerSetup` — `styx-resolution::infrastructure::tls`
 
@@ -1230,23 +1315,33 @@ suite goes red one morning for reasons unrelated to any change.
    - **No TC bit, no EDNS UDP payload sizing.** DoT is a stream transport.
    - The framing comes from the shared module; do not restate it here.
    - Every span carries the client address, the transport and the question.
+   - **Split the per-connection logic above into named helper steps — a handshake step, a
+     permit/budget step, a message-loop step — each returning early on its own failure,
+     rather than one `serve_connection` carrying every bullet inline.** `excessive_nesting`
+     (threshold 4, counting the enclosing `impl` and `fn`) and `too_many_lines` (threshold
+     60 code lines) are gated by Phase 0's 2026-09-24 amendment, and this per-connection
+     state machine — handshake, ALPN check, a read/decode/pipeline/encode/write loop under
+     two independent timeouts, plus query-count and cancellation exits — is exactly the
+     shape both thresholds exist to catch.
 
-### 15. Implement `DohRequest` extraction — `styx-resolution::infrastructure::doh`
+### 15. Implement `DohRequest` extraction — `styx-resolution::infrastructure::doh::request`
 
 1. **Responsibility**: get a wire-format DNS message out of an HTTP request, or fail
    cleanly.
    **This is the single largest new attacker-reachable parsing surface in the phase.**
 2. **Method**:
-   `extract(method, path, query, headers, body, cap) -> Result<DohRequest, DohError>`.
+   `extract(method, path, query, headers, body, limit: StreamMessageLimit) ->
+   Result<DohRequest, DohError>`.
 3. **Logic**:
-   - Path must equal the configured resource → else `PathNotFound` (404).
+   - `configured_path.matches(path)` must hold → else `PathNotFound` (404), comparing
+     through `DohResourcePath` rather than two bare strings.
    - `POST`: `Content-Type` must be the DNS wire-format media type → else
      `UnsupportedMediaType` (415). Body empty → `EmptyBody` (400).
-     **Declared length above the cap → `BodyTooLarge` (413) before any allocation**; a
+     **Declared length above `limit` → `BodyTooLarge` (413) before any allocation**; a
      request whose declared length is enormous must never be allocated for.
    - `GET`: the `dns` query parameter must be present → else `MissingDnsParameter` (400);
      decode as **unpadded base64url** → else `MalformedBase64Url` (400); decoded length
-     above the cap → `BodyTooLarge` (413).
+     above `limit` → `BodyTooLarge` (413).
    - Any other method → `MethodNotAllowed` (405).
 4. **Constraints**:
    - **Both forms are supported.** The exit criterion is "a `curl` DoH call succeeds",
@@ -1265,7 +1360,7 @@ suite goes red one morning for reasons unrelated to any change.
      deliberate omission of EDNS Client Subnet, which exists because it leaks client
      topology.
 
-### 16. Implement `DohListener` and `DohResponse` — `styx-resolution::infrastructure::doh`
+### 16. Implement `DohListener` and `DohResponse` — `styx-resolution::infrastructure::doh::listener`
 
 1. **Responsibility**: HTTP/2 over TLS, one resource, wire-format message in and out,
    feeding the existing pipeline.
@@ -1298,6 +1393,12 @@ suite goes red one morning for reasons unrelated to any change.
      origin as an authenticated admin surface — which interacts badly with the admin
      session's origin check.
    - HTTP/1.1 is served only when `allow_http1` is explicitly enabled.
+   - **Split the connection-accept step, the per-stream handling step and `DohResponse`
+     construction into named helpers with guard clauses, the same as `DotListener`
+     (Operation 14).** `excessive_nesting` (threshold 4) and `too_many_lines` (threshold
+     60) are gated by Phase 0's 2026-09-24 amendment, and HTTP/2's extra layer of
+     per-stream nesting on top of the per-connection handshake and budget checks makes this
+     listener the more likely of the two to hit either threshold if written as one method.
 
 ### 17. Wire both listeners in the `styx` binary
 
@@ -1450,11 +1551,14 @@ project has.
 
 3. **Error handling**: every fallible function returns `Result<T, E>` with a `thiserror`
    enum (`require-thiserror`). No `unwrap`, no `expect`, no `panic!` outside tests
-   (`no-unwrap-expect` with `allow_in_tests = true`; a panic lint is among the 15 denied
-   clippy lints). Every error enum's mapping to its disposition — startup abort, dropped
-   connection, or HTTP status — is a **total match**, so a new variant fails to compile
-   until its disposition is chosen. Error text that reaches a client never leaks a
-   filesystem path, a configuration value or an internal address.
+   (`no-unwrap-expect` with `allow_in_tests = true`; a panic lint is among the 21 denied
+   clippy lints). `anyhow` never appears in `styx-resolution` — it is a library crate, and
+   Phase 0's 2026-09-24 amendment adds a `[[restrict-use]]` banning it there, on top of
+   `require-thiserror`'s check that error types derive `thiserror::Error`. Every error
+   enum's mapping to its disposition — startup abort, dropped connection, or HTTP status —
+   is a **total match**, so a new variant fails to compile until its disposition is chosen.
+   Error text that reaches a client never leaks a filesystem path, a configuration value or
+   an internal address.
 
 4. **Arithmetic and indexing**: `indexing_slicing = deny` and
    `arithmetic_side_effects = deny` workspace-wide. Every length prefix, every body-size
@@ -1491,16 +1595,21 @@ project has.
    flood cannot become a log flood.
 
 9. **Logging**: `tracing` throughout (`require-tracing`), initialised once at binary
-   startup (`tracing-env-init`). One span per query carrying client address, **transport**
-   and question. Structured fields, not formatted strings. **Never log a private key**, at
-   any level. The SPKI pin is logged at info level **only on generation**; otherwise at
-   debug. *Forward constraint:* privacy levels ship in v1 (log everything / hide domains /
-   hide clients / anonymous), so field names must be selectable for redaction later
-   without restructuring call sites.
+   startup (`tracing-env-init`), never `println!`/`eprintln!`/`dbg!` — clippy's
+   `print_stdout`, `print_stderr` and `dbg_macro` are denied workspace-wide by Phase 0's
+   2026-09-24 amendment, and `styx-resolution` carries no exemption; only `xtask` does. One
+   span per query carrying client address, **transport** and question. Structured fields,
+   not formatted strings. **Never log a private key**, at any level. The SPKI pin is logged
+   at info level **only on generation**; otherwise at debug. *Forward constraint:* privacy
+   levels ship in v1 (log everything / hide domains / hide clients / anonymous), so field
+   names must be selectable for redaction later without restructuring call sites.
 
-10. **No I/O on the hot path**: `no-sync-io` is enforced by arch-lint. All certificate
-    reading, generation and persistence happens **once, at startup**, before any listener
-    binds. No request path reads a file, and
+10. **No I/O on the hot path**: enforced twice — arch-lint's `no-sync-io` for blocking
+    calls in async `infrastructure` code, and, per Phase 0's 2026-09-24 amendment, a
+    `[[restrict-use]]` per layer that bans `std::fs`, the blocking socket types and
+    `std::io`'s blocking traits from `domain` and `application` outright, sync or async.
+    All certificate reading, generation and persistence happens **once, at startup**,
+    before any listener binds, in `infrastructure`. No request path reads a file, and
     **no database read participates in bringing up a listener** — a database outage
     degrades logging and admin, never resolution.
 
@@ -1534,6 +1643,19 @@ project has.
     closure of `CertificateSource` — no PKI, no ACME — is documented on the type itself,
     not in a separate file. The operator-facing encrypted-inbound page is a deliverable of
     this phase, gated by its exit criteria.
+
+17. **Object Calisthenics, per `CLAUDE.md`**: this phase's code follows the repository's
+    engineering guidelines in full, including the Rust-adapted Object Calisthenics
+    ruleset. Primitive obsession is avoided the way `CLAUDE.md` states it, not the way a
+    literal reading of "wrap every primitive" would: a value earns its own type when it
+    carries a validated range, a checked arithmetic operation, a non-trivial encoding or a
+    named constant, and **the test is domain rules attached to the value, not the
+    primitive-ness of its type.** `StreamMessageLimit` (Operation 2) and `DohResourcePath`
+    (Operation 2) are this phase's own newtypes under that test — a checked, named-constant
+    bound and a validated-format path, respectively — each with a validating constructor
+    and no setter that reopens the invariant. Plain flags with no independent rule, such as
+    `TlsListenerConfig::enabled` and `allow_http1`, stay bare `bool`s: wrapping them would
+    be ceremony with no behaviour behind it, the failure mode `CLAUDE.md` warns against.
 
 ---
 
@@ -1625,6 +1747,13 @@ and expensive to discover later:
 - All startup I/O happens before any listener binds. No request path performs file or
   database I/O.
 - New dependencies must not trip the `hickory-dev-only` check.
+- **Every domain value this phase introduces that carries a rule — `StreamMessageLimit`,
+  `DohResourcePath` — is a newtype with a validating constructor and no invariant-reopening
+  setter, per `CLAUDE.md`.** Primitive wrapping itself stays a review discipline — no lint
+  checks "wrap this primitive" the way clippy checks `.unwrap()` — but per **Phase 0 —
+  Foundation and gates, Norm 17**, nesting depth, function length, module length and mixed
+  field visibility are now gated, and this phase's structure (Operations 14–16, Structure
+  §2) is written to hold under both the reviewed and the gated subset.
 
 ### 5. Security and resource constraints
 
@@ -1649,10 +1778,21 @@ and expensive to discover later:
   line, including all framing, body-size and counter arithmetic.
 - No `unwrap`, no `expect`, no `panic!` outside tests. `require-thiserror`,
   `require-tracing`, `tracing-env-init` and `no-sync-io` all hold.
-- `just gate` passes: clippy with the 15 denied lints, `arch-lint check`, the layering
-  gate, the `hickory-dev-only` check, under lefthook **and** GitHub Actions — a lint that
-  only runs locally is not enforcement.
+- `just gate` passes: clippy with the 21 denied lints, `arch-lint check`, the layering
+  gate, the `hickory-dev-only` check, the `xtask module-size` check, under lefthook **and**
+  GitHub Actions — a lint that only runs locally is not enforcement.
 - Everything compiles, serves and tests under `--no-default-features`.
+- **This phase's code must pass the extended gate added by Phase 0's 2026-09-24
+  amendment**, naming only the rules this phase's own risks actually touch: the
+  `[[restrict-use]]` bans on synchronous I/O in `domain`/`application` and on `anyhow`
+  throughout `styx-resolution` (a library crate) hold for every new module in Structure §2;
+  `excessive_nesting` (4) and `too_many_lines` (60) bear directly on `DotListener` and
+  `DohListener`'s per-connection state machines (Operations 14, 16) and on
+  `DohRequest::extract`, the phase's largest attacker-reachable parser (Operation 15); the
+  `xtask module-size` cap (400 lines) is why `infrastructure::doh` is split into `request`
+  and `listener` files (Structure §2); and `print_stdout`/`print_stderr`/`dbg_macro` bear on
+  Operation 11's pin re-derivation output, the one place this phase writes to stdout and
+  the one place `println!` would be tempting.
 
 ### 7. Test constraints
 

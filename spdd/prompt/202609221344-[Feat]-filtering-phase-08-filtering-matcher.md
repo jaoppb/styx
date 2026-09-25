@@ -273,19 +273,23 @@ classDiagram
 direction TB
 
 class CanonicalName {
-    +Name inner
+    -Name inner
     +canonicalize(Name) Result~CanonicalName, RuleError~
     +labels_rev() LabelsRev
     +label_count() usize
 }
 
 class DomainRule {
-    +RuleId id
-    +RuleForm form
-    +RuleAction action
-    +GroupMask groups
-    +RuleOrigin origin
+    -RuleId id
+    -RuleForm form
+    -RuleAction action
+    -GroupMask groups
+    -RuleOrigin origin
     +parse(str, RuleAction, GroupMask, RuleOrigin) Result~DomainRule, RuleError~
+    +id() RuleId
+    +form() RuleForm
+    +action() RuleAction
+    +groups() GroupMask
 }
 
 class RuleForm {
@@ -308,7 +312,7 @@ class RuleOrigin {
 }
 
 class GroupMask {
-    +u64 bits
+    -u64 bits
     +empty() GroupMask
     +from_group(GroupId) Result~GroupMask, RuleError~
     +union(GroupMask) GroupMask
@@ -359,15 +363,27 @@ class MatchKind {
 }
 
 class RegexPattern {
-    +String source
+    -String source
     +compile_checked(str, RegexLimits) Result~RegexPattern, RuleError~
+    +source() &str
+}
+
+class RegexLimits {
+    +usize max_source_len
+    +usize max_compiled_size
+    +default() RegexLimits
+}
+
+class RegexRuleEntry {
+    +MaskPair mask
+    +RuleId rule_id
+    +String source
 }
 
 class RegexRuleSet {
-    +RegexSet set
-    +Vec~MaskPair~ masks
-    +Vec~RuleId~ rule_ids
-    +Vec~String~ sources
+    -RegexSet set
+    -Vec~RegexRuleEntry~ entries
+    +entry(usize) Option~RegexRuleEntry~
     +lookup(CanonicalName) RegexMatches
     +empty() RegexRuleSet
 }
@@ -395,7 +411,7 @@ class SnapshotStats {
 }
 
 class MatcherHandle {
-    +ArcSwap~MatcherSnapshot~ current
+    -ArcSwap~MatcherSnapshot~ current
     +load() SnapshotGuard
     +publish(Arc~MatcherSnapshot~) Arc~MatcherSnapshot~
     +stats() SnapshotStats
@@ -473,17 +489,26 @@ class AdlistDefinition {
 }
 
 class StagingBuffer {
-    +AdlistId list
-    +Vec~u8~ bytes
-    +Option~ContentType~ content_type
-    +usize byte_limit
+    -AdlistId list
+    -Vec~u8~ bytes
+    -Option~ContentType~ content_type
+    -usize byte_limit
     +push(bytes)
     +len() usize
+    +content_type() Option~ContentType~
+    +bytes() &[u8]
+}
+
+class CollapseRatio {
+    -f32 value
+    +new(f32) Result~CollapseRatio, IngestError~
+    +value() f32
+    +DEFAULT CollapseRatio
 }
 
 class SanityChecks {
     +usize min_valid_domains
-    +f32 collapse_ratio
+    +CollapseRatio collapse_ratio
     +evaluate(StagingBuffer, Option~usize~, bool) IngestOutcome
     -looks_like_html(StagingBuffer) bool
 }
@@ -603,13 +628,15 @@ DomainRule "1" --> "1" RuleForm : has form
 DomainRule "1" --> "1" RuleAction : allow or block
 DomainRule "1" --> "1" GroupMask : targets
 DomainRule "1" --> "1" RuleOrigin : came from
+RegexPattern ..> RegexLimits : validated against
 MaskPair "1" --> "2" GroupMask : allow and block
 Terminal "1" --> "2" MaskPair : exact and wildcard
 TrieNode "1" --> "0..1" Terminal : carries policy
 LabelTrie "1" *-- "many" TrieNode : owns
 LabelTrie ..> TrieMatch : returns
 TrieMatch --> MatchKind : deepest form
-RegexRuleSet "1" --> "many" MaskPair : per pattern index
+RegexRuleSet "1" *-- "many" RegexRuleEntry : owns, index-aligned with the automaton
+RegexRuleEntry "1" --> "1" MaskPair : mask
 RegexRuleSet ..> RegexMatches : returns
 MatcherSnapshot "1" *-- "1" LabelTrie : exact and wildcard rules
 MatcherSnapshot "1" *-- "1" RegexRuleSet : regex rules
@@ -626,6 +653,7 @@ BlockedReplyBuilder ..> Verdict : consumes
 AdlistDefinition "1" --> "0..1" StaleMarker : may carry
 AdlistDefinition "1" --> "1" GroupMask : feeds
 StagingBuffer "1" --> "1" AdlistDefinition : staged for
+SanityChecks "1" --> "1" CollapseRatio : bounds the collapse check
 SanityChecks ..> StagingBuffer : gates
 SanityChecks ..> IngestOutcome : produces
 IngestOutcome --> AcceptedIngest : on accept
@@ -901,17 +929,26 @@ styx-filtering/
 │   │   ├── mod.rs
 │   │   ├── name.rs            CanonicalName, Label, LabelsRev
 │   │   ├── rule.rs            DomainRule, RuleForm, RuleAction, RuleOrigin, RuleId,
-│   │   │                      RegexPattern, RegexLimits, RuleError
+│   │   │                      RuleError
+│   │   ├── regex_pattern.rs   RegexPattern, RegexLimits
 │   │   ├── mask.rs            GroupMask, GroupId, MaskPair
 │   │   ├── trie.rs            TrieNode, LabelTrie, Terminal, TrieMatch, MatchKind
-│   │   ├── regexset.rs        RegexRuleSet, RegexMatches
+│   │   ├── regexset.rs        RegexRuleSet, RegexRuleEntry, RegexMatches
 │   │   ├── snapshot.rs        MatcherSnapshot, SnapshotStats
 │   │   ├── verdict.rs         Verdict, Decision, MatchProvenance, MatchedForm
-│   │   ├── blocked.rs         BlockingMode, BlockedReplyPolicy, BlockedContent,
-│   │   │                      BlockedReplyBuilder, BlockedReplyError
-│   │   ├── adlist.rs          AdlistId, AdlistDefinition, StagingBuffer, SanityChecks,
-│   │   │                      IngestOutcome, AcceptedIngest, RejectReason, StaleMarker,
-│   │   │                      LastKnownGood, IngestError
+│   │   ├── blocked/           split by concept — config versus the forging logic —
+│   │   │   ├── mod.rs         re-exports; carries the module doc (Norms 13)
+│   │   │   ├── policy.rs      BlockingMode, BlockedReplyPolicy, BlockedContent
+│   │   │   ├── builder.rs     BlockedReplyBuilder
+│   │   │   └── error.rs       BlockedReplyError
+│   │   ├── adlist/            split by concept — one file would bundle three work-stream-4
+│   │   │   │                  subsections' worth of types (§4.1–§4.3)
+│   │   │   ├── mod.rs         re-exports; carries the module doc (Norms 13)
+│   │   │   ├── definition.rs  AdlistId, AdlistDefinition, StagingBuffer
+│   │   │   ├── sanity.rs      SanityChecks, CollapseRatio, IngestOutcome, AcceptedIngest,
+│   │   │   │                  RejectReason
+│   │   │   ├── staleness.rs   StaleMarker, LastKnownGood
+│   │   │   └── error.rs       IngestError
 │   │   ├── ports.rs           AdlistFetcher, RuleStore, IngestJournal, Clock, StoreError
 │   │   └── error.rs           BuildError, ReloadError, MatchError
 │   ├── application/
@@ -935,6 +972,26 @@ styx-filtering/
 
 The `styx` binary additionally gains `adapters/filter_policy.rs` holding
 `StyxFilterPolicy`, the adapter onto `styx-resolution`'s `FilterPolicy` port.
+
+### Arch-lint registration
+
+`styx-filtering` is a new feature crate, so its scopes and its three `CLAUDE.md`
+restrict-use rules are a gate obligation (Phase 0's Norm 12): a new feature crate adds its
+`[[scopes]]` per layer, its `no-sync-io-<crate>-domain` and `no-sync-io-<crate>-application`
+rules, and its `no-anyhow-<crate>` rule. **Phase 0's Approach §10 already pre-declares
+`no-sync-io-filtering-domain`, `no-sync-io-filtering-application` and
+`no-anyhow-filtering`** in `arch-lint.toml`, scoped against
+`crates/styx-filtering/src/{domain,application}`, so that Phase 0's own gate-selftest
+Fixtures F and G could exercise the mechanism against a throwaway skeleton before this
+crate had real code. The task that scaffolds `styx-filtering` for real (Work stream 1,
+§1.0) does not re-declare those three rules — a duplicate `[[restrict-use]]` name is a
+config error — it confirms they resolve against the real `crates/styx-filtering/src/domain`
+and `crates/styx-filtering/src/application` paths. The rest of the crate's registration
+also already exists: Phase 0 scaffolded `styx-filtering` with all three layers, and
+`arch-lint.toml` already declares its `domain`, `application` and `infrastructure`
+scopes, its two `[[deny-scope-dep]]` layering rules and its feature-isolation
+`[[restrict-use]]`. This phase adds **no** arch-lint entry. It fills a crate the gate
+already governs.
 
 ### Trait (port) relationships
 
@@ -1034,6 +1091,27 @@ immediately: it is never cached and never validated.
 
 ### Work stream 1 — Matcher (trie, regex set, snapshot, lookup)
 
+#### 1.0 Scaffold the crate and confirm its arch-lint registration
+
+1. **Responsibility**: bring `crates/styx-filtering` into the workspace with its
+   `domain`/`application`/`infrastructure` modules, and make the gate aware of it before
+   any other task in this phase adds code.
+2. **Steps**:
+   - `styx-filtering` is already a workspace member from Phase 0. Give it its dependency
+     on `styx-proto` and nothing else from the workspace (Structure, Dependency
+     direction).
+   - Confirm, rather than re-add, the three layer `[[scopes]]`, the two
+     `[[deny-scope-dep]]` rules and the feature-isolation `[[restrict-use]]` Phase 0
+     already declares for this crate (see Structure's "Arch-lint registration").
+   - Confirm, rather than re-add, `no-sync-io-filtering-domain`,
+     `no-sync-io-filtering-application` and `no-anyhow-filtering`: these three
+     `[[restrict-use]]` rules already exist in `arch-lint.toml` from Phase 0, scoped
+     against this crate's `domain` and `application` paths in anticipation of this phase.
+3. **Completion criterion**: `arch-lint check` reports a non-zero analysed-file count for
+   `styx-filtering`, and a deliberate `std::fs::read_to_string` call added to this crate's
+   `application` module (mirroring Phase 0's Fixture F) is rejected by the rule Phase 0
+   already declared for it.
+
 #### 1.1 Create `domain::name` — `CanonicalName`, `Label`, `LabelsRev`
 
 1. **Responsibility**: produce the one spelling of a name that the matcher indexes, and
@@ -1089,7 +1167,7 @@ immediately: it is never cached and never validated.
    **This type's size is the phase's memory budget**: 16 bytes per terminal instead of 8
    is precisely why ~30–50MB/million became ~45–75MB/million.
 
-#### 1.3 Create `domain::rule` — `DomainRule`, `RuleForm`, `RegexPattern`
+#### 1.3 Create `domain::rule` — `DomainRule`, `RuleForm`, `RuleAction`, `RuleOrigin`
 
 1. **Responsibility**: one filtering statement, in one of three syntactic forms, with its
    action, its groups and its origin.
@@ -1099,25 +1177,16 @@ immediately: it is never cached and never validated.
      dispatches on syntax — a leading `*.` is a wildcard, a `/…/` delimited body is a
      regex, anything else is an exact name — then canonicalises or compiles accordingly.
 3. **`RuleForm`** — `Exact(CanonicalName)` | `Wildcard(CanonicalName)` |
-   `Regex(RegexPattern)`. **All three forms feed the same allow/block mask pair**, which
-   is exactly what makes "allow wins" uniform across forms rather than a property of one
-   code path.
-4. **`RegexPattern`**
-   - `compile_checked(source, limits) -> Result<RegexPattern, RuleError>`: rejects a
-     pattern exceeding a source-length bound or a compiled-size bound, and rejects one
-     that fails to compile. **An invalid regex fails that rule, not the rebuild.**
-   - **A catastrophically broad pattern (`.*`) is functionally a global block.** The
-     single automaton makes it cheap to evaluate, so *nothing stops it at query time* —
-     validation therefore belongs at rule-entry time. The builder emits a `warn` for a
-     pattern that matches a small set of canary names (`example.com`, a random label, a
-     bank-shaped name), and the reload report carries the count of such patterns so Phase
-     11 can surface it.
-5. **`RuleOrigin`** — `Adlist(AdlistId)` | `HandWritten`. **Hand-written rules come from
+   `Regex(RegexPattern)`, the last defined in `domain::regex_pattern` (§1.9) rather than
+   here, because compiling and bounding a regex is a distinct concern from rule identity
+   and form. **All three forms feed the same allow/block mask pair**, which is exactly
+   what makes "allow wins" uniform across forms rather than a property of one code path.
+4. **`RuleOrigin`** — `Adlist(AdlistId)` | `HandWritten`. **Hand-written rules come from
    the database, not the network, so the adlist sanity checks are meaningless for them and
    are not applied**; they join the rule set directly at rebuild time. This is stated
    explicitly because it is otherwise ambiguous whether both sources share the staging
    path. They do not.
-6. **Constraints**: parsing is fallible and total — no input panics. `RuleId` is stable
+5. **Constraints**: parsing is fallible and total — no input panics. `RuleId` is stable
    across a reload so the query log's provenance stays meaningful.
 
 #### 1.4 Create `domain::trie` — `TrieNode`, `Terminal`, `LabelTrie`, `TrieMatch`
@@ -1149,21 +1218,29 @@ immediately: it is never cached and never validated.
 6. **Constraints**: `lookup` allocates nothing, takes no lock, reads no clock, and is
    `&self`. Binary search over children uses checked access only.
 
-#### 1.5 Create `domain::regexset` — `RegexRuleSet`, `RegexMatches`
+#### 1.5 Create `domain::regexset` — `RegexRuleSet`, `RegexRuleEntry`, `RegexMatches`
 
-1. **Responsibility**: every regex rule in one multi-pattern automaton, with a side table
-   mapping each pattern index back to its own `MaskPair`.
-2. **Fields**: the compiled `RegexSet`, a `Vec<MaskPair>` indexed identically, a parallel
-   `Vec<RuleId>` and a parallel `Vec<String>` of pattern sources for provenance.
-3. **`lookup(name) -> RegexMatches`**: run the set against the canonical name's string
-   form, merge the `MaskPair` of every matching index, and record the first matching index
-   for provenance. **Adding regex rules costs build time and essentially no query time** —
-   this is the entire reason the feature is safe to expose.
-4. **`empty()`**: the no-regex-rules case must be a first-class constructor that performs
+1. **Responsibility**: every regex rule in one multi-pattern automaton, paired with a
+   first-class collection of per-pattern metadata in place of three vectors kept in sync by
+   hand.
+2. **`RegexRuleEntry`** — `mask: MaskPair`, `rule_id: RuleId`, `source: String`. One entry
+   per compiled pattern. **This replaces what would otherwise be three parallel `Vec`s**
+   (masks, rule IDs, sources) indexed by a shared, hand-maintained index — the bag of
+   collections `CLAUDE.md`'s first-class-collections rule exists to catch.
+3. **`RegexRuleSet`**
+   - **Fields**: the compiled `RegexSet` and `entries: Vec<RegexRuleEntry>`, constructed
+     together so `entries.len()` always equals the pattern count of `set`.
+   - `entry(index) -> Option<RegexRuleEntry>`: the **one** checked accessor into the
+     collection, replacing three separate checked lookups at every call site with one.
+4. **`lookup(name) -> RegexMatches`**: run the set against the canonical name's string
+   form, merge the `mask` of every matching index via `entry`, and record the first
+   matching index for provenance. **Adding regex rules costs build time and essentially no
+   query time** — this is the entire reason the feature is safe to expose.
+5. **`empty()`**: the no-regex-rules case must be a first-class constructor that performs
    no matching work at all, not an automaton over zero patterns.
-5. **Constraints**: the three parallel vectors are constructed together in the builder and
-   are never mutated afterwards; any index valid for one is valid for all. Access is
-   checked.
+6. **Constraints**: `entries` is constructed once in the builder and never mutated
+   afterwards; any index valid for `set` is valid for `entries`. Access is through
+   `entry()`, never a raw index into a parallel array.
 
 #### 1.6 Create `domain::verdict` — `Verdict`, `Decision`, `MatchProvenance`
 
@@ -1202,6 +1279,31 @@ immediately: it is never cached and never validated.
 4. **`MatchError`** — only the canonicalisation failure, and **the hot path converts it to
    `Decision::Allowed` with provenance rather than propagating it.** See Norms: query time
    fails open.
+
+#### 1.9 Create `domain::regex_pattern` — `RegexPattern`, `RegexLimits`
+
+1. **Responsibility**: compile and bound one regex rule's pattern, in a module of its own
+   because regex compilation is a distinct concern from rule identity and form — split out
+   of `domain::rule` the way `domain/rdata/basic.rs` and `domain/rdata/dnssec.rs` were
+   split out of a single `rdata` catch-all in Phase 1.
+2. **`RegexLimits`** — `max_source_len: usize`, `max_compiled_size: usize`, with a
+   `default()` giving both a defended, conservative ceiling. **Named constants attached to
+   a bound, not a bare pair of numbers threaded through call sites by convention.**
+3. **`RegexPattern`**
+   - `compile_checked(source, limits) -> Result<RegexPattern, RuleError>`: rejects a
+     pattern exceeding `limits.max_source_len`, rejects a compiled automaton exceeding
+     `limits.max_compiled_size`, and rejects one that fails to compile. **An invalid regex
+     fails that rule, not the rebuild.**
+   - **A catastrophically broad pattern (`.*`) is functionally a global block.** The
+     single automaton makes it cheap to evaluate, so *nothing stops it at query time* —
+     validation therefore belongs at rule-entry time. The builder emits a `warn` for a
+     pattern that matches a small set of canary names (`example.com`, a random label, a
+     bank-shaped name), and the reload report carries the count of such patterns so Phase
+     11 can surface it.
+   - No setter reopens a compiled pattern's invariant: a changed source is a new
+     `RegexPattern`, built through `compile_checked` again, never an in-place mutation.
+4. **Constraints**: pure, no `Clock`, no I/O. `RegexLimits` values are read-only after
+   construction; there is no path that widens a limit on an already-compiled pattern.
 
 ---
 
@@ -1279,7 +1381,7 @@ immediately: it is never cached and never validated.
 > Depends on **Phase 1 — Wire codec** and on the AD contract from **Phase 6 — DNSSEC**,
 > but **not** on the matcher. Severable from streams 1–2.
 
-#### 3.1 Create `domain::blocked` — `BlockingMode`, `BlockedReplyPolicy`
+#### 3.1 Create `domain::blocked::policy` — `BlockingMode`, `BlockedReplyPolicy`
 
 1. **`BlockingMode`** — `NxDomain` (**styx's default**), `Null` (`0.0.0.0` / `::`, which
    is Pi-hole's default), `NoData`, `Ip`, `IpNoDataAaaa`. Five-valued,
@@ -1305,7 +1407,7 @@ immediately: it is never cached and never validated.
 4. **Constraints**: `BlockedReplyPolicy` is swapped as a unit via `ArcSwap`, so a mode
    change is atomic and never observed half-applied.
 
-#### 3.2 Implement `BlockedReplyBuilder` — content selection
+#### 3.2 Implement `domain::blocked::builder::BlockedReplyBuilder` — content selection
 
 1. **Responsibility**: `content_for(question) -> BlockedContent` — **the only place in the
    crate where the mode is consulted.**
@@ -1326,7 +1428,7 @@ immediately: it is never cached and never validated.
 3. **Constraints**: pure, total, no `Clock`, no I/O. Exhaustive `match` on the mode with
    no catch-all arm, so adding a sixth mode later is a compile error in exactly one place.
 
-#### 3.3 Implement `BlockedReplyBuilder` — the shared invariant stage
+#### 3.3 Implement `domain::blocked::builder::BlockedReplyBuilder` — the shared invariant stage
 
 1. **Responsibility**: `apply_invariants(message) -> Message` —
    **the only place a message becomes a reply**, applied unconditionally to every mode's
@@ -1394,7 +1496,7 @@ immediately: it is never cached and never validated.
 > Depends on nothing on the hot path. **The most naturally severable stream**, and the
 > obvious first cut if this phase is split.
 
-#### 4.1 Create `domain::adlist` — `AdlistDefinition`, `StagingBuffer`
+#### 4.1 Create `domain::adlist::definition` — `AdlistDefinition`, `StagingBuffer`
 
 1. **`AdlistDefinition`** — id, URL, enabled flag, the `GroupMask` it feeds, last
    successful ingest timestamp, last good valid-domain count, an optional `StaleMarker`,
@@ -1411,15 +1513,22 @@ immediately: it is never cached and never validated.
    rules, **before** the snapshot is compiled, so buffers and the new snapshot are never
    both at peak.
 
-#### 4.2 Create `domain::adlist` — `SanityChecks` and `IngestOutcome`
+#### 4.2 Create `domain::adlist::sanity` — `SanityChecks` and `IngestOutcome`
 
 1. **Responsibility**: the accept-or-reject determination over a staging buffer.
    **A staged list replaces nothing until it passes every check.**
-2. **`SanityChecks`** — `min_valid_domains: usize`, `collapse_ratio: f32`.
+2. **`SanityChecks`** — `min_valid_domains: usize`, `collapse_ratio: CollapseRatio`.
    - **The thresholds are explicitly left open by the specification; this phase must
      choose and defend them.** Defaults: **`min_valid_domains = 50`** and
-     **`collapse_ratio = 0.5`** (a new count below half the previous count is a collapse),
-     both configurable.
+     **`CollapseRatio::DEFAULT = 0.5`** (a new count below half the previous count is a
+     collapse), both configurable.
+   - **`CollapseRatio`** wraps the `f32` behind
+     `new(value) -> Result<CollapseRatio, IngestError>`, rejecting anything outside
+     `(0.0, 1.0]`: a ratio at or below zero would accept any collapse and a ratio above one
+     would reject a list that merely grew, and either failure would silently defeat the one
+     check that exists to catch a truncated or substituted list. `min_valid_domains` stays
+     a bare `usize` — a simple floor with no arithmetic of its own and no risk of being
+     confused with an unrelated count, so wrapping it would be ceremony rather than a rule.
    - *Defence*: a too-low minimum defeats the captive-portal check, because a splash page
      can easily parse to a dozen junk "domains"; 50 is above the junk yield of a typical
      error page and below the size of any real blocklist worth subscribing to. A too-tight
@@ -1436,8 +1545,9 @@ immediately: it is never cached and never validated.
    - **Floor check**: reject with `RejectReason::TooFewValidDomains(found, required)`
      below `min_valid_domains`.
    - **Collapse check**: with a `previous_count`, reject with
-     `RejectReason::CountCollapsed(new, previous)` when `new < previous * collapse_ratio`
-     — **unless `shrink_override` is set**, in which case accept and consume the override.
+     `RejectReason::CountCollapsed(new, previous)` when `new` is below `previous` scaled by
+     `collapse_ratio.value()` — **unless `shrink_override` is set**, in which case accept
+     and consume the override.
    - **First ingest of a new list**: there is no previous count, so
      **the collapse check is skipped and only the floor applies.** Stated explicitly
      rather than inferred, because "compare against the previous ingest" is undefined on
@@ -1454,7 +1564,7 @@ immediately: it is never cached and never validated.
    captive-portal page is the exact failure the design exists to prevent.** Per-list
    granularity means one rotten list never blocks the others from updating.
 
-#### 4.3 Create `domain::adlist` — `StaleMarker`, `LastKnownGood`
+#### 4.3 Create `domain::adlist::staleness` — `StaleMarker`, `LastKnownGood`
 
 1. **`StaleMarker`** — the list, the `RejectReason`, `since`, the last good timestamp and
    the last good count. `age(now)` yields the duration.
@@ -1585,8 +1695,8 @@ immediately: it is never cached and never validated.
      needed, and merging its `MaskPair` into the node's `exact` or `wildcard` slot.
      **Merging, not overwriting**, is what makes duplicate domains across lists feeding
      different groups produce one terminal with OR'd masks.
-   - Collect regex patterns, their masks, their ids and their sources into the three
-     parallel vectors, compile the `RegexSet` **once**, and
+   - Collect each compiling regex pattern into a `RegexRuleEntry` (mask, rule id, source),
+     compile the `RegexSet` **once** from their sources, and
      **skip a pattern that fails to compile with a `warn` rather than failing the build**
      — an invalid regex fails that rule, not the rebuild.
    - Sort each node's children so the lookup's binary search is valid.
@@ -1717,13 +1827,19 @@ immediately: it is never cached and never validated.
    `domain` and can name no port, no `Clock` and nothing in `infrastructure`.
    **This is the structural form of "the hot path performs no I/O"**, and it is a lint
    obligation, not a convention: one database read for a group lookup or one lazy rule
-   load would violate it, and both are easy to add by accident.
+   load would violate it, and both are easy to add by accident. Enforced by
+   `no-sync-io-filtering-domain` and `no-sync-io-filtering-application`
+   (`[[restrict-use]]`, Phase 0 Approach §10) in sync and async code alike — a plain,
+   non-async `std::fs::read_to_string` in `application` fails the gate exactly like an
+   `await`ed one.
 4. **Ports as traits** — `AdlistFetcher`, `RuleStore`, `IngestJournal` and `Clock` are
    traits in `domain::ports`, object-safe, `Send + Sync`, consumed as `Arc<dyn …>`. No
    `async` on the matcher side; no lock held across an `await` anywhere.
 5. **Error handling** — `thiserror` enums returned through `Result<T, E>`, never a bare
-   `String`. Every variant carries the context needed to act on it. No `unwrap`, no
-   `expect`, no `panic!`, no unchecked indexing in non-test code
+   `String` and never `anyhow` — `styx-filtering` is a library crate, and `no-anyhow-filtering`
+   (`[[restrict-use]]`, Phase 0 Approach §10) denies `anyhow` and everything under it
+   anywhere in this crate. Every variant carries the context needed to act on it. No
+   `unwrap`, no `expect`, no `panic!`, no unchecked indexing in non-test code
    (`allow_in_tests = true`).
 6. **Failure posture, stated per half** — **query time fails open**: an unparseable name
    yields `Allowed` with provenance, because a resolver that refuses to answer is worse
@@ -1761,15 +1877,39 @@ immediately: it is never cached and never validated.
     to be lost.
 13. **Documentation** — every public item carries a doc comment. Three modules carry
     module-level docs stating the rule **and its rationale**: `verdict` (allow beats block
-    unconditionally, because every blocklist over-blocks eventually), `blocked` (AD
-    cleared and no forged RRSIG in every mode, and the deliberate lie to CD=0 validating
-    clients), and `adlist` (staged ingestion, because the dangerous failure is a captive
-    portal served as HTTP 200 rather than a 404).
+    unconditionally, because every blocklist over-blocks eventually), `blocked` — on
+    `blocked/mod.rs`, since the module is split by concept into `policy.rs` and
+    `builder.rs` (Structure) — (AD cleared and no forged RRSIG in every mode, and the
+    deliberate lie to CD=0 validating clients), and `adlist` — likewise on `adlist/mod.rs`
+    — (staged ingestion, because the dangerous failure is a captive portal served as HTTP
+    200 rather than a 404).
 14. **Testing** — pure unit tests for `domain`; a property test for the escape hatch; a
     generated matrix for blocked replies; socket-level tests through the Phase 2 harness
     for the wired path; fixture-driven ingestion tests; fuzz targets for the parser and
     the label walk. The wire-format test oracle is a **dev-dependency only**, with a CI
     check asserting it appears in no normal or build dependency path.
+15. **Primitive obsession is avoided; a newtype wraps a primitive that carries domain
+    rules**, per `CLAUDE.md`. A value gets its own type when it has a validated range,
+    checked arithmetic, a non-trivial wire encoding, or named constants attached to it —
+    not merely because it is a `u16`, a `u32`, a `bool` or a `String`. A plain named field
+    with no independent validation and no risk of being confused with an unrelated value at
+    a call site is not primitive obsession; the test is domain rules attached to the value,
+    not the primitive-ness of its type. This phase's own worked examples: `GroupMask` (a
+    `u64` behind a narrow API, validated at `from_group`, carrying the `WIDTH` named
+    constant, with no public bit-twiddling) and `CollapseRatio` (an `f32` validated to
+    `(0.0, 1.0]` at construction, because an unvalidated ratio would silently defeat the
+    collapse check it exists to protect). `min_valid_domains` stays a bare `usize` and
+    `AdlistDefinition`'s `enabled` and `shrink_override_armed` stay bare `bool`s, by the
+    same test. Phase 1's `Ttl`, `RecordType`, `RecordClass` and `ResponseCode` remain the
+    ecosystem precedent; this phase reuses `Ttl` for `block_ttl` rather than re-wrapping it.
+16. **Shape limits are gated, per Phase 0 Norm 17** — a block nests at most 4 deep
+    (`excessive_nesting`), a function has at most 60 code lines (`too_many_lines`), a
+    `.rs` file has at most 400 counted lines (`xtask module-size`), and a struct's fields
+    are all `pub` or all private (`partial_pub_fields`). The trie walk, the ordered adlist
+    sanity checks and the blocked-reply invariant stage are written as guard-clause chains
+    for exactly this reason; `domain::blocked` and `domain::adlist` are split by concept
+    (Structure) so neither crosses the module cap. A limit is met with an extracted
+    function or a further module split, never an `#[allow]` or a raised threshold.
 
 ---
 
@@ -1913,6 +2053,26 @@ cover. They are additional obligations, not reinterpretations.
 - `GroupMask` is `u64` behind a narrow API so the width decision is cheap to revisit; no
   public raw-bit construction.
 - The wire-format test oracle is a dev-dependency only, asserted by a CI check.
+- **Domain values that carry rules are newtypes with a validating constructor and no
+  setter that reopens the invariant**, per `CLAUDE.md`'s Object Calisthenics section —
+  `GroupMask` and `CollapseRatio` are this phase's examples. Wrapping a primitive for this
+  reason stays a review discipline — no lint checks "wrap this primitive" — and so does
+  the half of the setter rule `partial_pub_fields` cannot see (an all-private struct with
+  an unvalidated `&mut` accessor). Nesting depth, function length, module length and
+  mixed field visibility, by contrast, are gated (Norm 16, citing Phase 0 Norm 17).
+- **This phase's code must pass the extended gate**, on the rules its own shape actually
+  risks tripping: `excessive_nesting` (threshold 4) against the trie walk, the ordered
+  adlist sanity checks and the blocked-reply invariant stage, all specified as
+  guard-clause chains for that reason; `too_many_lines` (threshold 60) against
+  `MatcherBuilder::build`, `SanityChecks::evaluate` and `ReloadService::reload`, the
+  phase's largest orchestration functions; `xtask module-size` (400 lines) against
+  `domain::blocked` and `domain::adlist`, split by concept in Structure for exactly this
+  reason; `partial_pub_fields` against every struct in Entities, all of which are
+  uniformly `pub` or uniformly private with no mix; and the `no-sync-io-filtering-*` /
+  `no-anyhow-filtering` `[[restrict-use]]` rules (Norms 3 and 5) against the hot path and
+  this crate's error handling respectively. `print_stdout`/`print_stderr`/`dbg_macro` are
+  denied workspace-wide but carry no phase-specific risk here: this crate has no CLI and
+  Norm 11 already commits it to `tracing` throughout.
 
 ### 7. Boundary constraints — what this phase must not do
 

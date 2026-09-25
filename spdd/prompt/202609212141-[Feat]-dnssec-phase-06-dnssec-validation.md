@@ -58,17 +58,17 @@ direction TB
 
 class ChainSource {
     <<trait>>
-    +material_for(zone: Name, ctx: ChainRequest) Result~ChainMaterial, ChainSourceError~
+    +material_for(zone: Name, context: ChainRequest) Result~ChainMaterial, ChainSourceError~
 }
 
 class PushedChainSource {
-    +observed: HashMap~Name, ZoneCutMaterial~
-    +record_referral(zone: Name, ds: DsRrset, sig: RrsigRrset)
-    +material_for(zone: Name, ctx: ChainRequest) Result~ChainMaterial, ChainSourceError~
+    -observed: HashMap~Name, ZoneCutMaterial~
+    +record_referral(zone: Name, ds: DsRrset, signature: RrsigRrset)
+    +material_for(zone: Name, context: ChainRequest) Result~ChainMaterial, ChainSourceError~
 }
 
 class PullChainSource {
-    +material_for(zone: Name, ctx: ChainRequest) Result~ChainMaterial, ChainSourceError~
+    +material_for(zone: Name, context: ChainRequest) Result~ChainMaterial, ChainSourceError~
 }
 
 class TrustAnchorSource {
@@ -103,7 +103,7 @@ class ZoneCutMaterial {
     +ds: Option~DsRrset~
     +ds_denial: Option~DenialProof~
     +dnskey: Option~DnskeyRrset~
-    +dnskey_sigs: Vec~Rrsig~
+    +dnskey_signatures: Vec~Rrsig~
     +origin: MaterialOrigin
 }
 
@@ -157,13 +157,19 @@ class FailureMode {
 class ValidationPolicy {
     +failure_mode: FailureMode
     +algorithms: AlgorithmSet
-    +nsec3_max_iterations: u16
+    +nsec3_max_iterations: Nsec3IterationsCap
     +max_zone_cuts: u8
 }
 
+class Nsec3IterationsCap {
+    +DEFAULT Nsec3IterationsCap
+    +new(cap: u16) Nsec3IterationsCap
+    +value() u16
+}
+
 class AlgorithmSet {
-    +supported_sig: BTreeSet~SigAlgorithm~
-    +supported_digest: BTreeSet~DigestAlgorithm~
+    -supported_sig: BTreeSet~SigAlgorithm~
+    -supported_digest: BTreeSet~DigestAlgorithm~
     +classify_sig(a: SigAlgorithm) AlgorithmSupport
     +classify_digest(d: DigestAlgorithm) AlgorithmSupport
 }
@@ -192,17 +198,22 @@ class Nsec3Proof {
     +params: Nsec3Params
     +records: Vec~Nsec3Record~
     +closest_encloser(qname: Name) Result~Name, DenialError~
-    +prove_next_closer_covered(qname: Name, ce: Name) Result~(), DenialError~
-    +prove_no_wildcard(ce: Name) Result~(), DenialError~
+    +prove_next_closer_covered(qname: Name, closest_encloser: Name) Result~(), DenialError~
+    +prove_no_wildcard(closest_encloser: Name) Result~(), DenialError~
     +opt_out_applies() bool
 }
 
 class Nsec3Params {
     +hash_algorithm: Nsec3HashAlgorithm
-    +flags: u8
+    +flags: Nsec3Flags
     +iterations: u16
     +salt: Vec~u8~
-    +check_iterations(cap: u16) Result~(), DenialError~
+    +check_iterations(cap: Nsec3IterationsCap) Result~(), DenialError~
+}
+
+class Nsec3Flags {
+    +new(raw: u8) Nsec3Flags
+    +is_opt_out() bool
 }
 
 class ValidationError {
@@ -230,12 +241,15 @@ ZoneCutMaterial --> DenialProof : may carry DS denial
 DenialProof <|-- NsecProof : variant
 DenialProof <|-- Nsec3Proof : variant
 Nsec3Proof "1" *-- "1" Nsec3Params : governed by
+Nsec3Params "1" *-- "1" Nsec3Flags : holds
+Nsec3Params ..> Nsec3IterationsCap : checked against
 Validator --> ChainSource : consumes
 Validator --> TrustAnchorSource : consumes
 Validator --> Clock : reads time from
 Validator "1" *-- "1" ValidationPolicy : configured by
 ValidationPolicy --> AlgorithmSet : holds
 ValidationPolicy --> FailureMode : holds
+ValidationPolicy "1" *-- "1" Nsec3IterationsCap : holds
 AlgorithmSet --> AlgorithmSupport : classifies into
 Validator --> ValidationOutcome : produces
 ValidationOutcome --> ValidationVerdict : carries
@@ -248,7 +262,9 @@ Validator --> ValidationError : fails with
 the `styx` binary. `Validator` is pure: its only inputs are a decoded message, the two
 ports, and an injected `Clock`. `DenialProof` is the single type through which both
 NSEC and NSEC3 denial reach the chain logic, so a proven-unsigned delegation and a
-proven NXDOMAIN travel the same path.
+proven NXDOMAIN travel the same path. `Nsec3IterationsCap` and `Nsec3Flags` are the
+newtypes `CLAUDE.md`'s primitive-obsession rule calls for on this phase's two
+attacker-facing NSEC3 primitives — see Norm 14.
 
 ---
 
@@ -336,6 +352,11 @@ proven NXDOMAIN travel the same path.
   circuit thresholds, rollup granularity, the blocked-reply TTL and the adlist sanity
   thresholds. The *existence* of the cap is not open; only the number is. Pick it,
   name it as a constant or config field, and write it down.
+- **Expressed as the `Nsec3IterationsCap` newtype, not a bare `u16`**, per
+  `CLAUDE.md`'s primitive-obsession rule: the value chosen above lives as a named
+  associated constant on the type, and the type exists precisely so the cap can never
+  be expressed as an `Option` or paired with a sentinel meaning "unlimited" — the
+  domain rule this rule wraps for, not the primitive-ness of `u16` on its own.
 
 ### 6. Time is injected, always
 
@@ -447,17 +468,37 @@ proven NXDOMAIN travel the same path.
 ### Module layering inside `styx-dnssec`
 
 1. **`domain`** — pure types and rules, no I/O, no async, no external crates beyond
-   `styx-proto` and error/logging plumbing: `ValidationVerdict`, `VerdictReason`,
-   `ValidationOutcome`, `ValidationPolicy`, `FailureMode`, `AlgorithmSet`,
-   `AlgorithmSupport`, `TrustAnchor`, `ChainMaterial`, `ZoneCutMaterial`,
-   `MaterialOrigin`, `DenialProof`, `NsecProof`, `Nsec3Proof`, `Nsec3Params`, and the
-   `ChainSource` / `TrustAnchorSource` trait definitions.
+   `styx-proto` and error/logging plumbing, split by concept into its own file per
+   `CLAUDE.md`'s small-single-purpose-modules rule, the same way `styx-proto` splits
+   `domain/rdata/basic.rs` from `domain/rdata/dnssec.rs` rather than collecting every
+   `rdata` type into one file:
+   - `domain/verdict.rs` — `ValidationVerdict`, `VerdictReason`, `ValidationOutcome`,
+     `ValidationPolicy`, `FailureMode`, `AlgorithmSet`, `AlgorithmSupport`, and the
+     `Nsec3IterationsCap` newtype `ValidationPolicy` holds.
+   - `domain/trust_anchor.rs` — `TrustAnchor`.
+   - `domain/chain.rs` — `ChainMaterial`, `ZoneCutMaterial`, `MaterialOrigin`.
+   - `domain/denial.rs` — `DenialProof`, `NsecProof`, `Nsec3Proof`, `Nsec3Params`, and
+     the `Nsec3Flags` newtype `Nsec3Params` holds.
+   - `domain/ports.rs` — the `ChainSource` / `TrustAnchorSource` trait definitions.
 2. **`application`** — the `Validator` orchestration: walk the chain from anchor to
    answer, sequence positive-chain and denial checks, apply `FailureMode`, emit
    `tracing` spans and the verdict.
-3. **`infrastructure`** — signature verification primitives, canonical RRset ordering
-   and canonical wire-form construction, NSEC3 hashing, the compiled-in anchor blob and
-   the file anchor parser.
+3. **`infrastructure`** — split by concept for the same reason `domain` is, and because
+   the four concepts below carry real algorithmic weight (crypto verification, a
+   from-scratch canonical encoder, iterated salted hashing) that a single undifferentiated
+   file would plausibly push past the workspace's 400-counted-line module cap:
+   - `infrastructure/canonical.rs` — canonical name form, canonical RRset ordering and
+     canonical wire-form construction (6a.7), built on `styx-proto`'s encoder.
+   - `infrastructure/signature.rs` — RRSIG verification (6a.8) and the DS-digest
+     computation half of DS → DNSKEY linkage (6a.9).
+   - `infrastructure/nsec3.rs` — NSEC3 iterated salted hashing (6c.2) and the
+     closest-encloser derivation (6c.3) — kept in its own file precisely because it is,
+     per Approach §9, the single fiddliest routine in the project.
+   - `infrastructure/trust_anchor.rs` — `PinnedRootAnchor` (6a.5) and `FileTrustAnchor`
+     (6a.6). This is the only file under `infrastructure`, and the only file in this
+     crate at all, that performs I/O: `FileTrustAnchor::anchors()`'s file read. It stays
+     out of `domain` and `application`, both of which deny `std::fs` by
+     `[[restrict-use]]` (Operations 6a.1).
 4. **Binary (`styx`)** — wires `PushedChainSource` / `PullChainSource` and the chosen
    `TrustAnchorSource` into the resolution path, and maps `ValidationOutcome` onto the
    AD bit and (in `HardFail`) onto SERVFAIL.
@@ -500,6 +541,15 @@ proven NXDOMAIN travel the same path.
      module) and `[[deny-scope-dep]]` layering rules.
    - Add a `[[restrict-use]]` rule forbidding `styx_dnssec` from naming any other
      feature crate; `styx_proto` is explicitly permitted.
+   - Add the crate's two synchronous-I/O `[[restrict-use]]` rules,
+     `no-sync-io-dnssec-domain` and `no-sync-io-dnssec-application`, denying
+     `std::fs` and everything under it, the blocking socket types, the blocking
+     `std::io` traits and preludes, and `std::io::{stdin, stdout, stderr}`, per Phase
+     0 Norm 12 and Approach §10 of the Phase 0 canvas. `infrastructure` gets no such
+     rule — that is where `FileTrustAnchor` reads its file (Approach §3, Operations
+     6a.6).
+   - Add the crate's `no-anyhow-dnssec` `[[restrict-use]]` rule, scoped to the whole
+     crate, denying `anyhow` and everything under it, per the same Phase 0 amendment.
    - No `hickory-*` in `[dependencies]` or `[build-dependencies]`.
 
 #### 6a.2 — Define the domain verdict types
@@ -553,7 +603,9 @@ proven NXDOMAIN travel the same path.
 1. Responsibility: the compiled-in IANA root anchor, the default and the fallback.
 2. Logic: return the pinned anchor(s) from a compiled-in constant. Log the key tag(s)
    once at startup at `info` so a missed KSK roll is diagnosable from the log.
-3. Constraint: no network fetch, ever. No file read.
+3. Constraint: no network fetch, ever. No file read. Lives in
+   `infrastructure/trust_anchor.rs` alongside `FileTrustAnchor` (Structure, module
+   layering).
 
 #### 6a.6 — Implement `FileTrustAnchor`
 
@@ -564,7 +616,13 @@ proven NXDOMAIN travel the same path.
      `TrustAnchorError`; **do not silently fall back to the pinned anchor** — a
      misconfigured override that quietly reverts is worse than a refusal to start.
    - Log at `warn` when an override is in effect, naming the path and key tags.
-4. Constraint: the config file owns this setting; there is no DB-backed equivalent and
+4. Constraint: implemented in `infrastructure/trust_anchor.rs`, **never** in `domain`
+   or `application` — the crate's `no-sync-io-dnssec-domain` and
+   `no-sync-io-dnssec-application` `[[restrict-use]]` rules (Operations 6a.1) deny
+   `std::fs` in both of those layers, and `anchors()`'s file read is the one place in
+   this crate that performs synchronous I/O. `TrustAnchorSource` itself stays a trait
+   in `domain::ports`; only its file-backed implementation moves to `infrastructure`.
+5. Constraint: the config file owns this setting; there is no DB-backed equivalent and
    no UI path to it. Changing it requires a restart. This is the hard file/DB config
    boundary and it must not be softened here.
 
@@ -601,6 +659,10 @@ proven NXDOMAIN travel the same path.
      across the whole set, `Bogus` with `DsDnskeyMismatch`.
    - The DNSKEY RRset must itself be self-signed by a key the DS vouches for.
    - Classify the DS digest algorithm through `AlgorithmSet` first.
+3. Shape: the DS-over-DNSKEY search is two nested iterations (each DS against each
+   candidate DNSKEY). Extract the per-DS digest comparison into its own named helper
+   returning early on a match, rather than nesting the comparison inside the outer loop,
+   to stay within the workspace's `excessive_nesting` threshold of 4 (Phase 0 Norm 17).
 
 #### 6a.10 — Implement the `Validator` positive-chain walk (`application`)
 
@@ -617,7 +679,13 @@ proven NXDOMAIN travel the same path.
      downgrade hole this phase exists to close.
    - Emit a `tracing` span per validation carrying qname, qtype, verdict, reason and
      `enforced`.
-4. Constraint: `ValidationPolicy::failure_mode` is **`WarnOnly`** for all of 6a. The
+4. Shape: extract the per-cut work — root-vs-non-root linkage, then RRSIG verification —
+   into a named helper (for example `verify_zone_cut`) called once per iteration of the
+   descent, each branch returning early on the first failing check, rather than nesting
+   the anchor/DS branch inside the loop that also carries the RRSIG check. This keeps the
+   walk within the workspace's `excessive_nesting` threshold of 4 and `too_many_lines`
+   threshold of 60 (Phase 0 Norm 17).
+5. Constraint: `ValidationPolicy::failure_mode` is **`WarnOnly`** for all of 6a. The
    verdict must not alter the AD bit or the RCODE.
 
 #### 6a.11 — 6a tests
@@ -699,23 +767,36 @@ proven NXDOMAIN travel the same path.
 
 **Do not merge with 6a, 6b or 6d.**
 
-#### 6c.1 — Define `Nsec3Params` and the cap check
+#### 6c.1 — Define `Nsec3Params`, `Nsec3Flags`, `Nsec3IterationsCap` and the cap check
 
 1. Responsibility: hold the NSEC3 parameters and refuse excessive work **before** doing
    any of it.
-2. Attributes: `hash_algorithm`, `flags`, `iterations: u16`, `salt: Vec<u8>`.
-3. Method: `check_iterations(cap: u16) -> Result<(), DenialError>` returning
-   `Nsec3IterationsExceeded` when `iterations > cap`.
-4. Constraints:
-   - The cap lives on `ValidationPolicy::nsec3_max_iterations` and is **not optional**
-     — no `Option`, no sentinel meaning "unlimited". **Uncapped NSEC3 is a CPU denial
-     of service**: the iteration count is attacker-supplied and every iteration is a
-     hash, on the box that resolves for the whole house.
+2. Attributes: `hash_algorithm`, `flags: Nsec3Flags`, `iterations: u16`,
+   `salt: Vec<u8>`.
+3. `Nsec3Flags` wraps the wire's flags octet, per `CLAUDE.md`'s primitive-obsession
+   rule: it carries the named opt-out bit rather than leaving every caller to mask a
+   bare `u8` by hand. Constructor `Nsec3Flags::new(raw: u8) -> Self` (every octet value
+   is wire-valid, so construction cannot fail); read accessor `is_opt_out() -> bool`;
+   no setter — a flags value is reconstructed via `new`, never mutated in place.
+4. `Nsec3IterationsCap` wraps the cap value in `u16`, for the same reason: the value is
+   mandatory and load-bearing (Approach §5) and carries a named default constant rather
+   than being an unvalidated bare number indistinguishable at a call site from the
+   record's own `iterations` field. Constructor `Nsec3IterationsCap::new(cap: u16) ->
+   Self`; a named associated constant `Nsec3IterationsCap::DEFAULT` holding the value
+   chosen and documented in this task; read accessor `value() -> u16`; no setter.
+5. Method: `check_iterations(cap: Nsec3IterationsCap) -> Result<(), DenialError>`
+   returning `Nsec3IterationsExceeded` when `iterations > cap.value()`.
+6. Constraints:
+   - The cap lives on `ValidationPolicy::nsec3_max_iterations: Nsec3IterationsCap` and
+     is **not optional** — no `Option`, no sentinel meaning "unlimited". **Uncapped
+     NSEC3 is a CPU denial of service**: the iteration count is attacker-supplied and
+     every iteration is a hash, on the box that resolves for the whole house.
    - `check_iterations` is called **before** the first hash computation, not inside the
      loop.
    - **The cap value is an open implementation-level choice, decided at the keyboard in
-     this task.** Choose it, define it as a named constant (overridable from the TOML
-     if that is judged useful), and document the number and the reasoning next to it.
+     this task.** Choose it, define it as `Nsec3IterationsCap::DEFAULT` (overridable
+     from the TOML if that is judged useful), and document the number and the
+     reasoning next to it.
 
 #### 6c.2 — Implement NSEC3 hashing
 
@@ -733,6 +814,12 @@ proven NXDOMAIN travel the same path.
    closest-encloser proofs are where validators get subtly wrong. It gets its own unit
    tests with hand-built hashes and it is the first thing to suspect when the
    differential gate disagrees.
+4. Shape: extract the per-ancestor hash-and-match step into its own named helper called
+   from the walk, with a guard clause that returns as soon as an ancestor is found,
+   rather than nesting the match inside the walk. Being the fiddliest routine in the
+   project is a reason for it to read as a short, named sequence of checks, not a reason
+   to exempt it from the workspace's `excessive_nesting` (4) and `too_many_lines` (60)
+   thresholds (Phase 0 Norm 17).
 
 #### 6c.4 — Implement the three-part NSEC3 proof
 
@@ -745,8 +832,9 @@ proven NXDOMAIN travel the same path.
 
 #### 6c.5 — Implement opt-out
 
-1. Logic: when the opt-out flag is set on the covering NSEC3, an **unsigned delegation**
-   within that span is permitted to go unproven, yielding `Insecure`.
+1. Logic: when `Nsec3Flags::is_opt_out()` is true on the covering NSEC3's flags, an
+   **unsigned delegation** within that span is permitted to go unproven, yielding
+   `Insecure`.
 2. Constraints:
    - Opt-out applies **only** to unsigned delegations, never to an NXDOMAIN for a name
      that is not a delegation and never to a signed delegation.
@@ -781,10 +869,10 @@ proven NXDOMAIN travel the same path.
 1. Responsibility: the port through which the validator obtains chain material, and the
    types it carries.
 2. Trait:
-   `ChainSource::material_for(zone: Name, ctx: ChainRequest) -> Result<ChainMaterial, ChainSourceError>`.
+   `ChainSource::material_for(zone: Name, context: ChainRequest) -> Result<ChainMaterial, ChainSourceError>`.
 3. Types:
    - `ChainMaterial { cuts: Vec<ZoneCutMaterial> }` with `cut_for(zone)`.
-   - `ZoneCutMaterial { zone, ds, ds_denial, dnskey, dnskey_sigs, origin }`.
+   - `ZoneCutMaterial { zone, ds, ds_denial, dnskey, dnskey_signatures, origin }`.
    - `MaterialOrigin { PushedFromDescent, PulledOnDemand }`.
 4. Constraints:
    - The trait lives in `styx_dnssec::domain::ports`. The validator is agnostic to
@@ -795,8 +883,8 @@ proven NXDOMAIN travel the same path.
 #### 6d.2 — Implement `PushedChainSource` (recursion feeds the validator)
 
 1. Responsibility: serve chain material that `styx-recursion` already collected.
-2. Methods: `record_referral(zone, ds, sig)` during descent; `material_for` reads back
-   what was recorded.
+2. Methods: `record_referral(zone, ds, signature)` during descent; `material_for` reads
+   back what was recorded.
 3. Logic:
    - **DS RRsets arrive unasked in DO=1 referrals, per RFC 4035 §3.1.4** — the referral
      carries the DS RRset alongside the NS set. The descent already holds this material
@@ -940,12 +1028,27 @@ proven NXDOMAIN travel the same path.
     for the pure proof routines (closest-encloser, canonical ordering, hashing).
 11. **Fuzzing is continuous**, extending from the codec onto the validator from 6c
     onward.
-12. **The per-push gate is `just gate`**: formatting, the 15 denied clippy lints,
-    `arch-lint check`, the `cargo tree --edges normal` layering gate, the
-    `hickory-dev-only` check, socket-level tests, and the `--no-default-features`
-    headless build. The differential run is *not* in it.
+12. **The per-push gate is `just gate`**: formatting, the 21 denied clippy lints (Phase 0
+    Norm 17), `arch-lint check`, the `cargo tree --edges normal` layering gate, the
+    `hickory-dev-only` check, the `xtask module-size` check, socket-level tests, and the
+    `--no-default-features` headless build. The differential run is *not* in it.
 13. **Document the open numbers next to the code that uses them** — specifically the
     NSEC3 iterations cap value chosen in 6c.1.
+14. **Primitive obsession is avoided; a newtype wraps a primitive that carries domain
+    rules**, per `CLAUDE.md`. A value gets its own type when it has a validated range,
+    a checked arithmetic or comparison operation, a non-trivial wire encoding, or named
+    constants attached to it — not merely because it is a `u16`, a `u8` or a `bool`;
+    the test is domain rules attached to the value, not the primitive-ness of its type.
+    This phase's own newtypes are `Nsec3IterationsCap`
+    (`ValidationPolicy::nsec3_max_iterations`, carrying the named `DEFAULT` constant
+    chosen and documented in 6c.1, and excluding the cap from ever being expressed as
+    an `Option` or a sentinel meaning "unlimited") and `Nsec3Flags`
+    (`Nsec3Params::flags`, carrying the named opt-out bit read through
+    `is_opt_out()` rather than a bare octet every caller masks by hand). By contrast,
+    `ValidationOutcome::enforced` stays a plain `bool` field: it has no independent
+    validation and no risk of being confused with an unrelated value at a call site, so
+    wrapping it would be ceremony with no behaviour behind it — the failure mode this
+    rule exists to avoid, not the one it exists to punish.
 
 ---
 
@@ -993,7 +1096,9 @@ Approach sections; nothing outside this document is needed to read them.)*
 
 - **The NSEC3 iterations cap is mandatory and is checked before any hashing begins.**
   No configuration value may disable it. Uncapped NSEC3 is a remote CPU denial of
-  service on the box that resolves for the entire household.
+  service on the box that resolves for the entire household. It is expressed as the
+  non-optional `Nsec3IterationsCap` newtype, never a bare `u16` or an `Option` (Norm
+  14).
 - The descent and proof routines are bounded: `max_zone_cuts`, bounded record counts per
   proof, bounded salt handling. No unbounded loop or allocation may be driven by
   attacker-supplied fields.
@@ -1050,16 +1155,29 @@ Approach sections; nothing outside this document is needed to read them.)*
   `[build-dependencies]` — the whole stack is from scratch. `hickory-proto` in
   `[dev-dependencies]` only, asserted by CI.
 - `no-unwrap-expect`, `require-tracing`, `tracing-env-init`, `no-sync-io` and
-  `require-thiserror` are enforced by arch-lint on this crate.
+  `require-thiserror` are enforced by arch-lint on this crate, alongside the
+  `no-sync-io-dnssec-domain` / `no-sync-io-dnssec-application` and `no-anyhow-dnssec`
+  `[[restrict-use]]` rules from Operations 6a.1: `no-sync-io` only catches blocking calls
+  inside async contexts, so the two `[[restrict-use]]` rules are what actually keeps
+  `FileTrustAnchor`'s file read (Operations 6a.6) confined to `infrastructure`.
+- This phase's code must pass the gate's extended rule set (Phase 0 Norm 17): the two
+  synchronous-I/O `[[restrict-use]]` rules and `no-anyhow-dnssec` above; clippy's
+  `excessive_nesting` (4) and `too_many_lines` (60) against the DS/DNSKEY linkage
+  (6a.9), the positive-chain walk (6a.10) and the closest-encloser derivation (6c.3) —
+  this phase's most loop- and branch-heavy code; the `xtask module-size` cap (400
+  counted lines) against `infrastructure`'s canonical-form, signature, NSEC3 and
+  trust-anchor modules; and `partial_pub_fields` against `Nsec3Flags` and
+  `Nsec3IterationsCap`, whose fields stay entirely private behind their constructors
+  (Norm 14).
 - The crate must build under `--no-default-features` (the headless resolver build), which
   CI exercises on every commit.
 - Release targets are `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
 
 ### 9. Verification constraints
 
-- **Per push**: `just gate` green — formatting, the 15 denied clippy lints, `arch-lint
-  check`, the `cargo tree` layering gate, the `hickory-dev-only` check, socket-level
-  tests, the headless build.
+- **Per push**: `just gate` green — formatting, the 21 denied clippy lints, `arch-lint
+  check`, the `cargo tree` layering gate, the `hickory-dev-only` check, the
+  `xtask module-size` check, socket-level tests, the headless build.
 - **Per phase**: the differential run above. It needs the live internet and is flaky by
   nature, so **it gates a phase and never a push** — and a failure is read rather than
   re-run, because a genuine regression can hide behind "DNS changed underneath us".
@@ -1074,8 +1192,8 @@ Approach sections; nothing outside this document is needed to read them.)*
   project's other open numbers (SRTT decay constants and circuit thresholds, the canary
   question per upstream kind, rollup bucket granularity and top-N width, the
   blocked-reply TTL, the adlist sanity thresholds). The *existence* of the cap is
-  settled and mandatory; only the number is open. Decide it in 6c.1, name it, and
-  document the reasoning beside it.
+  settled and mandatory; only the number is open. Decide it in 6c.1, name it as
+  `Nsec3IterationsCap::DEFAULT`, and document the reasoning beside it.
 
 ### 11. Known risks carried by this phase
 
@@ -1094,3 +1212,15 @@ Approach sections; nothing outside this document is needed to read them.)*
 - A local name under a signed public zone is unprovable and validating clients may
   SERVFAIL it (pi-hole#2686). The mitigation is documentation — keep local names under
   an unsigned or internal suffix — which is a mitigation only for those who read it.
+
+### 12. Object Calisthenics compliance
+
+- This phase's newly introduced domain values that carry rules — `Nsec3IterationsCap`
+  and `Nsec3Flags` — are newtypes, not bare `u16`/`u8` fields, per `CLAUDE.md`'s
+  primitive-obsession rule and Norm 14.
+- **Wrapping these two primitives stays a review discipline; the shape rules around them
+  are gated.** Per `CLAUDE.md`'s Enforcement section and Phase 0 Norm 17, nesting depth,
+  function length, module length and mixed field visibility are mechanically checked by
+  `just gate` — see the Technical constraints bullet above for which parts of this crate
+  that reaches. Whether `Nsec3IterationsCap` and `Nsec3Flags` *should* be newtypes at all
+  is not something any lint decides, and stays review's job.

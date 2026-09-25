@@ -101,7 +101,12 @@ defined in the prompt.
    b. **Apply Norms**:
       - Naming: `snake_case` items, `UpperCamelCase` types, no stutter
       - Visibility: the narrowest that satisfies the stated callers — `pub(crate)` unless
-        the API surface calls for `pub`
+        the API surface calls for `pub`. **A Mermaid `+`/`-` marker in Entities is
+        binding**: a `-` field or method is private, and a `+` one is visible to its
+        stated callers. Never widen a `-` item to make the code compile. If the prompt
+        says private and the code needs access, the prompt is wrong: stop and update it
+        first. A diagram that mixes `+` and `-` fields on one type contradicts the
+        `partial_pub_fields` gate and is a prompt defect, not something to work around.
       - Error handling: `thiserror` enums in library code, `anyhow` with `.context(...)`
         at binary boundaries, propagation via `?`
       - Construction: explicit constructor injection — a type takes its collaborators as

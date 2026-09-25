@@ -73,6 +73,13 @@ Concretely, this phase must:
   Rust-adapted Object Calisthenics ruleset, so that "wrap a primitive when it carries
   domain rules" is written down once, in phase 0, rather than re-derived by every later
   phase's generation prompt.
+- **Mechanise every `CLAUDE.md` rule a tool can check** *(amendment, 2026-09-24)* — no
+  synchronous I/O in `domain`/`application`, `anyhow` only in the `styx` binary and
+  `xtask`, `tracing` rather than print macros, and the measurable proxies of three Object
+  Calisthenics rules: nesting depth, function length and module length, plus mixed field
+  visibility. A convention that is written down but never checked is one that generated
+  code can drift from without anyone noticing. The rules that need judgement stay a review
+  discipline, and `CLAUDE.md` says which are which.
 
 **Value**: the gate is the only continuous feedback signal this project has for most of
 its life. The cutover is last — styx runs on a dev box until v1 is complete, so phases 1
@@ -208,8 +215,10 @@ class RuleSet {
 
 class ClippyPolicy {
   <<clippy.toml + workspace lints>>
-  +15 denied lints
-  +4 allow_star_in_tests entries
+  +21 denied lints
+  +5 allow_star_in_tests entries
+  +excessive_nesting_threshold 4
+  +too_many_lines_threshold 60
   +verified_against rustc 1.96.0
 }
 
@@ -221,9 +230,18 @@ class Gate {
   +arch_lint_check()
   +cargo_tree_layering()
   +hickory_dev_only()
+  +module_size()
   +socket_tests()
   +headless_build()
   +hermetic true
+}
+
+class ModuleSizeCheck {
+  <<xtask module-size>>
+  +MAX_MODULE_LINES 400
+  +counts non-blank non-comment lines
+  +scans crates src and xtask src
+  +no per-file exemption
 }
 
 class LinkGraphGate {
@@ -277,6 +295,10 @@ class GateSelfTest {
   +cross_feature_use
   +hickory_on_normal_path
   +malformed_markdown
+  +sync_io_in_application
+  +anyhow_in_feature_crate
+  +clippy_conventions
+  +oversized_module
   +must_turn_gate_red true
 }
 
@@ -294,7 +316,8 @@ class EngineeringGuidelines {
   +Vec~String~ repo_conventions
   +Vec~String~ calisthenics_rules
   +String primitive_obsession_test
-  +not_mechanically_enforced true
+  +Vec~String~ mechanically_enforced_subset
+  +Vec~String~ review_only_rules
 }
 
 CargoWorkspace "1" *-- "1" SharedFoundationCrate : member
@@ -325,6 +348,7 @@ Gate --> ArchLintConfig : runs
 Gate --> ClippyPolicy : runs
 Gate --> LinkGraphGate : runs
 Gate --> HickoryDevOnlyCheck : runs
+Gate --> ModuleSizeCheck : runs
 Gate --> MarkdownLintConfig : runs
 MarkdownLintConfig "1" *-- "n" DocumentationTier : distinguishes
 HookConfig --> Gate : invokes
@@ -333,6 +357,7 @@ GateSelfTest --> Gate : must be rejected by
 ArchitectureDecisionRecord --> ArchLintConfig : explains
 EngineeringGuidelines ..> FeatureCrate : governs code shape in
 EngineeringGuidelines --> ArchitectureDecisionRecord : references, does not restate
+EngineeringGuidelines ..> Gate : names the subset it enforces
 ```
 
 **Conservative note**: nothing here wraps a simpler thing in a more complex one. The
@@ -482,8 +507,10 @@ Therefore:
 
 ### 4. Lint policy
 
-- **15 denied clippy lints workspace-wide, 4 `allow-*-in-tests` entries in `clippy.toml`,
-  all names verified against rustc 1.96.0.**
+- **21 denied clippy lints workspace-wide, 5 `allow-*-in-tests` entries and 2 thresholds
+  in `clippy.toml`, all names verified against rustc 1.96.0.** The original 15 guard
+  checked arithmetic, panicking and truncation; the 6 added by the 2026-09-24 amendment
+  mechanise `CLAUDE.md` conventions and are argued in §10.
 - Three are fixed by the record and are load-bearing for later phases:
   - `indexing_slicing = deny` and `arithmetic_side_effects = deny` — every label offset
     and TTL decrement in the phase 1 wire codec becomes a checked operation.
@@ -650,15 +677,103 @@ trust anchor rollover. Write them where the reasoning is freshest.
 - **`CLAUDE.md` does not restate ADR content.** Where a rule's rationale is already an ADR
   (the layering model, the `hickory-proto` exception, the trust anchor), it is referenced
   by path rather than duplicated, so the two documents cannot drift apart silently.
-- **Not mechanically enforced.** No lint in this repository checks "wrap this primitive";
-  unlike the clippy and arch-lint rules above, compliance with the Object Calisthenics
-  section is a review discipline, and `CLAUDE.md` says so in as many words rather than
-  implying a rigour the gate does not provide.
+- **Enforced where a tool can measure it, reviewed where it cannot.** *(Updated
+  2026-09-24: this bullet originally said the whole Object Calisthenics section was
+  unenforced. §10 mechanises the measurable part.)* Nesting depth, function length,
+  module length and mixed field visibility are gated. "Wrap a primitive that carries
+  domain rules", first-class collections and full words are not, because each needs a
+  judgement no lint can make. `CLAUDE.md` names both lists in as many words, rather than
+  implying a rigour the gate does not provide or hiding one it does.
 - **Binds retroactively as precedent, not as a mandate to revise.** Phase 1's `styx-proto`
   is already implemented and is cited as the worked example the newtype rule generalises
   from; this phase does not modify it. A later phase that finds Phase 1 in violation of a
   rule stated here has found a defect in the rule's wording, not licence to silently
   rewrite shipped code — the SPDD "fix the prompt first" principle applies.
+
+### 10. Mechanising the `CLAUDE.md` conventions (amendment, 2026-09-24)
+
+**What prompted this**: Norms 3, 6 and 7 each claimed an arch-lint rule enforced them.
+Read against the arch-lint 0.6.0 source, none of the three claims holds in full:
+
+- `no-sync-io` (AL002) flags blocking calls **only inside async contexts**
+  (`arch-lint-rules-0.6.0/src/no_sync_io.rs`). A synchronous `std::fs::read_to_string`
+  in a plain `fn` in `domain` passes it. The invariant is about the *layer*, not about
+  whether the enclosing function is async, so AL002 does not express it.
+- `require-tracing` (AL006) flags the `log` crate's macros and nothing else.
+  `println!` passes it.
+- `require-thiserror` (AL005) checks that a type named `*Error` derives
+  `thiserror::Error`. It says nothing about `anyhow`, which passes it in any crate.
+
+These are silent gaps rather than inert configuration. They are still the phase's
+founding failure: a check that is believed to exist, but does not.
+
+**The decisions**:
+
+- **Synchronous I/O: one `[[restrict-use]]` per feature crate × `domain`/`application`
+  scope.** Each denies `std::fs` and everything under it; the blocking socket types
+  `std::net::TcpStream`, `std::net::TcpListener`, `std::net::UdpSocket` and
+  `std::net::ToSocketAddrs`; the traits `std::io::Read`, `std::io::Write`,
+  `std::io::BufRead` and `std::io::Seek`; `std::io::prelude` and everything under it;
+  and `std::io::stdin`, `std::io::stdout` and `std::io::stderr`. `restrict-use` expands
+  grouped imports and also checks inline qualified paths
+  (`arch-lint-core-0.6.0/src/declarative/rules/restrict_use.rs`), so both `use` and a
+  fully qualified call are caught. *Rationale for not denying `std::net` or `std::io`
+  outright*: `std::net::IpAddr` is a value type that Phase 2's `ClientId` wraps in
+  `domain`, and a port's error enum may legitimately name `std::io::ErrorKind`. Denying
+  the parent module forbids those as well. AL002 stays enabled: it still covers async
+  code in `infrastructure`, which these rules deliberately do not reach. **`styx-proto`
+  gets the same deny list scoped to the whole crate** (`no-sync-io-proto`). It is a
+  pure codec with no `infrastructure` layer, and a guarantee of "no I/O in this crate"
+  with nothing behind it is the kind of rule this amendment exists to close.
+- **`anyhow`: one `[[restrict-use]]` per library crate** — `styx-proto` and every
+  feature crate — denying `anyhow` and everything under it. The `styx` binary and
+  `xtask` are exempt **by construction**, the same way `styx-web` is exempt from feature
+  isolation: no rule is scoped to them. `styx-web` (Phase 11) is a library crate and
+  gets its own rule when it arrives, per Norm 12.
+- **`tracing`: clippy `print_stdout`, `print_stderr` and `dbg_macro` denied
+  workspace-wide.** Clippy rather than arch-lint, because clippy resolves the macro and
+  cannot be defeated by a `use std::println as p` alias. `allow-print-in-tests = true`
+  joins the test allowances, because a test printing a diagnostic is not logging. There
+  is no `allow-dbg-in-tests`: a `dbg!` is a leftover in any file. **`xtask` carries the
+  one standing exemption**: a crate-level `expect` of `print_stdout` and `print_stderr`,
+  with a `reason` stating that it reports a verdict to a human and is not a library
+  boundary. It is `expect` rather than `allow`, so the exemption becomes an error the day
+  it stops being needed.
+- **Guard clauses: clippy `excessive_nesting` at threshold 4.** The lint is inert at its
+  default threshold of 0, so the threshold in `clippy.toml` is what turns it on. Its
+  count includes the enclosing `mod`, `impl` and `fn` blocks. At 4, a method in a
+  file-level module may nest two control-flow blocks, which is where a guard clause or
+  an extracted function should take over. *Measured before choosing*: at threshold 4 the
+  existing code has three violations, all in `xtask`'s `hickory-dev-only` traversal,
+  and they are fixed by restructuring rather than by raising the number.
+- **Small functions: clippy `too_many_lines` at threshold 60** (default 100). It counts
+  code lines, not comment or blank lines, so `missing_docs`-driven documentation is not
+  taxed. The existing code has no violation at 60.
+- **No setter reopening an invariant: clippy `partial_pub_fields` denied.** A struct
+  either publishes every field (plain data, no invariant) or none (an abstract type
+  guarding one behind its constructor). A mix is the shape in which one validated field
+  sits next to one that anyone can write. *What it cannot see*: a type with all fields
+  private that still exposes a `&mut` accessor or an unvalidated setter. That half stays
+  a review item.
+- **Small modules: an `xtask module-size` check, cap 400 lines per `.rs` file.** Clippy
+  has no module-level length lint, and the file is the unit that the rule "split a layer's
+  module by concept" is about. The check counts lines that are neither blank nor only a
+  comment, so documentation is never the reason a file fails. Inline test modules count,
+  and a test module that grows past the cap moves to its own `tests.rs` file. The check
+  scans every `.rs` file under `crates/*/src/` and `xtask/src/`. It has **no per-file
+  exemption mechanism**: the remedy for a failing file is to split it. The cap is one
+  named constant in `xtask`, not a flag, so the self-test proves the real number.
+  `xtask`'s own `main.rs` is split by subcommand at the same time, both to stay under the
+  cap and to keep the tool in the shape it enforces.
+- **Every new check gets a self-test fixture**, F through I (Operations 11), on the same
+  argument as A through E. The clippy fixture asserts that the diagnostics **name each
+  lint**, not merely that clippy exited non-zero. One exit code covers six lints, and a
+  lint silently dropped from the root manifest would still leave the others failing.
+
+**Judgement stays in review**: "wrap a primitive that carries domain rules", first-class
+collections, full words, and the downgraded "one dot per line". No lint can decide
+whether a `u16` has domain rules attached. A proxy such as `struct_excessive_bools` would
+push against `CLAUDE.md`'s explicit permission for plain named `bool` fields.
 
 ### Alternatives considered and rejected
 
@@ -692,6 +807,17 @@ trust anchor rollover. Write them where the reasoning is freshest.
   ones that never get checked.
 - **Trust `arch-lint check` exiting 0 as evidence the gate works.** Rejected: this is
   precisely the failure already recorded against the committed file.
+- **Lint "wrap this primitive" with a custom `dylint` library.** Rejected: whether a value
+  carries domain rules is exactly the judgement `CLAUDE.md` asks for, and a heuristic
+  that flags bare integers in signatures would fire on the plain fields `CLAUDE.md`
+  explicitly permits. The gate would start red and be taught to be ignored.
+- **Enforce module size with clippy `too_many_lines` alone.** Rejected: it measures
+  functions, not files, and a module of thirty short functions is exactly the god-module
+  shape the rule exists to split.
+- **Let a file opt out of the module-size cap with a marker comment.** Rejected: the cap
+  then becomes negotiable one file at a time, and nothing in the tooling objects to the
+  hundredth marker. This is the same reasoning that governs per-path markdown exemptions
+  in §8.
 
 ---
 
@@ -732,14 +858,15 @@ trust anchor rollover. Write them where the reasoning is freshest.
 styx/
 ├── Cargo.toml                  # virtual manifest: members, [workspace.lints], [workspace.dependencies]
 ├── CLAUDE.md                   # engineering guidelines every phase codes against
-├── rust-toolchain.toml         # pinned rustc (the version the 15 lint names were verified against)
+├── rust-toolchain.toml         # pinned rustc (the version the 21 lint names were verified against)
 ├── arch-lint.toml              # syn engine — NO [[layers]]
-├── clippy.toml                 # 4 allow-*-in-tests entries
+├── clippy.toml                 # 5 allow-*-in-tests entries, nesting and function-length thresholds
 ├── rumdl.toml                  # markdown: tier split, no [[layers]]-style trap here
 ├── justfile                    # `gate` and its constituent recipes
 ├── lefthook.yml                # pre-commit, pre-push -> just gate
 ├── .github/workflows/          # gate + headless build; release on v* tags
-├── xtask/                      # hickory-dev-only and link-graph layering checks
+├── xtask/                      # link-graph layering, hickory-dev-only and module-size checks
+│   └── src/                    # main.rs dispatches; deps.rs, hickory.rs, module_size.rs
 ├── docs/adr/                   # the three ADRs
 ├── crates/
 │   ├── styx-proto/             # shared foundation
@@ -758,7 +885,7 @@ Declared once in `[workspace.dependencies]`; members reference them with
 |---|---|---|
 | `tracing` | `styx` binary | Norm 7. The binary emits the one startup event that makes the subscriber observable. |
 | `tracing-subscriber` (`env-filter`) | `styx` binary | Norm 7 and arch-lint's `tracing-env-init`: the subscriber is built from `RUST_LOG`, never a hardcoded level. |
-| `anyhow` | `xtask` only | Tooling, not shipping code. Norm 3 bans it in library crates; `xtask` is a binary that reports a verdict to a human. |
+| `anyhow` | `xtask` only | Tooling, not shipping code. Norm 3 bans it in library crates, enforced by a `[[restrict-use]]` per library crate; `xtask` is a binary that reports a verdict to a human. |
 | `cargo_metadata` | `xtask` only | Reads the resolved link graph for the layering and containment checks. |
 
 No other dependency is introduced. **No DNS crate of any kind**, and no `hickory-*` — not
@@ -780,22 +907,24 @@ even under `[dev-dependencies]`, which stays empty until Phase 1.
 | Feature crate | `styx-resolution`, `styx-filtering` | May not name another feature crate. |
 | Presentation | `styx-web` (from Phase 11) | May name a feature's `application`. Not a peer. |
 | Composition root | `styx` | May name every feature crate. The only one that may. |
-| Tooling | `xtask` | Outside the layering model entirely; bound by the lints, not by the scopes. |
+| Tooling | `xtask` | Outside the layering model entirely; bound by the lints, not by the scopes. The one crate that may print, via a crate-level `expect`. |
 
 ### Gate composition (execution order, fail-fast)
 
 1. Format check — cheapest, fails fastest.
 2. Markdown lint — the other text-level check. Tens of milliseconds over the whole
    repository, so it belongs here rather than behind anything that compiles.
-3. Clippy with the 15 denied lints, workspace-wide, all targets, all features.
-4. `arch-lint check` — scopes, layer denials, use-restrictions, AL001–AL013, and the five
-   named rules.
+3. Clippy with the 21 denied lints, workspace-wide, all targets, all features, reading the
+   thresholds in `clippy.toml`.
+4. `arch-lint check` — scopes, layer denials, use-restrictions (feature isolation,
+   synchronous I/O by layer, `anyhow` by crate), AL001–AL013, and the five named rules.
 5. Link-graph layering check over the resolved dependency graph.
 6. `hickory-dev-only` containment check.
-7. Tests. From phase 2 onward these are socket-level by default: real UDP/TCP against an
+7. Module-size check — no `.rs` file past 400 counted lines.
+8. Tests. From phase 2 onward these are socket-level by default: real UDP/TCP against an
    ephemeral-port server with in-process fakes and an injectable `Clock`. In phase 0 there
    is nothing to run but the target must already be wired.
-8. `--no-default-features` headless build.
+9. `--no-default-features` headless build.
 
 Every step is hermetic and requires no network. The non-hermetic differential run against
 `unbound` is a per-phase gate and is deliberately absent from this list.
@@ -853,7 +982,7 @@ Tasks are ordered by dependency. Each is independently verifiable.
 
 1. **Responsibility**: make the lint names stable.
 2. **Steps**: `rust-toolchain.toml` with `channel` set to the exact rustc version against
-   which the 15 clippy lint names were verified (1.96.0), plus the components the gate
+   which the 21 clippy lint names were verified (1.96.0), plus the components the gate
    needs (`clippy`, `rustfmt`) and the two musl targets the release job publishes.
 3. **Rationale to record in the commit message**: an unpinned toolchain can silently
    downgrade a denied lint to an ignored unknown-lint warning.
@@ -890,6 +1019,20 @@ Tasks are ordered by dependency. Each is independently verifiable.
      `styx` binary are exempt **by construction**: the restriction's `scope` covers only
      feature-crate sources, so a crate that is not a feature crate is unrestricted without
      needing an `except` entry.
+   - **`[[restrict-use]]` for synchronous I/O** *(amendment, 2026-09-24)* — one rule per
+     feature crate × layer for `domain` and `application` (four in phase 0:
+     `no-sync-io-resolution-domain`, `no-sync-io-resolution-application`, and the same two
+     for `styx-filtering`), each scoped to that layer's scope and denying the exact list in
+     Approach §10. The `message` states the invariant: the hot path touches no I/O, so I/O
+     lives in `infrastructure` behind a port declared in `domain`. `infrastructure` gets no
+     such rule. That is where adapters perform I/O. A fifth rule, `no-sync-io-proto`,
+     applies the same list to the whole `styx-proto` scope.
+   - **`[[restrict-use]]` for `anyhow`** *(amendment, 2026-09-24)* — one rule per library
+     crate (three in phase 0: `no-anyhow-proto`, `no-anyhow-resolution`,
+     `no-anyhow-filtering`), each scoped to the whole crate and denying `anyhow` and
+     everything under it. The `message` points at Norm 3: return a `thiserror` enum owned
+     by the crate. No rule is scoped to the `styx` binary or `xtask`, which is the whole
+     of their exemption.
    - **Rules to enable**: `no-unwrap-expect` with `allow_in_tests = true`,
      `require-tracing`, `tracing-env-init`, `no-sync-io`, `require-thiserror`.
    - **Pin arch-lint to an exact 0.6.0 version**, not a range.
@@ -947,12 +1090,51 @@ Tasks are ordered by dependency. Each is independently verifiable.
 3. **Known limitation to document in the check's own output or comment**: in phase 0 the
    dev-dependency does not yet exist, so the check passes vacuously. It becomes a real
    check at phase 1 (fixtures) and phase 2 (fake root/TLD/authoritative servers).
-4. **Completion criterion**: passes on the clean workspace; fails when `hickory-proto` is
+4. **Shape constraint** *(amendment, 2026-09-24)*: the transitive traversal is written
+   with guard clauses and extracted helpers so that it satisfies `excessive_nesting` at
+   threshold 4. The first version nested three blocks past it. It lives in
+   `xtask/src/hickory.rs`, and the link-graph check lives in `xtask/src/deps.rs`.
+5. **Completion criterion**: passes on the clean workspace; fails when `hickory-proto` is
    temporarily moved from `[dev-dependencies]` to `[dependencies]`.
+
+### 6a. Write the module-size check *(amendment, 2026-09-24)*
+
+*Numbered 6a so that every existing task number stays valid, as with 7a.*
+
+1. **Responsibility**: turn "small, single-purpose modules over god-modules" into a
+   verdict, at the only granularity no clippy lint covers — the file.
+2. **Placement**: `xtask/src/module_size.rs`, reached as the `module-size` subcommand.
+   `xtask/src/main.rs` is reduced to argument parsing and dispatch, and the two existing
+   checks move to `deps.rs` and `hickory.rs`. The cap is the named constant
+   `MAX_MODULE_LINES = 400` in `module_size.rs`. There is no command-line flag and no
+   configuration file that can raise it.
+3. **Logic**:
+   - Walk every `.rs` file under `crates/*/src/` and `xtask/src/`, relative to a root
+     given by an optional `--root <path>` argument (default: the workspace root). The
+     argument exists for Fixture I and changes where the check looks, never what it
+     allows.
+   - For each file, count the lines that are neither blank nor made up only of a comment
+     (`//`, `///`, `//!`, or a line inside a `/* */` block). Inline `#[cfg(test)]` modules
+     count.
+   - **Violation**: a count strictly greater than `MAX_MODULE_LINES`.
+   - Report every violating file, not just the first, as a line giving the path and its
+     count against the cap, then exit non-zero. A clean run prints one confirmation line.
+   - Errors (an unreadable file, a missing root) propagate as `anyhow::Result` to
+     `xtask`'s top level and exit non-zero, like the other two checks. A root containing
+     zero `.rs` files is also an error. **An error or an empty scan is never a pass.**
+4. **Constraints**: no per-file exemption, no marker comment, no allowlist. A file over
+   the cap is split by concept, and a test module over the cap moves into its own
+   `tests.rs`.
+5. **Tests**: `module_size.rs` carries unit tests showing that a file with exactly 400
+   counted lines passes, a file with 401 fails, and comment-only and blank lines are not
+   counted.
+6. **Completion criterion**: passes on the clean workspace, `xtask` included after its
+   split; Fixture I fails it.
 
 ### 7. Write the clippy policy
 
-1. **Responsibility**: 15 denied lints workspace-wide; 4 `allow-*-in-tests` entries.
+1. **Responsibility**: 21 denied lints workspace-wide; 5 `allow-*-in-tests` entries and 2
+   thresholds in `clippy.toml`.
 2. **Fixed by the record, all `deny`**:
    - `indexing_slicing` — every label offset in the phase 1 codec becomes checked.
    - `arithmetic_side_effects` — every TTL decrement becomes checked.
@@ -964,13 +1146,26 @@ Tasks are ordered by dependency. Each is independently verifiable.
    unwrap/expect outside tests. **Every name must be confirmed to exist and to be
    non-deprecated under the pinned rustc 1.96.0 before it is committed**; an unrecognised
    lint name degrades to an ignored warning and the count becomes fiction.
-4. **The 4 `allow-*-in-tests` entries** go in `clippy.toml` and exist so that test code
+4. **The six `CLAUDE.md` lints** *(amendment, 2026-09-24)*, all `deny`, each argued in
+   Approach §10: `print_stdout`, `print_stderr`, `dbg_macro`, `partial_pub_fields`,
+   `too_many_lines` and `excessive_nesting`. The last is warn-by-default and would fail
+   under `-D warnings` anyway. It is still declared `deny` explicitly, so the lint table
+   is the single statement of what is denied.
+5. **The 5 `allow-*-in-tests` entries** go in `clippy.toml`. Four exist so that test code
    can use the panicking constructs that production code is denied — the same exemption
-   posture as arch-lint's `no-unwrap-expect` with `allow_in_tests = true`.
-5. **Placement**: the denied set lives in `[workspace.lints]` in the root manifest; each
+   posture as arch-lint's `no-unwrap-expect` with `allow_in_tests = true`. The fifth,
+   `allow-print-in-tests`, lets a test print a diagnostic.
+6. **The 2 thresholds** go in `clippy.toml`: `excessive-nesting-threshold = 4` and
+   `too-many-lines-threshold = 60`. Each carries a comment giving its reason and the
+   measurement behind it (Approach §10). `excessive_nesting` does nothing at all
+   without its threshold.
+7. **The `xtask` exemption**: `xtask/src/main.rs` carries a crate-level `expect` for
+   `clippy::print_stdout` and `clippy::print_stderr`, with a `reason` string. It is the
+   only such attribute in the repository.
+8. **Placement**: the denied set lives in `[workspace.lints]` in the root manifest; each
    member crate carries `[lints] workspace = true`. `clippy.toml` carries only the
-   test-allowance configuration.
-6. **Completion criterion**: `cargo clippy --workspace --all-targets --all-features` is
+   test-allowance configuration and the two thresholds.
+9. **Completion criterion**: `cargo clippy --workspace --all-targets --all-features` is
    clean, and removing `#[allow]`-free `.unwrap()` from a non-test file makes it fail.
 
 ### 7a. Write the markdown lint policy *(amendment, 2026-09-22)*
@@ -1044,9 +1239,10 @@ the counterpart to, and before the `justfile` that invokes it.*
    - `arch` — `arch-lint check`.
    - `deps` — the link-graph layering check.
    - `hickory-dev-only` — the containment check.
+   - `module-size` — the module-size check (Operations 6a).
    - `test` — the test suite (socket-level by default from phase 2).
    - `headless` — `--no-default-features` build and test.
-   - `gate` — invokes the eight checking recipes above in the order given in Structure,
+   - `gate` — invokes the nine checking recipes above in the order given in Structure,
      fail-fast. `md-fix` is not one of them.
    - `gate-selftest` — runs the deliberate-violation fixtures and **asserts the gate
      rejects each one**.
@@ -1136,9 +1332,34 @@ the counterpart to, and before the `justfile` that invokes it.*
      that accidentally lands under a `spdd/**`-style exemption, or inside an excluded
      directory, passes while proving nothing — the same trap Fixtures A–C fell into when
      they were first housed under `tests/`.
+   - **Fixture F — synchronous I/O in `application`** *(amendment, 2026-09-24)*: a
+     `styx-resolution` skeleton whose `application` module imports
+     `std::fs::read_to_string` and calls it from a plain, **non-async** `fn`. Must be
+     rejected by arch-lint. The function is deliberately synchronous: in an `async fn`,
+     AL002 would reject it too, and the fixture would pass even with the new
+     `[[restrict-use]]` rules deleted.
+   - **Fixture G — `anyhow` in a feature crate** *(amendment)*: a `styx-filtering`
+     skeleton whose `domain` module imports `anyhow::Result`. Must be rejected by
+     arch-lint. It needs no manifest dependency, because arch-lint reads source text.
+   - **Fixture H — the `CLAUDE.md` clippy lints** *(amendment)*: one standalone crate
+     with one module per lint, each containing exactly one violation: a `println!`, an
+     `eprintln!`, a `dbg!`, a struct mixing `pub` and private fields, a function past 60
+     code lines, and a block nested past depth 4. Like Fixture A, it carries its own copy
+     of the six lints in its manifest, because a standalone crate cannot inherit the
+     workspace table. It deliberately has **no `clippy.toml` of its own**: clippy
+     searches upward from the manifest directory, so the fixture reads the repository's
+     real thresholds. A fixture that brought its own thresholds would prove a copy.
+   - **Fixture I — an oversized module** *(amendment)*: a
+     `crates/styx-resolution/src/domain/oversized.rs` with 401 counted lines. Must be
+     rejected by `xtask module-size --root` pointed at the fixture.
 3. **Runner logic** (`just gate-selftest`): for each fixture, run the gate step that
    should reject it and **assert a non-zero exit**. A zero exit is a failure of the
-   self-test.
+   self-test. **Fixture H is asserted more strictly**: the runner captures clippy's
+   output and asserts that each of the six lint names appears in it, using the lint's
+   documentation anchor (`#print_stdout` and so on), which clippy prints once per lint.
+   This proves each lint separately. It also proves the thresholds were read, because
+   `excessive_nesting` stays silent without its threshold. The drift check that already
+   compares Fixture A's lints against the root manifest is extended to the six new names.
 4. **Rationale to record**: the stated exit criteria name A and B. C is added because
    `[[restrict-use]]` is a distinct rule family that a cross-layer `use` does not reach,
    and it is the rule most likely to be silently wrong because of its `styx-proto` and
@@ -1147,7 +1368,10 @@ the counterpart to, and before the `justfile` that invokes it.*
    added because the containment check otherwise passes vacuously until phase 2 and would
    be entirely unproven when it first matters. E is added because the markdown gate
    carries a standing exemption — `spdd/**` has one rule switched off — and an over-broad
-   exemption is indistinguishable from a clean repository from an exit code.
+   exemption is indistinguishable from a clean repository from an exit code. F through I
+   are added because each mechanises a rule that `CLAUDE.md` previously stated with no
+   check behind it. A new check without a fixture is the founding failure repeated on
+   purpose.
 5. **Completion criterion**: `just gate-selftest` passes, meaning every fixture was
    rejected; and `just gate` remains green on the workspace itself.
 
@@ -1230,11 +1454,21 @@ the counterpart to, and before the `justfile` that invokes it.*
      line" downgrade and the dropped field-count-ceiling rule, each stated with the
      one-line reason it was downgraded or dropped, so a later reader does not silently
      reinstate it.
-   - **Gate section**: a short pointer to `just gate` and `just gate-selftest` as the
-     mechanically enforced subset, making explicit that the Object Calisthenics rules are
-     **not** independently linted — no tool in this repository checks "wrap this
-     primitive" — and compliance is a review discipline, not an automated gate, unlike the
-     clippy and arch-lint rules above it.
+   - **Enforcement section** *(revised 2026-09-24)*: a short pointer to `just gate` and
+     `just gate-selftest`, followed by two explicit lists. **Mechanically enforced**:
+     layering and feature isolation, panicking constructs, indexing and unchecked
+     arithmetic, synchronous I/O by layer, `anyhow` by crate, and print macros; and,
+     from the Object Calisthenics section, nesting depth
+     (threshold 4), function length (60 code lines), module length (400 counted lines
+     per file, no exemption) and mixed field visibility. Each is named with the tool
+     that enforces it. **Review only**: wrapping primitives that carry domain rules,
+     first-class collections, full words, the "one dot per line" guidance, and the
+     half of the setter rule that `partial_pub_fields` cannot see, and the convention
+     against `Box<dyn Error>` on a public boundary. The section says
+     plainly that generated code can drift from the review-only list without turning the
+     gate red.
+   - **Object Calisthenics section**: where a rule is now gated, the rule's own
+     paragraph states the number, so a reader learns the limit where they learn the rule.
 3. **Constraints**: no code blocks of any language — this is prose guidance, not a
    generated artefact, and the file is linted by the same `rumdl.toml` as every other
    hand-written document (it is not `spdd/**`, so the wrapping exemption does not apply to
@@ -1244,7 +1478,9 @@ the counterpart to, and before the `justfile` that invokes it.*
 4. **Completion criterion**: `CLAUDE.md` exists at the repository root, `just gate`'s
    markdown step passes with it included, and it states the primitive-obsession/newtype
    rule with the exact test — *domain rules attached to the value*, not primitive-ness
-   alone — given in Approach §9.
+   alone — given in Approach §9, and its Enforcement section lists every check that
+   Approach §10 adds, with each threshold matching the value in `clippy.toml` and in
+   `xtask`.
 
 ---
 
@@ -1261,7 +1497,9 @@ the counterpart to, and before the `justfile` that invokes it.*
 3. **Errors are `thiserror` enums**. Every fallible operation returns `Result<T, E>` with
    a crate-owned error enum. No `Box<dyn Error>` on a public boundary, no stringly-typed
    errors, no `anyhow` in library crates (the composition-root binary may use it for
-   top-level startup errors only). This is what arch-lint's `require-thiserror` enforces.
+   top-level startup errors only, and `xtask` is tooling). arch-lint's `require-thiserror`
+   enforces the derive on error types. A `[[restrict-use]]` per library crate enforces
+   the `anyhow` ban, which `require-thiserror` does not reach.
 
 4. **No `unwrap`, no `expect`, no `panic!` outside tests**. Enforced twice — by
    arch-lint's `no-unwrap-expect` with `allow_in_tests = true`, and by clippy's denied
@@ -1273,15 +1511,18 @@ the counterpart to, and before the `justfile` that invokes it.*
    `saturating_*` and explicit bounds handling. This is the intended tax and it is paid
    from the first line of the wire codec.
 
-6. **No synchronous I/O in `domain` or `application`**. Enforced by arch-lint's
-   `no-sync-io`. This is an architectural invariant, not a style rule: the hot path
-   touches no I/O, and a database outage must degrade logging and admin while never
-   touching resolution.
+6. **No synchronous I/O in `domain` or `application`**. Enforced by a `[[restrict-use]]`
+   per feature crate × layer, in sync and async code alike. arch-lint's `no-sync-io` only
+   sees async contexts, so it covers the remainder of the crate. This is an
+   architectural invariant, not a style rule: the hot path touches no I/O, and a database
+   outage must degrade logging and admin while never touching resolution.
 
 7. **`tracing`, initialised from the environment**. Instrumentation uses `tracing` spans
    and events; the binary initialises the subscriber from an environment filter. Enforced
-   by arch-lint's `require-tracing` and `tracing-env-init`. No `println!` or `eprintln!`
-   as logging.
+   by arch-lint's `require-tracing` (no `log` crate) and `tracing-env-init`, and by
+   clippy's `print_stdout`, `print_stderr` and `dbg_macro` (no print macros as logging).
+   `xtask` is the one exemption, by a crate-level `expect`, because its output *is* the
+   verdict.
 
 8. **Dependency versions are declared once**, in `[workspace.dependencies]`; members
    reference them with `workspace = true`. Lints likewise: `[workspace.lints]` plus
@@ -1330,6 +1571,25 @@ the counterpart to, and before the `justfile` that invokes it.*
     Calisthenics ruleset this generalises from; Phase 1's `Ttl`, `RecordType`,
     `RecordClass` and `ResponseCode` are its worked examples.
 
+17. **Shape limits are gated numbers, not suggestions.** A block nests at most 4 deep,
+    counting its enclosing `mod`, `impl` and `fn` (`excessive_nesting`). A function has
+    at most 60 code lines (`too_many_lines`). A `.rs` file has at most 400 counted lines
+    (`xtask module-size`). A struct's fields are all `pub` or all private
+    (`partial_pub_fields`). When code hits a limit, it is restructured — a guard clause,
+    an extracted function, a module split by concept. It is never met with an `#[allow]`
+    or a raised threshold. Changing a threshold changes what the gate means, and gets the
+    same scrutiny as weakening a denied lint.
+
+18. **Visibility markers in a Mermaid class diagram are binding, not decorative.** `+`
+    means `pub` and `-` means private, for fields and methods alike, and
+    `/spdd-generate` emits exactly what the diagram says
+    (`.claude/commands/spdd-reasons-canvas.md`, "Visibility markers are binding"). A type
+    that guards an invariant behind its constructor — every `<<newtype>>`, and anything
+    validated at construction — draws every field `-` and exposes it through `+`
+    accessors; a plain data type with no invariant may draw every field `+`. Never mix
+    `+` and `-` fields on one type: the gate denies `partial_pub_fields` (Norm 17), so a
+    mixed diagram describes code that cannot pass.
+
 ---
 
 ## Safeguards
@@ -1354,6 +1614,14 @@ the counterpart to, and before the `justfile` that invokes it.*
   the link-graph check.
 - Fixture D (`hickory-proto` in `[dependencies]`) turns the gate red.
 - Fixture E (a markdown document with structural violations) turns the gate red.
+- Fixture F (a synchronous `std::fs` call in a non-async `application` function) turns
+  the gate red via arch-lint.
+- Fixture G (`anyhow` imported in a feature crate's `domain`) turns the gate red via
+  arch-lint.
+- Fixture H turns the gate red, and clippy's output names each of `print_stdout`,
+  `print_stderr`, `dbg_macro`, `partial_pub_fields`, `too_many_lines` and
+  `excessive_nesting`.
+- Fixture I (a 401-line module) turns the gate red via `xtask module-size`.
 - `just gate-selftest` asserts every one of these rejections and is run by CI on every
   push.
 
@@ -1363,7 +1631,14 @@ the counterpart to, and before the `justfile` that invokes it.*
   Kotlin-only tree-sitter engine that discovers zero `.rs` files, exits 0, and disables
   AL001–AL013.
 - `arch-lint.toml` declares `[[scopes]]` per feature crate × layer, `[[deny-scope-dep]]`
-  for the layering rules, and `[[restrict-use]]` for feature isolation.
+  for the layering rules, and `[[restrict-use]]` for feature isolation, for synchronous
+  I/O in every feature crate's `domain` and `application` and in all of `styx-proto`, and
+  for `anyhow` in every library crate. A new feature crate adds its two I/O rules and its
+  `anyhow` rule along with its scopes (Norm 12); a new library crate such as `styx-web`
+  adds its `anyhow` rule.
+- The synchronous-I/O deny list names specific types, traits and functions, never all
+  of `std::net` or `std::io`. Value types such as `std::net::IpAddr` stay usable in
+  `domain`.
 - AL001–AL013 are active — **noting that `AL008` does not exist in 0.6.0**, so the real
   set is `AL001`–`AL007` plus `AL009`–`AL013` — via `preset = "strict"`, plus
   `no-unwrap-expect` (`allow_in_tests = true`), `require-tracing`, `tracing-env-init`,
@@ -1389,10 +1664,20 @@ the counterpart to, and before the `justfile` that invokes it.*
 
 ### 3. Lint constraints
 
-- 15 denied clippy lints, workspace-wide, including `indexing_slicing = deny`,
-  `arithmetic_side_effects = deny` and `panic = deny`.
-- 4 `allow-*-in-tests` entries in `clippy.toml`.
-- Every one of the 15 names is verified to exist and to be non-deprecated under the pinned
+- 21 denied clippy lints, workspace-wide, including `indexing_slicing = deny`,
+  `arithmetic_side_effects = deny` and `panic = deny`, and the six `CLAUDE.md` lints
+  `print_stdout`, `print_stderr`, `dbg_macro`, `partial_pub_fields`, `too_many_lines` and
+  `excessive_nesting`.
+- 5 `allow-*-in-tests` entries in `clippy.toml` — the original four plus
+  `allow-print-in-tests`. There is no `allow-dbg-in-tests`.
+- `clippy.toml` sets `excessive-nesting-threshold = 4` and `too-many-lines-threshold =
+  60`. Removing the first leaves `excessive_nesting` silently inert, and Fixture H is what
+  notices.
+- Exactly one lint exemption attribute exists in non-test code: `xtask`'s crate-level
+  `expect` of `print_stdout` and `print_stderr`, with a `reason`.
+- The module-size cap is 400 counted lines per `.rs` file under `crates/*/src/` and
+  `xtask/src/`, held in one named constant, with no per-file exemption.
+- Every one of the 21 names is verified to exist and to be non-deprecated under the pinned
   rustc 1.96.0 before it is committed. An unrecognised name degrades to an ignored
   warning.
 - The toolchain is pinned in `rust-toolchain.toml`.
@@ -1471,6 +1756,10 @@ the counterpart to, and before the `justfile` that invokes it.*
   1's `Ttl`, `RecordType`, `RecordClass` and `ResponseCode` by name — and is lint-clean
   under `rumdl.toml` like every other hand-written document. It does not restate ADR
   content; it references the ADRs it depends on by path.
+- `CLAUDE.md`'s Enforcement section lists the mechanically enforced rules and the
+  review-only rules separately. Every threshold it states matches `clippy.toml` and
+  `xtask`. A document that names a number the gate does not enforce is the prose form of
+  an inert config.
 
 ### 9. Known limitations carried forward, to be re-verified in later phases
 
@@ -1484,8 +1773,8 @@ the counterpart to, and before the `justfile` that invokes it.*
 - **Every rule in this phase is written against crates that barely exist.** Rules correct
   in the abstract and wrong in practice will not surface until phase 1 or later. The
   self-test is the only mitigation available, and it only proves the rules it exercises —
-  which is precisely why it exercises five rule families rather than the two the exit
-  criteria name.
+  which is precisely why it carries nine fixtures rather than the two the exit criteria
+  name.
 - ~~**The arch-lint 0.6.0 behaviour is unverified**~~ — **resolved 2026-09-22.** The
   re-spike was run; the engine selector holds and five configuration details were
   corrected. See Approach §2. The finding that `[[deny-scope-dep]]` resolves module paths
@@ -1513,8 +1802,25 @@ the counterpart to, and before the `justfile` that invokes it.*
   boundary around the web layer and the supervised task model arrive in **Phase 12 —
   Cutover hardening**. Weakening the lint before then removes the only protection there
   is.
-- **`CLAUDE.md`'s Object Calisthenics section is not mechanically enforced.** No lint in
-  this repository checks "wrap this primitive" the way clippy checks `.unwrap()`.
-  Compliance is a review discipline; a later phase's generated code can drift from the
-  ruleset without turning the gate red, and catching that drift depends on review, not on
-  `just gate`.
+- **`CLAUDE.md`'s Object Calisthenics section is only partly mechanically enforced.**
+  Nesting depth, function length, module length and mixed field visibility are gated
+  (Approach §10). No lint checks "wrap this primitive", first-class collections or full
+  words the way clippy checks `.unwrap()`. Compliance with those is a review discipline.
+  A later phase's generated code can drift from them without turning the gate red, and
+  catching that drift depends on review, not on `just gate`.
+- **The gated shape rules are proxies, not the rules themselves.** `excessive_nesting`
+  counts `mod`, `impl` and `fn` blocks as well as control flow. `too_many_lines`
+  measures length, not cohesion. The module-size cap counts lines, not concepts: a
+  399-line file can still be a god-module. `partial_pub_fields` cannot see a private
+  field exposed through a `&mut` accessor. Passing the gate is necessary, not sufficient.
+- **The synchronous-I/O `[[restrict-use]]` rules match paths, not types.** They miss an
+  aliased import such as `use std::io as stdio` followed by `stdio::Read`, and a blocking
+  method called on a value obtained through a port without naming its type. AL002 still
+  covers such calls inside async functions. Anything else is a review item, and the
+  rules exist to catch the ordinary case, not a deliberate evasion.
+- **The thresholds were measured against a nearly empty workspace.** 4, 60 and 400 were
+  chosen against `xtask` and the skeleton crates, not against a real wire codec or
+  resolver. If Phase 1 or later hits a limit, the remedy is to restructure the code, per
+  Norm 17. If a limit turns out to be wrong in principle, the fix is to amend this canvas
+  and the threshold together, recording the measurement, rather than adding an
+  `#[allow]` at the call site.

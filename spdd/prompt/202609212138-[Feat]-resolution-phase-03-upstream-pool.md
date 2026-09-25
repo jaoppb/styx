@@ -145,14 +145,23 @@ class PoolMember {
 }
 
 class HealthState {
-    +srtt Option~Duration~
-    +consecutive_failures u32
-    +circuit CircuitState
-    +last_probe_at Option~Instant~
-    +last_outcome_at Option~Instant~
+    -srtt Option~Duration~
+    -consecutive_failures FailureCount
+    -circuit CircuitState
+    -last_probe_at Option~Instant~
+    -last_outcome_at Option~Instant~
+    +srtt() Option~Duration~
+    +circuit() CircuitState
     +observe(Outcome, now, CircuitConfig)
     +is_available(now, CircuitConfig) bool
     +is_idle_beyond(window, now) bool
+}
+
+class FailureCount {
+    -u32 value
+    +zero() FailureCount
+    +value() u32
+    +increment_saturating() FailureCount
 }
 
 class CircuitState {
@@ -185,7 +194,7 @@ class RoundRobin {
 }
 
 class Weighted {
-    -total_weight u32
+    -total_weight Weight
     +select(candidates, now) Selection
 }
 
@@ -237,9 +246,30 @@ class PoolConfig {
     +circuit CircuitConfig
 }
 
+class Weight {
+    -u32 value
+    +new(u32) Weight
+    +value() u32
+    +checked_sum(&[Weight]) Option~Weight~
+}
+
+class EdnsBufferSize {
+    -u16 octets
+    +new(u16) Result~EdnsBufferSize, ConfigError~
+    +octets() u16
+}
+
+class ConfigError {
+    <<enum thiserror>>
+    EmptyPool
+    EdnsBufferTooSmall
+    CanaryNotDescending
+}
+
 class UpstreamResponse {
     +message Message
     +answered_by UpstreamId
+    +kind UpstreamKind
     +elapsed Duration
     +via_tcp bool
     +raced_count u8
@@ -257,12 +287,14 @@ SelectionStrategy <|.. OrderedFailover
 SelectionStrategy <|.. RoundRobin
 SelectionStrategy <|.. Weighted
 SelectionStrategy <|.. RaceAll
+Weighted ..> Weight : sums via checked_sum
 
 UpstreamPool "1" *-- "1..N" PoolMember : owns
 PoolMember "1" *-- "1" HealthState : owns exclusively
 PoolMember "1" --> "1" Upstream : dispatches to
 PoolMember "1" --> "1" CanaryConfig : probes with
 HealthState "1" *-- "1" CircuitState
+HealthState "1" *-- "1" FailureCount
 HealthState ..> Outcome : folds
 UpstreamPool "1" --> "1" SelectionStrategy : delegates choice to
 UpstreamPool ..> MemberView : projects read-only
@@ -272,9 +304,11 @@ ProbeScheduler "1" --> "1" UpstreamPool : drives
 ProbeScheduler "1" --> "1" ProbePolicy : consults
 ProbePolicy ..> MemberView : evaluates
 Do53Forwarder ..> UpstreamError : fails with
+Do53Forwarder ..> EdnsBufferSize : advertises
 UpstreamError ..> FailureClass : classified by
 UpstreamPool ..> UpstreamResponse : returns
 PoolConfig ..> UpstreamPool : constructs
+PoolConfig ..> ConfigError : fails with
 ```
 
 ### Entity notes
@@ -293,6 +327,14 @@ PoolConfig ..> UpstreamPool : constructs
 - `UpstreamResponse` carries `answered_by` and `raced_count` because the query-log
   pipeline (Phase 10) and the UI (Phase 11) need per-query attribution, and because
   `race`'s fan-out is invisible — and therefore untestable and unwarnable — without it.
+  It carries `kind` so that the Phase 4 cache stage can report
+  `AnswerSource::Upstream` for a forwarder's answer and `AnswerSource::Recursion` for a
+  recursor's, without asking the pool a second question.
+- `Weight`, `FailureCount` and `EdnsBufferSize` are newtypes rather than a bare `u32` or
+  `u16` because each carries a checked-arithmetic operation or a validated range — the
+  same test `CLAUDE.md` states and Phase 1's `Ttl` sets the precedent for. `raced_count`
+  stays a plain `u8`: it is a count with no independent rule of its own, not a value this
+  test reaches.
 
 ---
 
@@ -308,8 +350,10 @@ PoolConfig ..> UpstreamPool : constructs
   empty for every forwarder, which is exactly why DNSSEC gets its own `ChainSource` port
   with push (recursion) and pull (forwarder) feeding strategies instead of a wider
   `Upstream`.
-- `UpstreamKind` exists **only** so that per-kind config defaults — principally the canary
-  — can differ. It is not a dispatch switch in the request pipeline.
+- `UpstreamKind` exists for two reasons: per-kind config defaults, principally the
+  canary, can differ; and the answer's provenance is stamped on `UpstreamResponse`. It is
+  **not** a dispatch switch in the request pipeline. Nothing branches on it to decide
+  *how* to resolve; the cache stage only maps it to an `AnswerSource` for reporting.
 - Trait objects (`Arc<dyn Upstream>`) rather than generics, because a pool holds members
   of mixed kinds at runtime from file config.
 
@@ -431,10 +475,13 @@ styx-resolution/
     domain/
       upstream.rs        # Upstream trait, UpstreamId, UpstreamKind, UpstreamResponse
       error.rs           # UpstreamError (thiserror), FailureClass
-      health.rs          # HealthState, CircuitState, Outcome, CircuitConfig
+      health.rs          # HealthState, Outcome — the fold, split from the state machine
+      circuit.rs         # CircuitState, CircuitConfig, FailureCount — the circuit breaker
       selection.rs       # SelectionStrategy trait, Selection, MemberView, StrategyName
       probe.rs           # ProbePolicy, CanaryConfig, ProbeConfig
-      config.rs          # PoolConfig, UpstreamConfig, Weight, Timeouts
+      config.rs          # PoolConfig, UpstreamConfig, Timeouts, ConfigError
+      weight.rs          # Weight — its own file: shared by config and the weighted strategy
+      edns.rs            # EdnsBufferSize — its own file: shared by config and Do53Forwarder
     application/
       pool.rs            # UpstreamPool: dispatch, outcome recording, snapshot
       strategies/        # OrderedFailover, RoundRobin, Weighted, RaceAll
@@ -443,6 +490,14 @@ styx-resolution/
       do53.rs            # Do53Forwarder: UDP + TCP fallback
       udp.rs / tcp.rs    # transport details
 ```
+
+`health.rs`/`circuit.rs` and `config.rs`/`weight.rs`/`edns.rs` are each split by concept
+rather than left as a catch-all, the same reasoning that splits `styx-proto`'s
+`domain/rdata/basic.rs` from `domain/rdata/dnssec.rs`: the fold (`HealthState`) is a
+different concept from the state machine it drives (`CircuitState`), and `Weight` and
+`EdnsBufferSize` are independent validated values that outlive their use inside
+`PoolConfig`, not properties of the config type itself. This also keeps every file inside
+`xtask module-size`'s 400-counted-line cap, which counts inline test modules.
 
 ### Trait / implementation relationships
 
@@ -463,33 +518,41 @@ styx-resolution/
 
 ### Dependencies
 
-1. `application::pool` depends on `domain::{upstream, health, selection, probe, error}`.
-   It never names `infrastructure`.
+1. `application::pool` depends on
+   `domain::{upstream, health, circuit, selection, probe, error}`. It never names
+   `infrastructure`.
 2. `application::probe_scheduler` depends on `application::pool`, `domain::probe` and the
    injected `Clock`.
-3. `infrastructure::do53` depends on `domain::{upstream, error, config}` and on
+3. `application::strategies::weighted` additionally depends on `domain::weight`, for
+   `Weight::checked_sum`.
+4. `infrastructure::do53` depends on `domain::{upstream, error, config, edns}` and on
    **`styx-proto`** for encode/decode.
-4. `styx-proto` is **shared foundation, not a feature crate** — every crate parses through
+5. `styx-proto` is **shared foundation, not a feature crate** — every crate parses through
    the wire codec, so the "feature crates never depend on each other" rule explicitly does
    not reach it. It is the one recorded exception, and the layering config must be written
    so as not to forbid it.
-5. The injected `Clock` comes from Phase 2. Every timestamp in this phase reads it: SRTT
+6. The injected `Clock` comes from Phase 2. Every timestamp in this phase reads it: SRTT
    sample times, circuit transitions, last-probe-at, idle-window evaluation, query
    deadlines.
-6. **Nothing in this phase touches the database.** The hot path touches no storage I/O; a
+7. **Nothing in this phase touches the database.** The hot path touches no storage I/O; a
    DB outage degrades logging and admin, never resolution.
-7. `hickory-proto` appears **only** under `[dev-dependencies]`, in the fake upstreams and
+8. `hickory-proto` appears **only** under `[dev-dependencies]`, in the fake upstreams and
    fixtures.
 
 ### Layering
 
 1. **`domain`** — the ports (`Upstream`, `SelectionStrategy`), the state (`HealthState`,
-   `CircuitState`), the policy (`ProbePolicy`), the errors, the config types. Pure,
-   deterministic, no I/O, no sockets, no clock reads of its own (it receives `now` as a
-   parameter).
+   `CircuitState`), the policy (`ProbePolicy`), the errors, the config types, the
+   `Weight`/`EdnsBufferSize` newtypes. Pure, deterministic, no I/O, no sockets, no clock
+   reads of its own (it receives `now` as a parameter). No synchronous or asynchronous I/O
+   of any kind — a `[[restrict-use]]` rule denies `std::fs`, the blocking socket types and
+   `std::io::{Read, Write, BufRead, Seek}` here even though nothing in this layer is async.
 2. **`application`** — the pool and the probe scheduler. Orchestrates: selects,
    dispatches, records, schedules. Holds `Arc<dyn Upstream>` and
-   `Arc<dyn SelectionStrategy>`; speaks no wire format.
+   `Arc<dyn SelectionStrategy>`; speaks no wire format. All dispatch to a real upstream
+   goes through the `Upstream` port's `async fn resolve`, never a raw socket call, so the
+   same `[[restrict-use]]` sync-I/O denial applies here without narrowing what this layer
+   can already do.
 3. **`infrastructure`** — the Do53 forwarder and its transports. Speaks UDP/TCP and
    `styx-proto`; knows nothing of pools, strategies or health.
 4. **Pipeline position** — the order fixed in Phase 2 is a correctness property, not a
@@ -518,9 +581,13 @@ Ordered by dependency. Each task is independently completable and independently 
 2. **Types**:
    - `UpstreamId` — an opaque, cheap-to-clone identifier, stable across the process
      lifetime, derived from config order and name.
-   - `UpstreamKind` — `Forwarder | Recursor`. Used only for per-kind config defaults.
+   - `UpstreamKind` — `Forwarder | Recursor`. Used for per-kind config defaults and for
+     provenance on `UpstreamResponse`, never for dispatch.
    - `UpstreamResponse` —
-     `{ message, answered_by: UpstreamId, elapsed: Duration, via_tcp: bool, raced_count: u8 }`.
+     `{ message, answered_by: UpstreamId, kind: UpstreamKind, elapsed: Duration, via_tcp: bool, raced_count: u8 }`.
+     Like `answered_by`, `kind` is stamped by the pool from the member that answered
+     (Operation 6), never chosen by the adapter, so no implementation can mislabel its
+     own answers.
 3. **Trait**: `Upstream` (async, object-safe via `Arc<dyn Upstream + Send + Sync>`)
    - `fn id(&self) -> UpstreamId`
    - `fn kind(&self) -> UpstreamKind`
@@ -547,40 +614,63 @@ Ordered by dependency. Each task is independently completable and independently 
    case per variant. Misclassifying `AnswerFault` as `UpstreamFault` empties a healthy
    pool on one bad domain.
 
-### 3. Implement `HealthState` — `domain::health`
+### 3. Implement `HealthState` and its circuit breaker — `domain::health`, `domain::circuit`
 
 1. **Responsibility**: the pool's private fold over dispatch outcomes. Concrete, never a
-   trait.
-2. **Fields**: `srtt: Option<Duration>`, `consecutive_failures: u32`,
+   trait. `HealthState` and `Outcome` live in `domain::health`; the state machine they
+   drive — `CircuitState`, `CircuitConfig`, `FailureCount` — lives in `domain::circuit`,
+   split out because it is a distinct concept (the breaker) from the fold that reports to
+   it, and because the two together are the phase's most line-heavy domain type.
+2. **Fields**: `srtt: Option<Duration>`, `consecutive_failures: FailureCount`,
    `circuit: CircuitState`, `last_probe_at: Option<Instant>`,
-   `last_outcome_at: Option<Instant>`.
+   `last_outcome_at: Option<Instant>` — all private. The struct is mutated only through
+   `observe` and read only through the accessors below; nothing outside `domain::health`
+   sees a raw field.
 3. **Types**: `Outcome` =
    `Success { latency: Duration, was_probe: bool } | Failure { class: FailureClass, was_probe: bool }`;
    `CircuitState` =
    `Closed | Open { since: Instant } | HalfOpen { trial_started: Instant }`;
    `CircuitConfig` =
-   `{ failure_threshold: u32, open_cooldown: Duration, half_open_successes: u32 }`.
+   `{ failure_threshold: u32, open_cooldown: Duration, half_open_successes: u32 }`;
+   `FailureCount` — a newtype over `u32` with `fn zero() -> FailureCount`,
+   `fn value(&self) -> u32` and `fn increment_saturating(self) -> FailureCount` (never
+   wraps past `u32::MAX` back to zero). Same checked-arithmetic pattern `styx-proto`'s
+   `Ttl` sets for `checked_decrement`/`saturating_decrement`, applied to counting up
+   instead of down; no setter reopens it, only `zero()` and `increment_saturating()`
+   produce a new value.
 4. **Methods**:
-   - `fn observe(&mut self, outcome: Outcome, now: Instant, cfg: &CircuitConfig)`
-     - Update `last_outcome_at`; update `last_probe_at` when `was_probe`.
-     - On `Success`: fold the latency into the SRTT EWMA (first sample seeds it); reset
-       `consecutive_failures` to zero; if `HalfOpen` and the configured success count is
-       reached, transition to `Closed`.
-     - On `Failure { class: AnswerFault, .. }`: record the latency if present, leave the
-       failure counter and circuit untouched — this is an answer, not a fault.
-     - On `Failure { class: UpstreamFault, .. }`: increment the failure counter with
-       checked arithmetic (saturating at `u32::MAX`); if `Closed` and the threshold is
-       met, transition to `Open { since: now }`; if `HalfOpen`, transition straight back
-       to `Open { since: now }`.
-   - `fn is_available(&self, now: Instant, cfg: &CircuitConfig) -> bool` — `Closed` and
+   - `fn observe(&mut self, outcome: Outcome, now: Instant, config: &CircuitConfig)` is a
+     guard-clause dispatcher, not the place the branching logic lives: it updates
+     `last_outcome_at` and `last_probe_at`, then matches `outcome` and delegates each arm
+     to a named private helper so no single function carries the whole state machine.
+     - `fn record_success(&mut self, latency: Duration, config: &CircuitConfig)` — folds
+       the latency into the SRTT EWMA (first sample seeds it); resets
+       `consecutive_failures` to `FailureCount::zero()`; if `HalfOpen` and the configured
+       success count is reached, transitions to `Closed`.
+     - `fn record_answer_fault(&mut self, latency: Option<Duration>)` — records the
+       latency if present; leaves the failure counter and circuit untouched, because this
+       is an answer, not a fault.
+     - `fn record_upstream_fault(&mut self, now: Instant, config: &CircuitConfig)` —
+       replaces `consecutive_failures` with `consecutive_failures.increment_saturating()`;
+       if `Closed` and the threshold is met, transitions to `Open { since: now }`; if
+       `HalfOpen`, transitions straight back to `Open { since: now }`.
+   - `fn is_available(&self, now: Instant, config: &CircuitConfig) -> bool` — `Closed` and
      `HalfOpen` are available; `Open` is available only once
      `now - since >= open_cooldown`, which is also the trigger for a half-open trial.
    - `fn is_idle_beyond(&self, window: Duration, now: Instant) -> bool` — true when
      neither a real outcome nor a probe has been recorded within the window,
      **and true when nothing has ever been recorded** (cold start).
-5. **Constraints**: every duration comparison and every counter update is
-   checked/saturating — `arithmetic_side_effects` is denied. No `Instant::now()` anywhere;
-   `now` is always a parameter.
+   - `fn srtt(&self) -> Option<Duration>` and `fn circuit(&self) -> CircuitState` — the only
+     read accessors on the type, used by the pool to project `srtt`/`circuit` into a
+     `MemberView` without exposing the private fields themselves.
+5. **Constraints**: every duration comparison is checked/saturating, and every
+   failure-count update goes through `FailureCount::increment_saturating` rather than a
+   raw `+= 1` at the call site — `arithmetic_side_effects` is denied. No `Instant::now()`
+   anywhere; `now` is always a parameter. The three-way split of `observe` into
+   `record_success`/`record_answer_fault`/`record_upstream_fault` is required, not
+   optional: it is what keeps `observe` itself under clippy's `too_many_lines` and
+   `excessive_nesting` thresholds (Phase 0 Norm 17) once the circuit transitions are
+   written out in full.
 
 ### 4. Define the `SelectionStrategy` port and `MemberView` — `domain::selection`
 
@@ -610,10 +700,11 @@ Ordered by dependency. Each task is independently completable and independently 
    order. Correct under concurrency: the cursor is the only shared mutable state and is
    advanced with a relaxed fetch-add.
 3. **`Weighted`**: a weighted draw over available members by `Weight`, returning
-   `Sequential` with the drawn member first and the rest as fallback. Degenerate
-   configurations are defined, not undefined: total weight of zero degrades to round-robin
-   order; a single available member returns it; equal weights are uniform. No division by
-   a possibly-zero total.
+   `Sequential` with the drawn member first and the rest as fallback. The pool total is
+   computed once via `Weight::checked_sum`, never a raw running `+=` at the call site,
+   since `arithmetic_side_effects` is denied. Degenerate configurations are defined, not
+   undefined: total weight of zero degrades to round-robin order; a single available
+   member returns it; equal weights are uniform. No division by a possibly-zero total.
 4. **`RaceAll`**: returns `Fanout` of **all** available members. Documented at the
    definition site as a privacy decision: it multiplies outbound QPS and shows every
    domain to every provider in the pool.
@@ -628,19 +719,22 @@ Ordered by dependency. Each task is independently completable and independently 
 2. **Fields**: `members: Vec<PoolMember>`, `strategy: Arc<dyn SelectionStrategy>`,
    `clock: ClockHandle`, `circuit: CircuitConfig`, `probe_policy: ProbePolicy`.
 3. **Methods**:
-   - `async fn resolve(&self, query: &Question) -> Result<UpstreamResponse, PoolError>`
-     - Read `now` from the clock; build `Vec<MemberView>` with `available` computed from
-       each member's `HealthState`.
-     - Call `strategy.select(&views, now)`.
+   - `async fn resolve(&self, query: &Question) -> Result<UpstreamResponse, PoolError>` is
+     a short dispatcher, not the place the per-strategy logic lives: read `now` from the
+     clock, build `Vec<MemberView>`, call `strategy.select(&views, now)`, then a guard
+     clause per `Selection` variant hands off to a named helper.
      - `NoneAvailable` → return `PoolError::AllUpstreamsDown` immediately. Never hang,
        never panic.
-     - `Sequential(ids)` → try each in order with a per-attempt deadline; record each
-       attempt's outcome; return the first success; if all fail, return
-       `PoolError::Exhausted` carrying the last error.
-     - `Fanout(ids)` → dispatch concurrently, take the first usable response, record
-       outcomes for **every** branch that completed, cancel the remainder, set
-       `raced_count` on the response.
-     - Always stamp `answered_by` and `elapsed`.
+     - `Sequential(ids)` → `async fn try_sequential(&self, ids: &[UpstreamId], query: &Question) -> Result<UpstreamResponse, PoolError>`
+       tries each id in order with a per-attempt deadline, records each attempt's
+       outcome, returns the first success, and returns `PoolError::Exhausted` carrying
+       the last error if every id fails.
+     - `Fanout(ids)` → `async fn try_fanout(&self, ids: &[UpstreamId], query: &Question) -> Result<UpstreamResponse, PoolError>`
+       dispatches concurrently, takes the first usable response, records outcomes for
+       **every** branch that completed, cancels the remainder, and sets `raced_count` on
+       the response.
+     - Both helpers stamp `answered_by`, `kind` (from the answering member's `kind()`)
+       and `elapsed`; `resolve` itself stamps none of them.
    - `fn record(&self, id: UpstreamId, outcome: Outcome)` — look up the member, take its
      health lock, call `observe` with the clock's `now` and the circuit config. The
      **only** mutation path for health, shared by real traffic and probes alike.
@@ -654,6 +748,11 @@ Ordered by dependency. Each task is independently completable and independently 
    - No surface named or shaped like diagnostics. Root/TLD reachability belongs to
      `RecursionDiagnostics`, published separately by `styx-recursion` and consumed
      directly by the admin/web layer, never through this pool.
+   - The `try_sequential`/`try_fanout` split is required, not optional: it is what keeps
+     `resolve` itself, and each helper, under clippy's `too_many_lines` and
+     `excessive_nesting` thresholds (Phase 0 Norm 17) — `Sequential`'s per-attempt loop
+     and `Fanout`'s concurrent-dispatch-and-cancel logic are each a full nesting budget
+     on their own.
 
 ### 7. Implement `ProbePolicy` and `CanaryConfig` — `domain::probe`
 
@@ -702,39 +801,75 @@ Ordered by dependency. Each task is independently completable and independently 
 1. **Responsibility**: the first concrete `Upstream` — classic DNS over UDP with TCP
    fallback.
 2. **Fields**:
-   `{ id, addr: SocketAddr, edns_buffer: u16, udp_timeout, tcp_timeout, clock }`.
-3. **`resolve` logic**:
-   - Encode the query through `styx-proto` with a fresh transaction ID and an EDNS(0) OPT
-     advertising `edns_buffer`.
-   - Send over UDP; await a response until the earlier of the deadline and the UDP
+   `{ id, addr: SocketAddr, edns_buffer: EdnsBufferSize, udp_timeout, tcp_timeout, clock }`.
+3. **`resolve` logic** — `resolve` itself is a short sequence of guard clauses over named
+   private helpers, none of which is `resolve` re-implementing the others:
+   - `fn encode_query(&self, query: &Question) -> Result<Vec<u8>, UpstreamError>` — a fresh
+     transaction ID and an EDNS(0) OPT advertising `edns_buffer.octets()`, through
+     `styx-proto`.
+   - `async fn send_udp(&self, bytes: &[u8], deadline: Instant) -> Result<Vec<u8>, UpstreamError>`
+     — send over UDP, await a response until the earlier of `deadline` and the UDP
      timeout. On expiry → `UpstreamError::Timeout`.
-   - Validate before use: transaction ID match **and** question-section match, or
-     `UpstreamError::Mismatched`. This is spoofing resistance.
-   - Decode through `styx-proto`; a decode failure is `UpstreamError::Malformed`.
-   - If TC=1, **retry the identical question over TCP**. A TC=1 response is not an answer.
-     Success sets `via_tcp = true` and the latency sample covers the whole operation;
-     failure of the retry is `UpstreamError::Truncated`.
-   - Map RCODE: REFUSED → `Refused`; SERVFAIL → `ServerFailure`; NOERROR/NXDOMAIN →
-     success with the message returned as-is.
+   - `fn validate_and_decode(&self, raw: &[u8], query: &Question) -> Result<Message, UpstreamError>`
+     — transaction ID match **and** question-section match, or `UpstreamError::Mismatched`
+     (spoofing resistance), then decode through `styx-proto`; a decode failure is
+     `UpstreamError::Malformed`.
+   - `async fn retry_tcp(&self, query: &Question, deadline: Instant) -> Result<Message, UpstreamError>`
+     — used only when the UDP response has TC=1, which is not an answer. Success sets
+     `via_tcp = true` and the latency sample covers the whole operation; failure is
+     `UpstreamError::Truncated`.
+   - `fn map_response(message: Message) -> Result<UpstreamResponse, UpstreamError>` — REFUSED
+     → `Refused`; SERVFAIL → `ServerFailure`; NOERROR/NXDOMAIN → success with the message
+     returned as-is.
+   - `resolve` itself calls these in sequence, retrying over TCP only on TC=1, and never
+     duplicates a step's logic inline.
 4. **Constraints**: async only (`no-sync-io` is denied); no `unwrap`/`expect`; all buffer
    handling checked (`indexing_slicing` is denied); every timestamp from the injected
-   clock.
+   clock. The helper split above is required, not optional: it keeps `resolve` and every
+   step under clippy's `too_many_lines` threshold (Phase 0 Norm 17) once UDP send, TCP
+   retry and validation are each written out in full.
 
-### 10. Wire configuration — `domain::config`
+### 10. Wire configuration — `domain::config`, `domain::weight`, `domain::edns`
 
 1. **Responsibility**: the file-owned, restart-scoped description of pools and upstreams.
+   `PoolConfig`, `UpstreamConfig` and `ConfigError` live in `domain::config`; `Weight` and
+   `EdnsBufferSize` each get their own file, `domain::weight` and `domain::edns`, because
+   both outlive their use inside `UpstreamConfig` — `Weight` is also read by
+   `application::strategies::Weighted` and `EdnsBufferSize` by `Do53Forwarder` — and
+   because bundling two unrelated validated newtypes into the config file is exactly the
+   catch-all shape `CLAUDE.md`'s "small, single-purpose modules" rule exists to split.
 2. **Types**:
-   `PoolConfig { strategy: StrategyName, members: Vec<UpstreamConfig>, probe: ProbeConfig, circuit: CircuitConfig }`;
-   `UpstreamConfig { name, kind, addr, weight, canary: Option<CanaryConfig>, timeouts }`.
+   - `PoolConfig { strategy: StrategyName, members: Vec<UpstreamConfig>, probe: ProbeConfig, circuit: CircuitConfig }`.
+   - `UpstreamConfig { name, kind, addr, weight: Weight, canary: Option<CanaryConfig>, timeouts }`.
+   - `Weight` (`domain::weight`) — a newtype over `u32`. Constructor
+     `fn new(value: u32) -> Weight` accepts every value, including zero — the all-zero
+     pool case is a `Weighted`-strategy concern (Operation 5), not a construction-time
+     rejection. Accessor `fn value(&self) -> u32`; no setter. Its domain rule is the
+     checked arithmetic it carries, not a validated range:
+     `fn checked_sum(weights: &[Weight]) -> Option<Weight>` is the one audited place a
+     pool total is computed, so no call site performs a raw `+=` that
+     `arithmetic_side_effects` would deny.
+   - `EdnsBufferSize` (`domain::edns`) — a newtype over `u16`. Constructor
+     `fn new(octets: u16) -> Result<EdnsBufferSize, ConfigError>` rejects anything below
+     512 octets, the pre-EDNS message ceiling — advertising less helps nothing and is
+     almost certainly a misconfiguration. Accessor `fn octets(&self) -> u16`; no setter.
+     This is the value `Do53Forwarder` writes into the EDNS(0) OPT record (Operation 9).
+   - `ConfigError` (`thiserror`, `domain::config`): `EmptyPool`, `EdnsBufferTooSmall(u16)`,
+     `CanaryNotDescending`. Returned by config parsing; no `anyhow`, no stringly-typed
+     validation failure.
 3. **Constraints**:
-   - Parsed from TOML at boot. **No hot reload** — the configuration boundary is
-     deliberate: the file owns infrastructure, the database owns policy, and the accepted
-     consequence is that changing an upstream needs SSH and a restart.
+   - Parsed from TOML at boot into `Result<PoolConfig, ConfigError>`. **No hot reload** —
+     the configuration boundary is deliberate: the file owns infrastructure, the database
+     owns policy, and the accepted consequence is that changing an upstream needs SSH and
+     a restart.
    - A `strategy = "race"` value emits a `tracing` warning at boot naming the privacy
      consequence explicitly, and the parsed config records the fact so Phase 11 can render
      the same warning in the UI.
-   - Validation at parse: at least one member; weights only meaningful for `weighted`; a
-     recursor member's canary must be a descent-requiring name.
+   - Validation at parse, each a distinct `ConfigError` variant: at least one member
+     (`EmptyPool`); every `edns_buffer` at or above the 512-octet floor
+     (`EdnsBufferTooSmall`); a recursor member's canary must be a descent-requiring name
+     (`CanaryNotDescending`). Weights are accepted for every strategy and are simply
+     unused outside `weighted` — that is not a validation failure.
 
 ### 11. Build the fake upstreams and the socket-level suite — `tests/`
 
@@ -806,6 +941,11 @@ Ordered by dependency. Each task is independently completable and independently 
      receives `now` as a parameter and never holds a clock.
 6. **Async and I/O**
    - All I/O is async; `no-sync-io` is enforced. No lock is held across an `await`.
+   - No synchronous I/O in `domain` or `application`, in sync or async code, enforced by a
+     `[[restrict-use]]` per layer (Phase 0 §10): `std::fs`, the blocking socket types
+     (`TcpStream`, `TcpListener`, `UdpSocket`, `ToSocketAddrs`), `std::io::{Read, Write,
+     BufRead, Seek}` and the standard-stream functions are all denied there. Only
+     `infrastructure::do53` and its transport modules touch a socket directly.
    - Long-lived background tasks are cancellation-aware and take a shutdown signal.
 7. **Observability**
    - `tracing` throughout; `require-tracing` and `tracing-env-init` are enforced. Dispatch
@@ -826,11 +966,29 @@ Ordered by dependency. Each task is independently completable and independently 
      These names are load-bearing and must never be merged, aliased or generalised into a
      shared "status" type.
 10. **Gates**
-    - `just gate` runs formatting, the 15 denied clippy lints, `arch-lint check`, the
-      `cargo tree` layering gate, the `hickory-dev-only` check, socket-level tests, and
-      the `--no-default-features` headless build. Enforced by lefthook on
-      pre-commit/pre-push **and** by GitHub Actions — a lint that only runs locally is not
-      enforcement.
+    - `just gate` runs formatting, markdown lint, the 21 denied clippy lints (including the
+      `excessive-nesting-threshold = 4` and `too-many-lines-threshold = 60` thresholds
+      this phase's decomposed methods are written against), `arch-lint check` (feature
+      isolation, this crate's sync-I/O and `anyhow` `[[restrict-use]]` rules, AL001–AL013),
+      the `cargo tree` layering gate, the `hickory-dev-only` check, the `xtask module-size`
+      check (Phase 0 §10; every file this phase adds stays under 400 counted lines),
+      socket-level tests, and the `--no-default-features` headless build. Enforced by
+      lefthook on pre-commit/pre-push **and** by GitHub Actions — a lint that only runs
+      locally is not enforcement.
+11. **`CLAUDE.md` compliance**
+    - This phase's code follows `CLAUDE.md` in full, including its primitive-obsession
+      rule: a value is wrapped in a newtype when it carries a validated range, a checked
+      arithmetic operation, a non-trivial wire encoding, or named constants — not merely
+      because it is a `u16`, a `u32` or a `String`. The test is domain rules attached to
+      the value, not the primitive-ness of its type.
+    - `Weight` (checked summation via `checked_sum`, never a raw `+=`), `FailureCount`
+      (saturating increment, mirroring `styx-proto`'s `Ttl`) and `EdnsBufferSize`
+      (validated 512-octet floor, non-trivial wire encoding into the EDNS OPT record) are
+      this phase's own instances of the rule, alongside Phase 1's `Ttl`, `RecordType`,
+      `RecordClass` and `ResponseCode`.
+    - Plain named fields with no independent rule — `UpstreamResponse::via_tcp`,
+      `UpstreamResponse::raced_count` — stay bare. Wrapping them would be ceremony with no
+      behaviour behind it, the failure mode `CLAUDE.md` warns against.
 
 ---
 
@@ -873,6 +1031,24 @@ Scope, verbatim, from the same specification:
   per-nameserver RTT.
 - **No database access and no hot reload.** Upstreams, pools and strategy are file-owned
   and restart-scoped.
+- **Every domain value this phase introduces that carries a validated range, a checked
+  arithmetic operation or a non-trivial wire encoding is a newtype** — `Weight`,
+  `FailureCount` and `EdnsBufferSize`, per the Norms entry above. Per Phase 0 Norm 17,
+  wrapping a primitive stays a review-only rule — no lint judges whether a value carries
+  domain rules — while nesting depth, function length, module length and mixed field
+  visibility are now gated; `CLAUDE.md`'s Enforcement section names which list each rule
+  is on.
+- **This phase's code must pass the extended gate (Phase 0 §10).** The rules most likely
+  to bind here: `excessive_nesting`/`too_many_lines` on `HealthState::observe`,
+  `UpstreamPool::resolve` and `Do53Forwarder::resolve`, each specified above as a
+  guard-clause dispatcher over named helpers rather than one branching function;
+  `xtask module-size` on `domain::health`/`domain::circuit` and
+  `domain::config`/`domain::weight`/`domain::edns`, each split by concept in Structure for
+  exactly this reason; and the sync-I/O `[[restrict-use]]` rule on `domain` and
+  `application`, which this phase already satisfies by confining every socket call to
+  `infrastructure::do53`. `partial_pub_fields` and the print-macro lints are low risk here:
+  every struct in Entities already publishes all its fields or none, and this crate logs
+  through `tracing`, never a print macro.
 
 ### 3. Behavioural constraints
 

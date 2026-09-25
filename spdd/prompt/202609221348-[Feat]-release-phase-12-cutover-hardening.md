@@ -131,7 +131,8 @@ class TaskSpec {
 
 class TaskId {
     <<newtype>>
-    +&'static str name
+    -&'static str name
+    +name() &'static str
 }
 
 class TaskTier {
@@ -141,12 +142,23 @@ class TaskTier {
 }
 
 class RestartPolicy {
-    +u32 max_restarts
-    +Duration window
-    +Backoff backoff
-    +ExhaustionAction on_exhaustion
+    -RestartBudget max_restarts
+    -Duration window
+    -Backoff backoff
+    -ExhaustionAction on_exhaustion
+    +max_restarts() RestartBudget
+    +window() Duration
+    +backoff() Backoff
+    +on_exhaustion() ExhaustionAction
     +resolution_critical_default() RestartPolicy
     +degradable_default() RestartPolicy
+}
+
+class RestartBudget {
+    <<newtype>>
+    -u32 value
+    +new(u32) RestartBudgetResult
+    +value() u32
 }
 
 class Backoff {
@@ -268,6 +280,7 @@ class SupervisorError {
     DuplicateTaskId
     SpawnFailed
     CriticalTaskUnrecoverable
+    InvalidRestartPolicy
     Shutdown
 }
 
@@ -289,6 +302,7 @@ class CatchPanicFuture~F~ {
     -F inner
     -TaskId owner
     -Arc~dyn FailureObserver~ observer
+    -Option~String~ route
     +poll(Context) PollCaught
 }
 
@@ -336,6 +350,11 @@ class SmokeCheck {
     +ReleaseTarget target
     +SocketAddr fake_upstream
     +run() SmokeResult
+    -write_config() ConfigResult
+    -spawn_process(PathBuf) ChildResult
+    -await_bind() BindResult
+    -probe_query() ProbeResult
+    -terminate_and_wait(Child) TerminateResult
 }
 
 class SmokeOutcome {
@@ -409,6 +428,7 @@ SupervisedTask --> TaskFactory : respawns via
 TaskSpec --> TaskId : identified by
 TaskSpec --> TaskTier : classified by
 TaskSpec --> RestartPolicy : governed by
+RestartPolicy --> RestartBudget : bounded by
 RestartPolicy --> Backoff : delays via
 RestartPolicy --> ExhaustionAction : terminates with
 Supervisor --> RestartDecision : produces
@@ -447,13 +467,19 @@ SoakChecklist --> SoakVerdict : produces
 **Diagram shorthand.** Mermaid cannot render nested Rust generics, so a few return
 types are shown as aliases. They expand to:
 `TaskIdResult` = `Result<TaskId, SupervisorError>`;
+`RestartBudgetResult` = `Result<RestartBudget, SupervisorError>`;
 `UnitResult` = `Result<(), SupervisorError>`;
 `ExitResult` = `Result<ExitReason, SupervisorError>`;
 `ShutdownResult` = `Result<(), ShutdownError>`;
 `SmokeResult` = `Result<SmokeOutcome, SmokeError>`;
 `TaskHandleList` = `Vec<TaskHandle>`;
 `TaskJoinHandle` = `JoinHandle<Result<(), TaskError>>`;
-`PollCaught` = `Poll<Result<F::Output, CaughtPanic>>`.
+`PollCaught` = `Poll<Result<F::Output, CaughtPanic>>`;
+`ConfigResult` = `Result<PathBuf, SmokeError>`;
+`ChildResult` = `Result<Child, SmokeError>`;
+`BindResult` = `Result<(), SmokeError>`;
+`ProbeResult` = `Result<(), SmokeError>`;
+`TerminateResult` = `Result<(), SmokeError>`.
 
 **Notes on the model.**
 
@@ -570,7 +596,12 @@ treating none as poisoning risks serving inconsistent state indefinitely.
 ### 5. A caught panic is loud, returns 500, and never continues
 
 It produces an HTTP 500 and an error-level `tracing` event carrying the panic message,
-location and route, and it increments `SoakCounters::panics_caught`.
+location and route, and it increments `SoakCounters::panics_caught`. The route is the
+**full request URI**, path and query string, as received. The whole URI is logged
+because the query string often says which input triggered the panic. This is safe only
+because Phase 11's Norm 16 guarantees no secret ever travels in a query string. If that
+norm is ever relaxed, this logging must be revisited in the same change. A panic outside
+an HTTP request (a background task) has no route and logs `route = None`.
 
 Serving a partial page or a cached response would be friendlier but risks serving state
 mutated halfway through an aborted handler. Admin UI availability is explicitly the
@@ -762,30 +793,63 @@ and reachable through the soak and beyond.
 
 ```text
 styx/src/supervision/
-  domain/          TaskId, TaskTier, RestartPolicy, Backoff, ExhaustionAction,
-                   RestartLedger, RestartDecision, TaskOutcome, PanicReport,
-                   PoisonSuspicion, ExitReason, SupervisorError, TaskError,
-                   ShutdownError, TaskFactory (trait), FailureObserver (trait)
-  application/     Supervisor, SupervisedTask, ShutdownCoordinator
-  infrastructure/  TracingFailureObserver, SoakCounters, signal watching,
-                   the per-task TaskFactory adapters
+  domain/
+    task.rs            TaskId, TaskTier, TaskFactory (trait)
+    restart.rs         RestartBudget, RestartPolicy, Backoff, ExhaustionAction,
+                        RestartLedger, RestartDecision
+    failure.rs         TaskOutcome, PanicReport, PoisonSuspicion, FailureObserver (trait)
+    shutdown.rs        ExitReason
+    error.rs           SupervisorError, TaskError, ShutdownError
+  application/
+    supervisor.rs      Supervisor, SupervisedTask
+    shutdown.rs        ShutdownCoordinator
+    tests.rs           12a.11 and 12c.4's test suites
+  infrastructure/
+    observability.rs  TracingFailureObserver, SoakCounters
+    signals.rs         signal watching
+    tasks/
+      listeners.rs     UdpListenerTask, TcpListenerTask, DotListenerTask, DohListenerTask
+      background.rs    WebServerTask, QueryLogDrainTask, RollupFlushTask,
+                        AdlistIngestTask, HealthProbeTask
 ```
+
+`domain` and `application` are each split by concept — task identity, restart policy,
+failure reporting, shutdown reasons and the crate's error enums in `domain`; the
+supervisor's own bookkeeping separated from shutdown coordination in `application` —
+into their own files, re-exported from each layer's `mod.rs`, rather than left as one
+file accumulating every type in the layer. This is the same discipline `styx-proto`'s
+`domain/rdata/basic.rs` and `domain/rdata/dnssec.rs` already follow; `infrastructure`
+gets the same treatment, and the nine `TaskFactory` adapters split along the tier
+boundary Approach §1 already draws, resolution-critical listeners from degradable
+background tasks. 12a.11 and 12c.4 between them specify a dozen-plus tests covering
+`Supervisor` and `ShutdownCoordinator`; left as inline `#[cfg(test)]` modules in
+`supervisor.rs` and `shutdown.rs` they would risk the 400-line module cap on top of the
+production logic, so both suites live in the one `application/tests.rs` instead.
 
 `domain` depends on nothing but `std`, `thiserror` and the `Clock` port. `application`
 depends on `domain` and on `tokio`. `infrastructure` depends on both plus `tracing` and
 the feature crates it adapts. arch-lint's `[[deny-scope-dep]]` rules enforce that
-`domain` never reaches outward.
+`domain` never reaches outward; the scopes are the three layers, not the individual
+files inside them, so the split above does not change what arch-lint checks.
 
 ### Module layering inside `styx-web` (feature `web` only)
 
 ```text
-styx-web/src/infrastructure/panic_boundary.rs
-                   CatchPanicFuture, PanicBoundaryLayer, PanicBoundaryService,
-                   CaughtPanic, PanicInjector (cfg-gated)
+styx-web/src/infrastructure/panic_boundary/
+  future.rs          CatchPanicFuture
+  service.rs         PanicBoundaryLayer, PanicBoundaryService, CaughtPanic
+  injector.rs        PanicInjector (cfg-gated)
+  tests.rs           12b.6's test suite
 ```
 
 The boundary is infrastructure: it is a transport-level concern, it has no domain
-meaning, and it must not appear in `styx-web`'s `domain` or `application`.
+meaning, and it must not appear in `styx-web`'s `domain` or `application`. It is split
+by concept the same way `supervision` is — the catching future, the tower layer/service
+pair it wraps, and the cfg-gated injector each in their own file, re-exported from
+`panic_boundary/mod.rs`. 12b.6 is six tests, including the load-bearing one that drives
+a real HTTP request past an `await` while asserting concurrent UDP traffic keeps being
+answered; left inline that suite alone risks the 400-line cap, so it lives in
+`panic_boundary/tests.rs`.
 
 ### `xtask` crate (workspace member, not published)
 
@@ -835,10 +899,18 @@ passed.**
 
 1. Responsibility: house the supervisor, its policy types and its adapters inside the
    binary crate `styx`, not in a feature crate.
-2. Create `styx/src/supervision/{domain,application,infrastructure}/mod.rs`.
+2. Create `styx/src/supervision/{domain,application,infrastructure}/mod.rs`. Split
+   `domain` and `infrastructure` by concept into their own files from the start —
+   `domain/task.rs`, `domain/restart.rs`, `domain/failure.rs`, `domain/shutdown.rs`,
+   `domain/error.rs`, and `infrastructure/observability.rs`,
+   `infrastructure/signals.rs`, `infrastructure/tasks/{listeners,background}.rs` — each
+   `mod.rs` re-exporting its submodules, the way `styx-proto`'s
+   `domain/rdata/{basic,dnssec}.rs` are already split rather than left as one growing
+   `rdata` file.
 3. Add `[[scopes]]` entries to `arch-lint.toml` for the three new module scopes and
    `[[deny-scope-dep]]` rules forbidding `domain → application`, `domain →
-   infrastructure` and `application → infrastructure`.
+   infrastructure` and `application → infrastructure`. The scopes are the three layers,
+   not the individual files inside them.
 4. Constraints: no feature crate may `use` anything from `supervision`. Verify with a
    deliberate violation — an inert arch-lint config looks identical to a passing one.
 
@@ -855,11 +927,20 @@ passed.**
    factory adapter, so a typo is a compile error rather than a silently unsupervised
    task.
 
-#### 12a.3 — Define `RestartPolicy`, `Backoff` and `ExhaustionAction`
+#### 12a.3 — Define `RestartBudget`, `RestartPolicy`, `Backoff` and `ExhaustionAction`
 
-1. `RestartPolicy { max_restarts: u32, window: Duration, backoff: Backoff, on_exhaustion: ExhaustionAction }`.
-2. `Backoff { initial: Duration, max: Duration, multiplier: u32, jitter_ratio: f64 }`.
-3. Methods:
+1. `RestartBudget(u32)` — a newtype rather than a bare `u32`, because the value carries a
+   validated range that is a domain rule attached to the value itself, not to whichever
+   field happens to hold it: a budget of `0` would make a policy exhausted before its
+   first attempt.
+   - `RestartBudget::new(value: u32) -> Result<RestartBudget, SupervisorError>` — rejects
+     `0` with `SupervisorError::InvalidRestartPolicy`.
+   - `RestartBudget::value(&self) -> u32` is the only accessor. There is no setter, so an
+     existing `RestartBudget` cannot be mutated back into the invalid state its
+     constructor already rejected.
+2. `RestartPolicy { max_restarts: RestartBudget, window: Duration, backoff: Backoff, on_exhaustion: ExhaustionAction }`.
+3. `Backoff { initial: Duration, max: Duration, multiplier: u32, jitter_ratio: f64 }`.
+4. Methods:
    - `Backoff::delay_for(&self, attempt: u32) -> Duration`
      - Logic: exponential from `initial` by `multiplier`, saturating at `max`, then
        apply `± jitter_ratio`. **All arithmetic must be checked/saturating** — the
@@ -869,9 +950,10 @@ passed.**
      concrete constants, chosen at the keyboard and then written down. They are
      implementation-level values but they must exist as named constants with a comment
      stating the reasoning, not as magic numbers.
-4. Constraints: `max_restarts` must be > 0 and `window` must be > `backoff.max`, or the
-   budget can never be exhausted. Assert this in a constructor returning
-   `Result<RestartPolicy, SupervisorError>`.
+5. Constraints: `RestartBudget::new` already enforces the `> 0` rule at construction, so
+   `RestartPolicy`'s own constructor only has to assert the cross-field rule — `window`
+   must be > `backoff.max`, or the budget can never be exhausted within its own window.
+   Assert this in a constructor returning `Result<RestartPolicy, SupervisorError>`.
 
 #### 12a.4 — Define `TaskOutcome`, `PanicReport` and `PoisonSuspicion`
 
@@ -970,11 +1052,14 @@ passed.**
 
 #### 12a.10 — Register every long-lived task
 
-1. Write one `TaskFactory` adapter per task in `supervision::infrastructure`:
-   - **`ResolutionCritical`**: `UdpListenerTask`, `TcpListenerTask`, and — under the
-     encrypted-inbound feature — `DotListenerTask`, `DohListenerTask`.
-   - **`Degradable`**: `WebServerTask` (under `#[cfg(feature = "web")]`),
-     `QueryLogDrainTask`, `RollupFlushTask`, `AdlistIngestTask`, `HealthProbeTask`.
+1. Write one `TaskFactory` adapter per task, grouped by tier into
+   `supervision::infrastructure::tasks::listeners` and
+   `supervision::infrastructure::tasks::background`:
+   - **`ResolutionCritical`** (`listeners.rs`): `UdpListenerTask`, `TcpListenerTask`, and
+     — under the encrypted-inbound feature — `DotListenerTask`, `DohListenerTask`.
+   - **`Degradable`** (`background.rs`): `WebServerTask` (under
+     `#[cfg(feature = "web")]`), `QueryLogDrainTask`, `RollupFlushTask`,
+     `AdlistIngestTask`, `HealthProbeTask`.
 2. Rewrite `main` so that **no long-lived task is spawned outside the supervisor**. A
    stray `tokio::spawn` in `main` is an unsupervised task and defeats the phase.
 3. Constraints: the `web` tasks must be behind `#[cfg(feature = "web")]` so the
@@ -985,13 +1070,14 @@ passed.**
 1. A `StubTaskFactory` that panics on demand, fails on demand, or runs until cancelled.
 2. Tests, all driven by a test `Clock` so they run in milliseconds:
    - a degradable task that panics is restarted, and the restart count is observed;
-   - a degradable task that panics every time is shed after exactly `max_restarts`, and
-     the supervisor keeps running;
+   - a degradable task that panics every time is shed after exactly its
+     `RestartBudget`, and the supervisor keeps running;
    - a resolution-critical task that panics every time triggers
      `ExitReason::CriticalTaskExhausted`;
    - backoff delays grow exponentially and saturate at `max`;
    - `reset_on_healthy_uptime` clears the budget after a long healthy run;
-   - a duplicate `TaskId` is rejected at registration.
+   - a duplicate `TaskId` is rejected at registration;
+   - `RestartBudget::new(0)` is rejected with `SupervisorError::InvalidRestartPolicy`.
 3. A socket-level test: with the stub occupying the degradable tier, real UDP and TCP
    queries continue to be answered correctly across a restart storm.
 
@@ -1032,8 +1118,10 @@ passed.**
    `tower::Layer<S>`, producing `PanicBoundaryService<S>`.
 2. `PanicBoundaryService<S>` implements `tower::Service<Request>`:
    - `poll_ready` is itself wrapped — a panic in `poll_ready` is a real failure mode.
-   - `call(&mut self, req) -> CatchPanicFuture<S::Future>` capturing the request path as
-     `route`.
+   - `call(&mut self, req) -> CatchPanicFuture<S::Future>` capturing the full request URI
+     (path and query string, as received) as `route: Some(..)`. It is captured before
+     the inner service is called, so a panic in middleware still carries it. Logging the
+     query string relies on Phase 11 Norm 16: no secret travels in a query string.
 3. Constraints: the layer is applied to the **whole `styx-web` request path including
    middleware** — Leptos server functions, SSR rendering, static asset serving, and the
    session/origin-check middleware. It is not applied to the DNS listeners.
@@ -1182,23 +1270,30 @@ passed.**
 
 1. Responsibility: prove the artifact **runs**, not merely that it linked.
 2. Method: `run(&self) -> Result<SmokeOutcome, SmokeError>`
-   - Logic:
-     1. write a minimal TOML config: an ephemeral UDP listen address, one forwarder
-        upstream pointing at an in-process fake authoritative server, a temp DB path,
-        `web` disabled for determinism;
-     2. spawn the artifact as a child process;
-     3. wait for the listener to bind, with a timeout → `SmokeError::BindTimeout`;
-     4. send a query built with `styx-proto`, parse the response, assert RCODE and
-        rrset → `SmokeError::WrongAnswer` on mismatch;
-     5. send SIGTERM, assert exit status 0 within the drain deadline →
-        `SmokeError::DirtyExit`;
-     6. return a `SmokeOutcome` with all four booleans and the elapsed time.
+   - Logic: `run` itself does nothing but call five named private helpers in sequence
+     and assemble their results into a `SmokeOutcome` — each helper owns exactly one
+     step and its own guard-clause early return, so neither the bind-timeout poll nor
+     the drain-deadline wait nests inside `run`'s body:
+     1. `write_config` — a minimal TOML config: an ephemeral UDP listen address, one
+        forwarder upstream pointing at an in-process fake authoritative server, a temp
+        DB path, `web` disabled for determinism;
+     2. `spawn_process` — spawn the artifact as a child process;
+     3. `await_bind` — wait for the listener to bind, with a timeout → returns
+        `SmokeError::BindTimeout` on its own, not via a flag `run` has to check;
+     4. `probe_query` — send a query built with `styx-proto`, parse the response, assert
+        RCODE and rrset → `SmokeError::WrongAnswer` on mismatch;
+     5. `terminate_and_wait` — send SIGTERM, assert exit status 0 within the drain
+        deadline → `SmokeError::DirtyExit`;
+     6. `run` folds each helper's outcome and the elapsed time into `SmokeOutcome`.
 3. Constraints:
    - **Hermetic**: no live internet. The only thing under test is "this binary runs on
      this architecture".
    - Runs on **both** targets. aarch64 runs under emulation or a native runner —
      skipping it leaves the most likely deployment target unverified.
    - The smoke run must not be reduced to `--version`.
+   - This decomposition is what keeps `run` and each helper under the gate's
+     `too_many_lines` (60) and `excessive_nesting` (4) thresholds — a single function
+     inlining all five steps, each with its own error branch, would not.
 
 #### 12d.4 — 12d verification
 
@@ -1405,6 +1500,17 @@ passed.**
     `docs/soak-checklist.md`, `docs/cutover.md` and `docs/operations.md` are reviewed
     like code. Several of this project's accepted risks have documentation as their only
     mitigation.
+17. **Primitive obsession is avoided; a newtype wraps a primitive that carries domain
+    rules.** A value gets its own type when it has a validated range, checked
+    arithmetic, a non-trivial wire encoding, or named constants attached to it — not
+    merely because it is a `u32`, a `bool` or a `String`. A plain named field with no
+    independent validation and no risk of being confused with an unrelated value at a
+    call site is not primitive obsession — `SmokeOutcome`'s `started`, `bound_listeners`,
+    `answered_query` and `clean_exit` booleans are exactly that, and stay bare. The test
+    is domain rules attached to the value, not the primitive-ness of its type.
+    `CLAUDE.md` states the full Rust-adapted Object Calisthenics ruleset this
+    generalises from; `RestartBudget` — a `u32` with a validated `> 0` range enforced at
+    construction and no setter that reopens it — is this phase's worked example.
 
 ---
 
@@ -1435,9 +1541,9 @@ passed.**
 4. Degradable-tier task death must never interrupt resolution. Resolution-critical task
    death follows its tier's policy and, on budget exhaustion, exits the process cleanly
    and loudly rather than leaving a process that is up and answering nothing.
-5. Restarts are bounded: `max_restarts` within `window`, with exponential backoff and
-   jitter. An unbounded restart loop is forbidden — it starves the runtime the listeners
-   need.
+5. Restarts are bounded: the policy's `RestartBudget` within `window`, with exponential
+   backoff and jitter. An unbounded restart loop is forbidden — it starves the runtime
+   the listeners need.
 6. A supervised restart of any degradable task must not invalidate the answer cache, the
    infrastructure cache or the matcher.
 7. The supervisor must own **every** long-lived task. No `tokio::spawn` outside a
@@ -1518,6 +1624,12 @@ passed.**
    violation** — an inert config looks identical to a passing one.
 4. No new feature crate is introduced by this phase.
 5. No resolution behaviour, policy semantics or UI is added by this phase.
+6. This phase's newly introduced domain values that carry rules — `RestartBudget` — are
+   newtypes with a validating constructor and no setter that reopens the invariant, per
+   `CLAUDE.md`'s Object Calisthenics section. Per Phase 0 Norm 17, the measurable proxies
+   of that section — nesting depth, function length, module length and mixed field
+   visibility — are gated; "wrap a primitive that carries domain rules" is not, and stays
+   a review discipline that `just gate` passing does not by itself prove.
 
 ### 9. Technical constraints
 
@@ -1536,6 +1648,18 @@ passed.**
    process supervisor as the outermost net. `panic = "abort"` must **not** be set in the
    release profile: it would make `catch_unwind` impossible and reinstate exactly the
    failure this phase exists to prevent.
+7. This phase's code must pass the gate Phase 0 §10 extends, and the rules that actually
+   bear on this phase's risk are: `excessive_nesting` (threshold 4) and `too_many_lines`
+   (threshold 60) on the supervisor's poll/select loop and `CatchPanicFuture::poll`,
+   which are exactly the state-machine-shaped code most likely to nest past the limit —
+   Structure specifies the module and helper splits that keep them under it.
+   `partial_pub_fields` applies to every plain-data type this phase adds (`SmokeOutcome`,
+   `SoakSnapshot`, `TaskSpec`, `TaskHandle` and the rest): each stays fully `pub` or
+   fully private, never mixed. The `xtask module-size` cap (400 counted lines) applies to
+   `release.rs`, `smoke.rs` and `soak.rs`. `print_stdout` and `print_stderr` stay denied
+   in the supervisor, the panic boundary and every other crate this phase touches;
+   `xtask`'s CLI reporting for `release`, `smoke` and `soak` relies on Phase 0's single
+   crate-level `expect`, not a new exemption.
 
 ### 10. Standing operational obligations this phase must document
 

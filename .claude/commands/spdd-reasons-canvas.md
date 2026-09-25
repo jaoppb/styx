@@ -130,8 +130,11 @@ Input can be provided in two ways:
    direction TB
 
    class CoreType {
-       +FieldType field_name
+       -FieldType field_name
+       +new(param: ParamType) Result~CoreType, OperationError~
+       +field_name() FieldType
        +method_name(param: ParamType) ReturnType
+       -private_helper(param: ParamType) ReturnType
    }
 
    class SomeTrait {
@@ -175,6 +178,14 @@ Input can be provided in two ways:
      modes are part of its contract, not an afterthought
    - **Stereotypes**: use `<<trait>>`, `<<enumeration>>`, `<<newtype>>` so readers can
      tell a contract from a concrete type at a glance
+   - **Visibility markers are binding**: `+` means `pub` and `-` means private, for
+     fields and methods alike, and `/spdd-generate` emits exactly what the diagram says.
+     A type that guards an invariant behind its constructor (every `<<newtype>>`, and
+     anything validated at construction) draws **every** field `-` and exposes it
+     through `+` accessors. A plain data type with no invariant may draw every field `+`.
+     Never mix `+` and `-` fields on one type: the gate denies `partial_pub_fields`, so a
+     mixed diagram describes code that cannot pass. A private helper method is drawn
+     `-`. Omitting it hides a decision the generator then has to guess.
 
    **Mermaid rendering constraints** (verify before shipping the diagram):
    - Mermaid's generic syntax is `~T~`, not `<T>`. `Vec~u8~` renders; `Vec<u8>` does not

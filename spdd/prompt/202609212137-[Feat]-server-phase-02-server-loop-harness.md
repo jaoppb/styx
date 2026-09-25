@@ -48,15 +48,22 @@ contains no `.rs` file written by this project other than what phases 0 and 1 pr
 
 **Depends on:**
 
-- **Phase 0 — Foundation and gates.** git; the Cargo workspace skeleton; a **working**
-  `arch-lint.toml` on the syn engine with `[[scopes]]` per feature crate ×
-  domain/application/infrastructure, `[[deny-scope-dep]]` for layering and
-  `[[restrict-use]]` to keep feature crates from naming each other; `no-unwrap-expect`
+- **Phase 0 — Foundation and gates.** git; the Cargo workspace skeleton, including the
+  `styx-resolution` crate skeleton with its `domain`/`application`/`infrastructure` module
+  stubs; a **working** `arch-lint.toml` on the syn engine with `[[scopes]]` per feature
+  crate × domain/application/infrastructure, `[[deny-scope-dep]]` for layering,
+  `[[restrict-use]]` for feature isolation, and — *(amendment, 2026-09-24)* — one
+  `[[restrict-use]]` per feature crate × layer denying synchronous I/O in `domain` and
+  `application` (`no-sync-io-resolution-domain`, `no-sync-io-resolution-application`) plus
+  one per library crate denying `anyhow` (`no-anyhow-resolution`); `no-unwrap-expect`
   (`allow_in_tests = true`), `require-tracing`, `tracing-env-init`, `no-sync-io`,
   `require-thiserror`; an independent `cargo tree --edges normal` layering gate; the
-  `hickory-dev-only` check; `clippy.toml` with 15 denied lints and 4 `allow-*-in-tests`
-  entries; lefthook on pre-commit and pre-push; GitHub Actions; and a `justfile` with a
-  `gate` target aggregating all of it.
+  `hickory-dev-only` check; the `xtask module-size` check capping every `.rs` file at 400
+  counted lines *(amendment)*; `clippy.toml` with 21 denied lints — the original 15 plus
+  `print_stdout`, `print_stderr`, `dbg_macro`, `partial_pub_fields`, `too_many_lines` and
+  `excessive_nesting` — 5 `allow-*-in-tests` entries, and the `excessive-nesting-threshold`
+  / `too-many-lines-threshold` settings *(amendment)*; lefthook on pre-commit and
+  pre-push; GitHub Actions; and a `justfile` with a `gate` target aggregating all of it.
 - **Phase 1 — Wire codec (`styx-proto`).** Header, question, RR, RDATA for every v1
   rrtype; name compression on **both** encode and decode; compression-pointer loop
   detection; EDNS(0) OPT. Fuzzed on decode-arbitrary-bytes and decode→encode roundtrip.
@@ -89,7 +96,7 @@ direction TB
 
 class ServerConfig {
   +Vec~SocketAddr~ listen_addrs
-  +u16 udp_payload_size_default
+  +MaxResponseSize udp_payload_size_default
   +Duration tcp_idle_timeout
   +Duration query_timeout
   +from_toml(path) Result~ServerConfig, ConfigError~
@@ -129,15 +136,23 @@ class RequestContext {
   +ClientId client
   +Transport transport
   +Instant received_at
-  +u16 max_response_size
+  +MaxResponseSize max_response_size
   +bool edns_present
   +Option~ResolutionOutcome~ outcome
-  +new(Message, ClientId, Transport, u16) RequestContext
+  +new(Message, ClientId, Transport, MaxResponseSize) RequestContext
 }
 
 class ClientId {
   +IpAddr addr
   +from_socket_addr(SocketAddr) ClientId
+}
+
+class MaxResponseSize {
+  -u16 bytes
+  +classic() MaxResponseSize
+  +from_edns_advertised(u16) MaxResponseSize
+  +tcp_ceiling() MaxResponseSize
+  +fits(usize) bool
 }
 
 class ResolutionOutcome {
@@ -154,6 +169,7 @@ class AnswerSource {
   Blocked
   CacheHit
   Upstream
+  Recursion
   Error
 }
 
@@ -166,15 +182,16 @@ class Pipeline {
 }
 
 class ForgedAnswer {
-  +Message message
-  +AnswerSource source
-  +build(RequestContext, Vec~Record~, ResponseCode, u32) ForgedAnswer
+  -Message message
+  -AnswerSource source
+  +build(RequestContext, Vec~Record~, ResponseCode, Ttl) ForgedAnswer
+  +outcome() ResolutionOutcome
   +into_response() Message
 }
 
 class ResponseWriter {
   +write(Message, RequestContext) Result~Vec~u8~, EncodeError~
-  +truncate_if_needed(Message, u16) Message
+  +truncate_if_needed(Message, MaxResponseSize) Message
 }
 
 class Clock {
@@ -265,10 +282,14 @@ class ZoneScript {
 }
 
 class TestServer {
-  +Server server
-  +TestClock clock
-  +SocketAddr udp_addr
-  +SocketAddr tcp_addr
+  -Server server
+  -TestClock clock
+  -SocketAddr udp_addr
+  -SocketAddr tcp_addr
+  +server() Server
+  +clock() TestClock
+  +udp_addr() SocketAddr
+  +tcp_addr() SocketAddr
   +boot_ephemeral() Result~TestServer, HarnessError~
   +with_filter(Arc~dyn FilterPolicy~) TestServer
   +with_local_records(Arc~dyn LocalRecords~) TestServer
@@ -289,6 +310,7 @@ UdpListener --> RequestContext : produces
 TcpListener --> RequestContext : produces
 RequestContext "1" --> "1" ClientId : identifies
 RequestContext "1" --> "1" Transport : arrived on
+RequestContext "1" --> "1" MaxResponseSize : bounds truncation to
 RequestContext "1" --> "0..1" ResolutionOutcome : records
 ResolutionOutcome "1" --> "1" AnswerSource : attributes
 Pipeline --> LocalRecords : stage 1
@@ -346,7 +368,7 @@ concerns, not a zone-file server.
   what in-memory test transports never surface, which is the main reason the harness uses
   real sockets.
 - **Supervised async tasks from the first listener.** *Why:* in a single process, a panic
-  in any task can take DNS down for the whole house. `panic = "deny"` is one of the 15
+  in any task can take DNS down for the whole house. `panic = "deny"` is one of the 21
   denied lints and it is load-bearing, but its real mitigation — a `catch_unwind` boundary
   around the web layer — is **phase 12**. Everything before phase 12 relies on the lint
   plus a supervised task model. Retrofitting supervision after seven phases of accumulated
@@ -528,11 +550,14 @@ concerns, not a zone-file server.
    wire codec. Every crate may depend on it; `[[restrict-use]]` must be written so as not
    to forbid this.
 2. **`styx-resolution`** *(this phase creates it)* —
-   - `domain` — `RequestContext`, `ClientId`, `Transport`, `ResolutionOutcome`,
-     `AnswerSource`, `ForgedAnswer`, the `Clock` trait, the `FilterPolicy` trait, the
-     `FilterVerdict` enum, the `LocalRecords` trait, the `QueryObserver` trait,
-     `QueryDetail`, and the `thiserror` error enums. **No I/O, no `unwrap`, no
-     dependency on `application` or `infrastructure`.**
+   - `domain` — `RequestContext`, `ClientId`, `Transport`, `MaxResponseSize`,
+     `ResolutionOutcome`, `AnswerSource`, `ForgedAnswer`, the `Clock` trait, the
+     `FilterPolicy` trait, the `FilterVerdict` enum, the `LocalRecords` trait, the
+     `QueryObserver` trait, `QueryDetail`, and the `thiserror` error enums — the latter
+     split by concept into `error::pipeline`, `error::listener`, `error::server` and
+     `error::config` rather than one flat `error` module accumulating every concern
+     (`HarnessError` lives with the harness instead; see item 4). **No I/O, no `unwrap`,
+     no dependency on `application` or `infrastructure`.**
    - `application` — `Pipeline`, which orchestrates the fixed stage order and owns the
      `Arc<dyn …>` handles to the four ports. Depends on `domain` only.
    - `infrastructure` — `UdpListener`, `TcpListener`, `Server`, `ResponseWriter`,
@@ -544,8 +569,10 @@ concerns, not a zone-file server.
    implementation.** In later phases it is where `styx-filtering`, `styx-storage` and the
    query-log pipeline get wired in.
 4. **`styx-resolution/tests/`** *(harness, dev-only)* — `TestServer`, `TestClock`,
-   `FakeNameServer`, `FakeRole`, `ZoneScript`, `DnsClient`. **The only place
-   `hickory-proto` may appear**, and only under `[dev-dependencies]`.
+   `FakeNameServer`, `FakeRole`, `ZoneScript`, `DnsClient`, and `HarnessError`. Kept out of
+   `domain::error` because `domain` ships in the production binary and `HarnessError`
+   never does. **The only place `hickory-proto` may appear**, and only under
+   `[dev-dependencies]`.
 
 ### Trait (port) implementations
 
@@ -608,6 +635,11 @@ concerns, not a zone-file server.
    compile-time Cargo feature, default on, so a headless resolver can be built; CI builds
    and tests `--no-default-features` on every commit, **or the headless build rots within
    a month**). `domain` must not name `application` or `infrastructure`.
+5. **Arch-lint wiring** *(amendment, 2026-09-24)*: the crate's `[[scopes]]` triple and its
+   `[[restrict-use]]` rules — `no-sync-io-resolution-domain`,
+   `no-sync-io-resolution-application` and `no-anyhow-resolution` — are already declared in
+   phase 0's `arch-lint.toml`. This operation adds no new arch-lint entries, only the
+   `domain` and `application` code those rules govern.
 
 ### 2. Define the `Clock` port and its two implementations — `styx-resolution::domain::clock`
 
@@ -698,26 +730,52 @@ concerns, not a zone-file server.
 3. **`RequestContext`**: decoded query, `ClientId`, `Transport`, receipt instant (from the
    injected `Clock`), `max_response_size`, whether EDNS(0) OPT was present, and a slot for
    the `ResolutionOutcome`.
-4. **`max_response_size` derivation**: EDNS(0) advertised UDP payload size when OPT is
+4. **`MaxResponseSize(u16)`**, also in `domain::request`: the byte ceiling every truncation
+   decision is checked against. It carries a named constant — `CLASSIC_LIMIT = 512`, the
+   pre-EDNS default cited by name in Approach §1 — and three constructors instead of one
+   bare integer a caller could confuse with any other `u16`: `classic()` for the no-OPT
+   case; `from_edns_advertised(u16)`, which accepts the advertised value verbatim,
+   including one *below* 512; and `tcp_ceiling()`, which returns `u16::MAX` — the literal
+   ceiling the two-byte TCP length prefix imposes, not an arbitrary sentinel standing in
+   for "unbounded". `fits(usize) -> bool` is the one checked comparison
+   `ResponseWriter::truncate_if_needed` (Operation 10) routes every size check through,
+   rather than scattering bare `<` comparisons across the listeners.
+5. **`max_response_size` derivation**: EDNS(0) advertised UDP payload size when OPT is
    present (including the case where it is advertised *below* 512), 512 when absent, and
-   effectively unbounded on TCP subject to the 16-bit length prefix.
-5. **Constraint**: **no EDNS Client Subnet option is ever read or emitted.** ECS (RFC
+   effectively unbounded on TCP subject to the 16-bit length prefix — the three
+   `MaxResponseSize` constructors above, one per branch.
+6. **Constraint**: **no EDNS Client Subnet option is ever read or emitted.** ECS (RFC
    7871) is a deliberate v1 non-goal because it leaks client topology.
 
 ### 7. Define `ResolutionOutcome`, `AnswerSource` and `ForgedAnswer` — `styx-resolution::domain::answer`
 
-1. **`AnswerSource`**: `LocalRecord` | `Blocked` | `CacheHit` | `Upstream` | `Error`.
+1. **`AnswerSource`**: `LocalRecord` | `Blocked` | `CacheHit` | `Upstream` | `Recursion`
+   | `Error`.
    *Why this exists:* it records **which stage produced the answer**, which is what makes
    "clear AD, forge no signature, never cache" enforceable at one place rather than
    scattered across six future call sites, and it is the field the rollups bucket on.
+   **It is the only provenance type in `styx-resolution`.** Phase 4's cache admission
+   consumes this enum to refuse forged answers, rather than declaring its own. Phase 5
+   reports recursively resolved answers as `Recursion`, so the query log can tell them
+   apart from forwarded (`Upstream`) ones. In this phase only `LocalRecord`, `Blocked`
+   and `Error` are constructed. The other three variants are declared now so the enum
+   never changes shape under the rollups.
 2. **`ResolutionOutcome`**: `source`, `rcode`, `forged: bool`, `cacheable: bool`,
    `authentic_data: bool`.
-3. **`ForgedAnswer::build(ctx, records, rcode, ttl) -> ForgedAnswer`** — **the only way to
-   construct an answer styx invented.**
+3. **`ForgedAnswer::build(ctx, records, rcode, ttl: Ttl) -> ForgedAnswer`** — **the only way
+   to construct an answer styx invented.** The TTL parameter is Phase 1's `styx-proto`
+   `Ttl`, not a bare `u32`: it is the shared foundation crate's already-checked,
+   saturating-decrement type, and reusing it here is the newtype rule applied to a value
+   that already carries the rule elsewhere, not a fresh type invented for this phase.
    - Logic: copy the question section; set QR, and RA as appropriate; **clear the AD bit
-     unconditionally**; attach **no RRSIG and no DNSKEY**; apply the supplied short TTL;
+     unconditionally**; attach **no RRSIG and no DNSKEY**; apply the supplied short `Ttl`;
      set `ResolutionOutcome { forged: true, cacheable: false, authentic_data: false }`.
    - Error handling: none — construction cannot fail; the inputs are already validated.
+   - Accessors: `outcome(&self) -> ResolutionOutcome` returns that outcome, carrying the
+     private `source` field, so the pipeline reports provenance to the observer without
+     ever reading or setting the fields itself. `into_response(self) -> Message`
+     consumes the value. Both fields stay private, so a forged answer cannot be relabelled
+     after construction.
 4. **Constraints**: `ForgedAnswer` is the sole producer of answers with
    `forged: true`. Phase 8's five blocked-reply modes and phase 9's local records both go
    through it. **A block is not a validation verdict**, and filtering is applied *before*
@@ -748,6 +806,15 @@ concerns, not a zone-file server.
      unsupported opcodes to `NOTIMP`; internal failures to `SERVFAIL`.
 4. **Constraints**: the stage order is fixed. Any future stage insertion must state which
    side of the cache it falls on and why.
+5. **Shape constraint** *(amendment, 2026-09-24)*: each stage in item 3 is a named helper
+   (for example `try_local_records`, `try_filter`, `run_terminal`) returning either a
+   completed `Message` or a signal to continue, so `handle` itself reads as a flat sequence
+   of guard-clause early returns rather than nested `match` arms. Every exit — the
+   validation failure, stage 1, stage 2, the stub terminal, and the success path — funnels
+   through one shared point that calls `record_outcome` then `offer_detail`, which is also
+   how Safeguards S3's exactly-once guarantee is met without duplicating the two observer
+   calls at every return site. This keeps `handle` within `too_many_lines`' 60-line cap and
+   `excessive_nesting`'s threshold of 4.
 
 ### 9. Define the phase-2 terminal behaviour — `styx-resolution::application::pipeline`
 
@@ -763,12 +830,15 @@ concerns, not a zone-file server.
 
 ### 10. Implement `ResponseWriter` — `styx-resolution::infrastructure::response`
 
-1. **`truncate_if_needed(message, max_size) -> Message`**
-   - Logic: encode-size the assembled message. If it fits, return unchanged. If not, set
-     the TC bit and drop sections from the end (additional, then authority, then answer)
-     until it fits, leaving header and question always present.
-   - **All size arithmetic lives here**, centralised so the checked-arithmetic tax of
-     `arithmetic_side_effects = deny` and `indexing_slicing = deny` is paid once.
+1. **`truncate_if_needed(message, max_size: MaxResponseSize) -> Message`**
+   - Logic: encode-size the assembled message and check it against `max_size` via
+     `MaxResponseSize::fits`. If it fits, return unchanged. If not, set the TC bit and drop
+     sections from the end (additional, then authority, then answer), re-checking `fits`
+     after each drop, until it fits, leaving header and question always present.
+   - **All size arithmetic lives here, routed through `MaxResponseSize::fits`** — one
+     audited, checked comparison rather than a bare `<` at every call site — so the
+     checked-arithmetic tax of `arithmetic_side_effects = deny` and `indexing_slicing =
+     deny` is paid once.
 2. **`write(message, ctx) -> Result<Vec<u8>, EncodeError>`**
    - Logic: apply `truncate_if_needed` with `ctx.max_response_size` on UDP; encode via
      `styx-proto`; on TCP, prepend the two-byte length prefix.
@@ -790,6 +860,10 @@ concerns, not a zone-file server.
 4. **Constraints**: no `unwrap`/`expect`; no blocking I/O (`no-sync-io`); `tracing` spans
    per query carrying the client address and the question, subject to later privacy
    levels.
+5. **Shape constraint** *(amendment, 2026-09-24)*: the loop body in item 3 — decode,
+   recover-or-warn, dispatch, reply — is a named helper such as `handle_datagram`, called
+   once per iteration, so `run` stays a thin loop and the helper stays within
+   `excessive_nesting`'s threshold of 4 and `too_many_lines`' 60-line cap.
 
 ### 12. Implement `TcpListener` — `styx-resolution::infrastructure::tcp`
 
@@ -803,6 +877,12 @@ concerns, not a zone-file server.
    - Error handling: a framing error closes that connection only, never the listener.
 3. **Constraints**: TCP is a peer transport, not a fallback-only path — a client that
    never tries UDP must be served identically.
+4. **Shape constraint** *(amendment, 2026-09-24)*: the per-connection task is a named
+   helper (for example `handle_connection`), and reading the length prefix is factored into
+   its own helper (for example `read_frame`) rather than inlined into the query loop, so
+   that handling multiple queries per connection plus partial-read recovery does not push
+   either function past `excessive_nesting`'s threshold of 4 or `too_many_lines`' 60-line
+   cap.
 
 ### 13. Implement `Server` and `ServerConfig` — `styx-resolution::infrastructure::server` and the `styx` binary
 
@@ -822,15 +902,22 @@ concerns, not a zone-file server.
    startup (`tracing-env-init`). **This is the only file that names both a port and an
    implementation.**
 
-### 14. Define the `thiserror` error taxonomy — across `styx-resolution::domain::error`
+### 14. Define the `thiserror` error taxonomy, split by concept, not one flat `error` module
 
-1. **`PipelineError`** — variants carrying their DNS `ResponseCode`: `MalformedQuery`
-   (FORMERR), `UnsupportedOpcode` (NOTIMP), `UnsupportedClass` (NOTIMP),
-   `MultipleQuestions` (FORMERR), `Internal` (SERVFAIL), `NotResolvable` (REFUSED, the
-   phase-2 terminal).
-2. **`ListenerError`**, **`ServerError`**, **`ConfigError`**, **`HarnessError`** — each a
-   `thiserror` enum, each with `#[from]` conversions where a source error is wrapped.
-3. **Constraints**: mapping from `PipelineError` to `ResponseCode` must be **total** — a
+1. **`PipelineError`** (`domain::error::pipeline`) — variants carrying their DNS
+   `ResponseCode`: `MalformedQuery` (FORMERR), `UnsupportedOpcode` (NOTIMP),
+   `UnsupportedClass` (NOTIMP), `MultipleQuestions` (FORMERR), `Internal` (SERVFAIL),
+   `NotResolvable` (REFUSED, the phase-2 terminal).
+2. **`ListenerError`** (`domain::error::listener`), **`ServerError`**
+   (`domain::error::server`), **`ConfigError`** (`domain::error::config`) — each a
+   `thiserror` enum, each with `#[from]` conversions where a source error is wrapped, each
+   in its own file rather than accumulating in one `error.rs` — the same god-module
+   avoidance `styx-proto`'s `domain/rdata/basic.rs` and `domain/rdata/dnssec.rs` split
+   already demonstrates.
+3. **`HarnessError`** — lives in the harness module (`styx-resolution/tests/`, dev-only),
+   not under `domain`, because `domain` ships in the production binary and this type never
+   does.
+4. **Constraints**: mapping from `PipelineError` to `ResponseCode` must be **total** — a
    match with no catch-all, so a new variant fails to compile until its RCODE is chosen.
    No error message may leak an internal path or address to a DNS client.
 
@@ -914,7 +1001,7 @@ concerns, not a zone-file server.
 
 3. **Error handling**: every fallible function returns `Result<T, E>` with a `thiserror`
    enum (`require-thiserror`). No `unwrap`, no `expect`, no `panic!` outside tests
-   (`no-unwrap-expect` with `allow_in_tests = true`; `panic` is among the 15 denied clippy
+   (`no-unwrap-expect` with `allow_in_tests = true`; `panic` is among the 21 denied clippy
    lints). Errors carry the DNS `ResponseCode` they map to, and the mapping is a **total
    match** so a new variant fails to compile until its RCODE is chosen. Error text never
    leaks an internal path, address or configuration value to a DNS client. A query that
@@ -923,8 +1010,10 @@ concerns, not a zone-file server.
 4. **Arithmetic and indexing**: `indexing_slicing = deny` and
    `arithmetic_side_effects = deny` workspace-wide. Every label offset, every TTL
    decrement, every size subtraction is a checked operation. **That is the intended tax.**
-   Concentrate size arithmetic in `ResponseWriter` rather than spreading it through the
-   listeners.
+   Concentrate size arithmetic in `ResponseWriter`, routed through `MaxResponseSize::fits`
+   — this crate's one audited, bounds-checked primitive for response-size arithmetic, the
+   pattern `styx-proto`'s `Cursor` sets for offset arithmetic — rather than spreading bare
+   comparisons through the listeners.
 
 5. **Concurrency**: listeners and per-connection handlers run as **supervised** async
    tasks under a shared cancellation token, never fire-and-forget. *Why:* in a single
@@ -933,14 +1022,19 @@ concerns, not a zone-file server.
    the lint plus supervision. Shutdown must be prompt and must not hang on in-flight work.
 
 6. **Logging**: `tracing` throughout (`require-tracing`), initialised once at binary
-   startup (`tracing-env-init`). One span per query carrying client address and question.
-   Structured fields, not formatted strings. *Forward constraint:* privacy levels ship in
-   v1 (log everything / hide domains / hide clients / anonymous), so field names must be
-   selectable for redaction later without restructuring the call sites.
+   startup (`tracing-env-init`), and never a print macro — `print_stdout`, `print_stderr`
+   and `dbg_macro` are denied clippy lints *(amendment, 2026-09-24)*. One span per query
+   carrying client address and question. Structured fields, not formatted strings.
+   *Forward constraint:* privacy levels ship in v1 (log everything / hide domains / hide
+   clients / anonymous), so field names must be selectable for redaction later without
+   restructuring the call sites.
 
-7. **No I/O on the hot path**: `no-sync-io` is enforced by arch-lint. Matcher state,
-   local records and configuration are read from memory, built at boot and on explicit
-   reload. **A DB outage degrades logging and admin, never resolution.**
+7. **No I/O on the hot path**: enforced by a `[[restrict-use]]` per layer
+   (`no-sync-io-resolution-domain`, `no-sync-io-resolution-application`) in sync and async
+   code alike; arch-lint's `no-sync-io` only sees async contexts, so it covers the
+   remainder of the crate *(amendment, 2026-09-24)*. Matcher state, local records and
+   configuration are read from memory, built at boot and on explicit reload. **A DB outage
+   degrades logging and admin, never resolution.**
 
 8. **Test dependencies**: `hickory-proto` is `[dev-dependencies]` only and appears only in
    harness code. The phase 0 `hickory-dev-only` check asserts it is in no normal or build
@@ -959,6 +1053,20 @@ concerns, not a zone-file server.
 11. **Documentation**: every port trait carries a doc comment stating (a) its obligation,
     (b) which phase implements it, and (c) the reason it exists on the hot path now. The
     forged-answer rule is documented on `ForgedAnswer::build`, not in a separate file.
+
+12. **Primitive obsession is avoided per `CLAUDE.md`; a newtype wraps a primitive that
+    carries domain rules.** A value gets its own type when it has a validated range,
+    checked arithmetic, a non-trivial wire encoding, or named constants attached to it —
+    not merely because it is a `u16`, a `u32`, a `bool` or a `String`. A plain named field
+    with no independent validation and no risk of being confused with an unrelated value
+    at a call site is not primitive obsession; the test is domain rules attached to the
+    value, not the primitive-ness of its type — which is why `ResolutionOutcome`'s
+    `forged`, `cacheable` and `authentic_data` stay bare `bool`s. This phase's own
+    newtypes are the worked examples: `MaxResponseSize`, with the named `CLASSIC_LIMIT`
+    constant and the checked `fits` comparison every truncation decision routes through
+    instead of a bare `u16`; and `ForgedAnswer::build`'s TTL parameter, which reuses Phase
+    1's `Ttl` rather than reinventing a bare `u32` for a value that already carries the
+    rule elsewhere.
 
 ---
 
@@ -1036,6 +1144,11 @@ and expensive to discover later:
 - `domain` does not depend on `application` or `infrastructure`; `application` depends on
   `domain` only. Enforced by arch-lint's `[[scopes]]` and `[[deny-scope-dep]]`.
 - The `styx` binary is the only place a port meets an implementation.
+- **This phase's newly introduced domain values that carry rules are newtypes.**
+  `MaxResponseSize` (named constant, checked `fits` comparison) and the reuse of Phase 1's
+  `Ttl` for `ForgedAnswer::build`'s TTL parameter, per `CLAUDE.md`'s primitive-obsession
+  rule — never a bare `u16` or `u32` standing in for a value with attached domain
+  behaviour.
 - **The gate must be verified live before it is trusted.** arch-lint 0.5.0 selects its
   engine by whether the config contains `[[layers]]`: with it, the tree-sitter engine
   runs, which ships only `tree-sitter-kotlin-ng` and filters discovery to `.kt`/`.kts` —
@@ -1048,16 +1161,33 @@ and expensive to discover later:
 
 ### 5. Lint and build constraints
 
-- All 15 denied clippy lints pass, notably `indexing_slicing`, `arithmetic_side_effects`
-  and `panic`.
+- All 21 denied clippy lints pass, notably `indexing_slicing`, `arithmetic_side_effects`,
+  `panic`, and — *(amendment, 2026-09-24)* — `partial_pub_fields`, `too_many_lines`
+  (threshold 60) and `excessive_nesting` (threshold 4).
 - `no-unwrap-expect` (`allow_in_tests = true`), `require-tracing`, `tracing-env-init`,
-  `no-sync-io`, `require-thiserror` all pass.
+  `no-sync-io`, `require-thiserror` all pass, and so do the `[[restrict-use]]` rules
+  `no-sync-io-resolution-domain`, `no-sync-io-resolution-application` and
+  `no-anyhow-resolution` *(amendment)*.
 - `cargo tree --edges normal` shows no feature-crate cross-dependency and no
   `hickory-proto`.
 - The `hickory-dev-only` check passes: `hickory-proto` in no normal or build dependency
   path.
+- `xtask module-size` passes on every file this phase adds under
+  `crates/styx-resolution/src/` *(amendment)*.
 - `cargo build --no-default-features` and `cargo test --no-default-features` both succeed.
 - `just gate` is green on every commit.
+- **This phase's likeliest gate risks** *(amendment, 2026-09-24)*: `excessive_nesting` and
+  `too_many_lines` on `Pipeline::handle`, `UdpListener::run` and `TcpListener::run`, the
+  three functions that combine a loop with multi-way branching — Operations 8, 11 and 12
+  specify the named-helper decomposition that keeps each under threshold.
+  `partial_pub_fields` is not a live risk: every struct in Entities is already uniformly
+  public or uniformly private. Neither is `print_stdout`/`print_stderr`/`dbg_macro`: this
+  phase logs exclusively through `tracing`.
+- **`CLAUDE.md`'s Object Calisthenics section is only partly a review discipline.**
+  Nesting depth, function length, module length and mixed field visibility are gated —
+  Phase 0 Norm 17 has the thresholds. Wrapping a primitive that carries domain rules, such
+  as `MaxResponseSize` or the reused `Ttl` in `ForgedAnswer::build`, stays review-only: no
+  lint checks it, and catching drift there is what review is for.
 
 ### 6. Test constraints
 

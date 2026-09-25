@@ -287,7 +287,7 @@ classDiagram
 direction TB
 
 class GroupRow {
-  +i64 id
+  +GroupId id
   +String name
   +bool enabled
   +bool is_default
@@ -295,7 +295,7 @@ class GroupRow {
 }
 
 class ClientRow {
-  +String ip
+  +ClientId ip
   +Option~String~ name
   +ClientOrigin origin
   +i64 first_seen_unix
@@ -303,8 +303,8 @@ class ClientRow {
 }
 
 class ClientGroupRow {
-  +String client_ip
-  +i64 group_id
+  +ClientId client_ip
+  +GroupId group_id
 }
 
 class AdlistRow {
@@ -328,12 +328,12 @@ class AdlistEntryRow {
 
 class AdlistGroupRow {
   +i64 adlist_id
-  +i64 group_id
+  +GroupId group_id
 }
 
 class RuleRow {
   +i64 id
-  +i64 group_id
+  +GroupId group_id
   +RuleAction action
   +RuleKind kind
   +String pattern
@@ -347,7 +347,7 @@ class LocalRecordRow {
   +String name
   +LocalRecordType rtype
   +String value
-  +u32 ttl_secs
+  +Ttl ttl_secs
   +bool enabled
 }
 
@@ -360,32 +360,32 @@ class SettingRow {
 class RawQueryRow {
   +i64 id
   +i64 ts_unix_ms
-  +Option~String~ client_ip
+  +Option~ClientId~ client_ip
   +Option~String~ qname
-  +u16 qtype
+  +RecordType qtype
   +Decision decision
-  +Option~u16~ rcode
+  +Option~ResponseCode~ rcode
   +Option~u32~ elapsed_us
 }
 
 class RollupBucketRow {
-  +i64 bucket_start_unix
-  +String client_key
+  +UnixTimestamp bucket_start_unix
+  +ClientKey client_key
   +Decision decision
-  +u16 qtype
+  +RecordType qtype
   +i64 count
 }
 
 class RollupTopDomainRow {
-  +i64 bucket_start_unix
-  +String client_key
+  +UnixTimestamp bucket_start_unix
+  +ClientKey client_key
   +Decision decision
   +String domain
   +i64 count
 }
 
 class RollupDroppedRow {
-  +i64 bucket_start_unix
+  +UnixTimestamp bucket_start_unix
   +i64 dropped_detail
 }
 
@@ -449,6 +449,34 @@ class IngestFailureKind {
   BelowMinimumCount
   CountCollapsed
   ParseFailure
+}
+
+class GroupId {
+  <<newtype, this phase>>
+  -i64 value
+  +DEFAULT_GROUP_ID GroupId$
+  +value() i64
+}
+
+class ClientId {
+  <<newtype, this phase>>
+  -IpAddr value
+  +value() IpAddr
+}
+
+class ClientKey {
+  <<newtype, this phase>>
+  -String value
+  +redacted() ClientKey$
+  +is_redacted() bool
+  +value() String
+}
+
+class UnixTimestamp {
+  <<newtype, this phase>>
+  -i64 epoch_secs
+  +floor_to_hour() UnixTimestamp
+  +epoch_secs() i64
 }
 
 GroupRow "1" -- "0..*" ClientGroupRow : group deleted, cascade
@@ -515,12 +543,54 @@ query-log phase. **The schema must not foreclose either reading**, and this shap
 not: coarser timestamps are a smaller `bucket_start` resolution chosen by the writer, and
 suppressing top-N is writing zero rows into a table that already exists.
 
+### Primitives that carry domain rules are newtypes
+
+Per `CLAUDE.md`'s primitive-obsession rule, a value is wrapped in a newtype when it has a
+validated range, a checked arithmetic operation, a non-trivial encoding, or a named
+constant attached to it — not merely because it is an `i64`, a `u16` or a `String`. This
+phase reuses Phase 1's own worked examples rather than re-deriving them, and adds the few
+newtypes its own tables actually need:
+
+- **`RawQuery.qtype` and `RollupBucket.qtype`** are `styx_proto::domain::RecordType`, not a
+  bare `u16` — the same named-constants type `CLAUDE.md` cites by name, reused because
+  `styx-proto` is shared foundation every crate may depend on.
+- **`RawQuery.rcode`** is `Option<styx_proto::domain::ResponseCode>`, not `Option<u16>` —
+  the 12-bit extended RCODE is unrepresentable as a bare integer without a range check.
+- **`LocalRecord.ttl`** is `styx_proto::domain::Ttl`, not a bare `u32`.
+- **`GroupId`** (`group.rs`) wraps the group's `i64` primary key and carries the named
+  constant `DEFAULT_GROUP_ID`, the seeded, undeletable group every ungrouped client
+  resolves against — a named constant attached to the value is exactly `CLAUDE.md`'s test.
+- **`ClientId`** (`client.rs`) wraps `IpAddr`, so a client's identity can never be confused
+  at a call site with an unrelated `IpAddr` this codebase also handles — an upstream
+  address, a listener address.
+- **`ClientKey`** (`history.rs`) wraps the rollup `client_key` column: either a real
+  client's key or the documented redaction sentinel, the empty string, with
+  `ClientKey::redacted()` and `is_redacted()` making that invariant a type instead of a
+  convention every call site has to remember. This is the case the schema's own prose
+  already calls out — `NULL` is not equal to `NULL` in SQLite, so the sentinel has to be a
+  real, `NOT NULL` value, and the type is where that rule is enforced.
+- **`UnixTimestamp`** (`history.rs`) wraps the rollup `bucket_start` column and is this
+  crate's one audited primitive for bucket-boundary arithmetic — the role `styx-proto`'s
+  `Cursor` plays for buffer offsets. `floor_to_hour()` is checked and never panics; it
+  replaces ad hoc `%`/`-` arithmetic at each call site that needs an hourly boundary.
+
+**Left as bare primitives, deliberately.** `AdlistRow.id`, `RuleRow.id`,
+`LocalRecordRow.id` and `RawQueryRow.id` carry no validated range, no checked arithmetic
+and no named constant — unlike `GroupId`, nothing distinguishes one surrogate key from
+another, so wrapping them would be ceremony with no behaviour behind it. `GroupRow.is_default`
+is a plain named `bool` with no independent validation, the same shape as `CLAUDE.md`'s own
+`Header::authoritative` example, and stays a `bool`. Every `_unix` timestamp other than the
+rollup bucket boundary — `first_seen`, `last_seen`, `created_at`, `applied_at`,
+`updated_at`, `last_attempt`, `last_success`, and `RawQueryRow`'s millisecond `ts_unix_ms`
+— only orders or displays a moment in time and carries no arithmetic, so it stays a plain
+`i64`.
+
 ### Rust types, by layer
 
-- **`domain`**: `Client`, `Group`, `Adlist`, `AdlistIngestState`, `Rule`, `LocalRecord`,
-  `PrivacyLevel`, `BlockingMode`, `ClientOrigin`, `RuleAction`, `RuleKind`, `Decision`,
-  `IngestFailureKind`, `SettingKey`, `PolicySnapshot`, `StorageError`, and every port
-  trait.
+- **`domain`**: `Client`, `ClientId`, `Group`, `GroupId`, `Adlist`, `AdlistIngestState`,
+  `Rule`, `LocalRecord`, `PrivacyLevel`, `BlockingMode`, `ClientOrigin`, `RuleAction`,
+  `RuleKind`, `Decision`, `ClientKey`, `UnixTimestamp`, `IngestFailureKind`, `SettingKey`,
+  `PolicySnapshot`, `StorageError`, and every port trait.
 - **`infrastructure`**: the `*Row` structs above, one per table, mapping one-to-one onto
   columns and converting to/from the `domain` types at the edge. A row type never escapes
   `infrastructure`; a `domain` type never carries a SQL concern.
@@ -539,7 +609,11 @@ with Cargo enforcing feature-to-feature isolation and `arch-lint` enforcing laye
 within the crate.
 
 - `domain` — row-independent policy types, the four lifecycle rules as invariants, and the
-  ports as traits. No `turso`/`libsql` types, no SQL, no `async` runtime concern.
+  ports as traits. No `turso`/`libsql` types, no SQL, no `async` runtime concern. Its own
+  newtypes (`GroupId`, `ClientId`, `ClientKey`, `UnixTimestamp`) live here, alongside
+  `styx-proto`'s `RecordType`, `ResponseCode` and `Ttl`, reused rather than re-derived —
+  `styx-proto` is shared foundation and the one dependency the no-cross-feature rule
+  exempts.
 - `application` — the snapshot build, the ingestion state machine, purge and retention,
   client discovery, migration running. Orchestration only; depends on `domain` traits.
 - `infrastructure` — the Turso connection, hand-written SQL migrations as embedded `.sql`
@@ -790,7 +864,7 @@ crates/styx-storage/
       rule.rs                     -- Rule, RuleAction, RuleKind
       local_record.rs             -- LocalRecord, LocalRecordType
       settings.rs                 -- SettingKey, PrivacyLevel, BlockingMode
-      history.rs                  -- RawQuery, RollupBucket, TopDomain, Decision
+      history.rs                  -- RawQuery, RollupBucket, TopDomain, Decision, ClientKey, UnixTimestamp
       snapshot.rs                 -- PolicySnapshot, GroupMask, ClientGroupMap
       error.rs                    -- StorageError
       port.rs                     -- every trait below
@@ -807,7 +881,12 @@ crates/styx-storage/
       db.rs                       -- TursoDb: connection, pragmas, single owned writer
       rows.rs                     -- the *Row structs, one per table
       migrations.rs               -- embedded SQL + revision ledger
-      repo_policy.rs              -- Group/Client/Rule/Adlist/LocalRecord/Settings impls
+      repo_group.rs               -- GroupRepository impl
+      repo_client.rs              -- ClientRepository impl
+      repo_rule.rs                -- RuleRepository impl
+      repo_adlist.rs              -- AdlistRepository impl
+      repo_local_record.rs        -- LocalRecordRepository impl
+      repo_settings.rs            -- SettingsRepository impl
       repo_history.rs             -- QueryLogWriter, HistoryReader impls
   tests/
     migrations.rs
@@ -844,7 +923,13 @@ crates/styx-storage/
 ### Trait relationships
 
 - `TursoDb` (infrastructure) implements `MigrationStore`, `PolicySource`, all six policy
-  repositories, `QueryLogWriter`, `HistoryReader` and `PurgeOperations`.
+  repositories, `QueryLogWriter`, `HistoryReader` and `PurgeOperations`. The six policy
+  repository impls are split one-per-file (`repo_group.rs`, `repo_client.rs`,
+  `repo_rule.rs`, `repo_adlist.rs`, `repo_local_record.rs`, `repo_settings.rs`) rather than
+  bundled into one `repo_policy.rs`: `AdlistRepository` alone carries nine methods, and the
+  six together are exactly the god-module shape `CLAUDE.md`'s "small, single-purpose
+  modules over god-modules" rule targets, now backed by `xtask module-size`'s 400-line
+  cap.
 - `SnapshotBuilder` depends on `PolicySource` and `Clock`; it produces `PolicySnapshot`.
 - `ClientDiscovery` depends on `ClientRepository` and `Clock`.
 - `IngestTransaction` depends on `AdlistRepository` and `Clock`.
@@ -859,6 +944,7 @@ crates/styx-storage/
 ```text
 styx (binary)
   ├── styx-storage::application  ──▶ styx-storage::domain (traits)
+  │        ├── styx-storage::domain ──▶ styx-proto (shared foundation: RecordType, ResponseCode, Ttl)
   │        └── styx-storage::infrastructure (impls, wired at the binary)
   ├── styx-resolution   (declares its OWN ports; binary supplies storage adapters)
   ├── styx-filtering    (declares its OWN ports; binary supplies storage adapters)
@@ -867,7 +953,8 @@ styx (binary)
 
 `styx-resolution` and `styx-filtering` have **no** Cargo dependency on `styx-storage`.
 They receive an `Arc<PolicySnapshot>` and their own port objects, constructed in the
-binary.
+binary. `styx-storage` itself depends on `styx-proto` only — the shared-foundation
+exemption — and on no other feature crate.
 
 ### Layer responsibilities
 
@@ -877,6 +964,20 @@ binary.
    transactions, purge, retention. Orchestrates ports; owns no connection.
 3. **`infrastructure`** — Turso connection and pragmas, embedded SQL migrations, row
    structs, port implementations, one owned writer path.
+
+### arch-lint scopes and restrict-use rules this crate adds
+
+Per Phase 0 Norm 12, this crate's registration adds its own `[[scopes]]` for `domain`,
+`application` and `infrastructure`, and — because it is a feature crate — the two
+synchronous-I/O `[[restrict-use]]` rules `no-sync-io-storage-domain` and
+`no-sync-io-storage-application`, denying the exact list Phase 0 Approach §10 fixes
+(`std::fs`, the blocking socket types, `std::io::{Read, Write, BufRead, Seek}`,
+`std::io::prelude`, `std::io::{stdin, stdout, stderr}`) in sync and async code alike.
+Because it is also a library crate, it adds `no-anyhow-storage`, denying `anyhow`
+crate-wide. All three follow the naming and scoping pattern Phase 0 set for
+`styx-resolution` and `styx-filtering`, and every Turso call this phase specifies sits
+behind a port in `domain`, implemented in `infrastructure` — never called directly from
+`application`.
 
 ### Startup ordering, fixed
 
@@ -893,8 +994,13 @@ binary.
 
 Workspace member; edition and lints inherited from the workspace. Dependencies: the Turso
 / libsql client, `thiserror`, `tracing`, `arc-swap`, `serde` for setting value encoding,
-and the workspace `Clock`. `arch-lint` configuration extended so `domain` may not
-reference `infrastructure` or any SQL crate.
+`styx-proto` for the `RecordType`, `ResponseCode` and `Ttl` newtypes this crate's domain
+types reuse rather than re-deriving, and the workspace `Clock`. `arch-lint` configuration
+extended so `domain` may not reference `infrastructure` or any SQL crate — `styx-proto` is
+the one crate-to-crate dependency the shared-foundation exemption allows. `arch-lint.toml`
+also gains this crate's `[[scopes]]` and the three `[[restrict-use]]` rules named in
+Structure — `no-sync-io-storage-domain`, `no-sync-io-storage-application` and
+`no-anyhow-storage` — per Phase 0 Norm 12.
 
 ### 2. Write `migrations/0001_initial.sql` — the entire schema
 
@@ -949,11 +1055,13 @@ decorative.
 - `build(&self) -> Result<PolicySnapshot, StorageError>`:
   - one read pass over `groups`, `client_groups`, `clients`, `adlists`, `adlist_groups`,
     `adlist_entries`, `rules`, `local_records`, `settings`;
-  - **assign a bit position to each enabled group at this moment**, ordered by group id,
+  - **assign a bit position to each enabled group at this moment**, ordered by `GroupId`,
     and keep the mapping only inside this build; nothing is persisted;
   - fold adlist entries and `block` rules into per-terminal block masks, and `allow` rules
     into per-terminal allow masks, so the matcher's verdict is
     `!(allow & g) && (block & g)`;
+  - decode each local record's stored TTL into `Ttl` through its checked constructor,
+    never treated as a raw `u32`;
   - build `client_masks: HashMap<IpAddr, GroupMask>` from `client_groups`;
   - compute `default_mask` from the `Default` group's bit; **any client absent from
     `client_masks`, and any client present with an empty mask, resolves with
@@ -963,11 +1071,16 @@ decorative.
     silently;
   - bump `generation` and return the immutable snapshot for the caller to
     `ArcSwap::store`.
+- **`build` is an orchestrator, not one long function.** Each bulleted step above is its own
+  named helper — `assign_group_bit_positions`, `build_group_masks`, `build_client_masks`,
+  `parse_snapshot_settings` — that `build` calls in sequence; `build` itself stays a short
+  list of calls plus the final `PolicySnapshot` construction, inside the 60-code-line
+  `too_many_lines` threshold Phase 0 Norm 17 sets.
 - After this function returns, no resolution path reads the DB.
 
 ### 5. `application::discovery` — `ClientDiscovery`
 
-- `observe(&self, ip: IpAddr) -> Result<(), StorageError>`, called **only** from the
+- `observe(&self, client: ClientId) -> Result<(), StorageError>`, called **only** from the
   query-log consumer, never from the resolver:
   - `INSERT INTO clients (ip, name, origin, first_seen, last_seen) VALUES (?, NULL,
     'discovered', ?, ?) ON CONFLICT(ip) DO UPDATE SET last_seen = excluded.last_seen` —
@@ -978,15 +1091,18 @@ decorative.
   `default_mask` until the next reload. This is correct under the no-I/O rule and is
   documented, not worked around with a hot-path read.
 
-### 6. `infrastructure::repo_policy` — `ClientRepository` and `GroupRepository`
+### 6. `ClientRepository` and `GroupRepository`
 
-- `ClientRepository::delete(ip)`: deletes the `clients` row; `client_groups` cascades;
+`ClientRepository` lives in `infrastructure::repo_client`, `GroupRepository` in
+`infrastructure::repo_group` — separate files, per Structure's module split.
+
+- `ClientRepository::delete(client: ClientId)`: deletes the `clients` row; `client_groups` cascades;
   **no history row is touched**. Deletion is "forget the labelling", not "ban the device"
   — the device is rediscovered on its next query with a fresh `first_seen`, a `NULL` name
   and `Default` group membership. The UI must say so.
 - `ClientRepository::list()` returns `last_seen` with every row, because a visible "last
   seen" is one of the two available mitigations for IP misattribution.
-- `GroupRepository::delete(id)`: returns `StorageError::InvariantViolated` for the
+- `GroupRepository::delete(id: GroupId)`: returns `StorageError::InvariantViolated` for the
   `Default` group without touching the DB, and the trigger refuses it independently.
   Cascades to `rules`, `client_groups`, `adlist_groups`. History is untouched.
 
@@ -1005,6 +1121,11 @@ decorative.
     **change no entries** — the previous good copy stays in force and the matcher rebuild
     proceeds from the remaining lists.
   - `last_good_count IS NULL` (first-ever ingest) skips only the collapse check.
+- **Each sanity check is a guard clause**, returning early with the specific
+  `IngestFailureKind` rather than nesting the three checks inside one another; the pass
+  path and the fail path are separate named helpers (`run_sanity_checks`,
+  `commit_success`, `commit_failure`) that `stage_and_commit` calls in turn, keeping the
+  function within Phase 0 Norm 17's nesting-depth-4 and 60-line thresholds.
 - `accept_shrink(&self, adlist_id, count)` persists the acknowledgement, so the next
   ingest does not reject the same legitimate shrink again.
 
@@ -1020,7 +1141,11 @@ decorative.
 - `record_dropped(&self, bucket_start, n)`: upsert into `rollup_dropped`. This is what
   makes the "counters and raw rows agree except by exactly `dropped_detail`" assertion
   writable.
-- Bucket boundaries are computed from the injected `Clock`.
+- Bucket boundaries are `UnixTimestamp::floor_to_hour`, the checked primitive this crate
+  routes bucket arithmetic through, computed from the injected `Clock`. `RawQuery.qtype`
+  and `RollupDelta.qtype` are `RecordType`, `RawQuery.rcode` is `Option<ResponseCode>`, and
+  a redacted client is `ClientKey::redacted()` rather than a hand-written empty string at
+  each call site.
 
 ### 9. `infrastructure::repo_history` — `HistoryReader`
 
@@ -1030,6 +1155,10 @@ decorative.
   **No history read may return an error because raw rows are missing** — whether because
   the mode is `Private`, the window expired, or a purge ran. The view degrades to
   aggregates only.
+- Decoding a row's `qtype` into `RecordType` cannot fail — the wire type space is open by
+  design. Decoding `rcode` into `Option<ResponseCode>` can: a persisted value outside the
+  12-bit extended range is a corrupt row, not a resolver output, and surfaces as
+  `StorageError::Serialization` rather than a panic.
 - Client names are joined by IP lookup, not by foreign key.
 
 ### 10. `application::purge` and `application::retention`
@@ -1118,6 +1247,19 @@ every message free of file paths, connection strings and credential material.
 12. **Testing.** Behaviour over implementation. Deterministic via the injected `Clock`.
     The DB-removal test deletes the real file. The boundary test enumerates the real
     schema.
+13. **Primitive obsession is avoided per `CLAUDE.md`; a newtype wraps a primitive that
+    carries domain rules.** A value gets its own type when it has a validated range,
+    checked arithmetic, a non-trivial encoding, or a named constant attached to it — not
+    merely because it is an `i64`, a `u16` or a `String`. The test is domain rules attached
+    to the value, not the primitive-ness of its type. This phase's own newtypes are
+    `GroupId` (carries the named constant `DEFAULT_GROUP_ID`), `ClientId` (wraps `IpAddr`,
+    preventing confusion with an unrelated address this codebase also handles), `ClientKey`
+    (the rollup redaction sentinel) and `UnixTimestamp` (the checked, non-panicking
+    hourly-bucket flooring this crate routes its one piece of timestamp arithmetic
+    through); it reuses Phase 1's `RecordType`, `ResponseCode` and `Ttl` for `qtype`,
+    `rcode` and `ttl` rather than re-deriving them. A plain `i64` surrogate key
+    (`AdlistRow.id`, `RuleRow.id`, `LocalRecordRow.id`, `RawQueryRow.id`) or a plain named
+    `bool` (`GroupRow.is_default`) carries no such rule and stays unwrapped.
 
 ---
 
@@ -1175,6 +1317,10 @@ every message free of file paths, connection strings and credential material.
 - `last_success_at` is always readable so "frozen for N days" is computable for the
   dashboard.
 - Local records carry no DNSSEC status and no signature material.
+- The domain values this phase introduces to carry validated rules — `ClientKey`,
+  `UnixTimestamp`, `GroupId`, `ClientId`, and this phase's reuse of Phase 1's `RecordType`,
+  `ResponseCode` and `Ttl` — are newtypes, per `CLAUDE.md`'s primitive-obsession rule, never
+  a bare integer or string at a domain boundary.
 
 ### 5. Security and privacy constraints
 
@@ -1207,6 +1353,15 @@ every message free of file paths, connection strings and credential material.
 - Rollup counters and raw rows must agree under load except by exactly `dropped_detail`;
   both are independently queryable so the assertion can be written. (The assertion itself
   lands in the query-log phase; the schema's obligation is to make it writable.)
+- **This phase's code passes `just gate` under Phase 0's extended rules**, specifically the
+  ones this phase's own shape risks: no synchronous I/O in `styx-storage::domain` or
+  `::application` — every Turso call sits behind a port, caught by
+  `no-sync-io-storage-domain` and `no-sync-io-storage-application`; no `anyhow` in this
+  library crate, caught by `no-anyhow-storage`; `SnapshotBuilder::build` and
+  `IngestTransaction::stage_and_commit` within the `too_many_lines` and
+  `excessive_nesting` thresholds via the named-helper decomposition given in Operations 4
+  and 7; and no `infrastructure` file past the `xtask module-size` cap — the reason the six
+  policy repositories are split one-per-file instead of one `repo_policy.rs`.
 
 ### 8. Accepted consequences and residual risks
 
@@ -1233,3 +1388,8 @@ every message free of file paths, connection strings and credential material.
 - **No operational feedback until the cutover**, which is last. This schema meets real
   household traffic, real client churn and real odd devices only at the moment changing it
   is most expensive.
+- **Object Calisthenics compliance is partly gated, per `CLAUDE.md`'s Enforcement section
+  and Phase 0 Norm 17.** Nesting depth, function length, module length and mixed field
+  visibility are mechanically enforced; the primitive-obsession rule above, first-class
+  collections and full words remain a review discipline that `just gate` cannot turn red
+  for.
