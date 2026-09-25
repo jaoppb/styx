@@ -1,0 +1,9 @@
+# The one place these two versions are pinned. `justfile`'s `_arch-version` and
+# `_rumdl-version` preflights read the pin from here (`mise config get`) rather
+# than restating it, and `just install-tools` is just `mise install`. The
+# Rust toolchain itself is not listed here — it already has one home, in
+# rust-toolchain.toml — and CI reads this same file instead of carrying its
+# own copy of these two numbers.
+[tools]
+"cargo:arch-lint-cli" = "0.6.0"
+"cargo:rumdl" = "0.2.75"

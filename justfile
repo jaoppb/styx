@@ -13,14 +13,10 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# Pinned exactly, not a range: a minor bump can change a rule name or a config
-# key and turn enforcement into silence.
-ARCH_LINT_VERSION := "0.6.0"
-
-# Pinned exactly. rumdl is pre-1.0: a minor bump can rename a rule or change a
-# default, which makes this gate noisy rather than silently inert — the milder
-# of the two failure modes, but still a change to verify rather than absorb.
-RUMDL_VERSION := "0.2.75"
+# arch-lint and rumdl are pinned exactly, not to a range — a minor bump can
+# rename a rule or change a default and turn enforcement into silence. The
+# pin lives once, in mise.toml; `_arch-version` and `_rumdl-version` below
+# read it from there with `mise config get` rather than restating it here.
 
 SELFTEST := "gate-selftest"
 
@@ -65,13 +61,18 @@ md-reflow: _rumdl-version
 _rumdl-version:
     #!/usr/bin/env bash
     set -euo pipefail
+    if ! command -v mise >/dev/null 2>&1; then
+        echo "mise is not installed. See https://mise.jdx.dev, then run: just install-tools" >&2
+        exit 1
+    fi
+    pinned="$(mise config get 'tools.cargo:rumdl')"
     if ! command -v rumdl >/dev/null 2>&1; then
         echo "rumdl is not installed. Run: just install-tools" >&2
         exit 1
     fi
     found="$(rumdl --version | awk '{print $2}')"
-    if [[ "$found" != "{{ RUMDL_VERSION }}" ]]; then
-        echo "rumdl {{ RUMDL_VERSION }} is pinned, found $found." >&2
+    if [[ "$found" != "$pinned" ]]; then
+        echo "rumdl $pinned is pinned (mise.toml), found $found." >&2
         echo "Run: just install-tools" >&2
         exit 1
     fi
@@ -95,13 +96,18 @@ arch: _arch-version
 _arch-version:
     #!/usr/bin/env bash
     set -euo pipefail
+    if ! command -v mise >/dev/null 2>&1; then
+        echo "mise is not installed. See https://mise.jdx.dev, then run: just install-tools" >&2
+        exit 1
+    fi
+    pinned="$(mise config get 'tools.cargo:arch-lint-cli')"
     if ! command -v arch-lint >/dev/null 2>&1; then
         echo "arch-lint is not installed. Run: just install-tools" >&2
         exit 1
     fi
     found="$(arch-lint --version | awk '{print $2}')"
-    if [[ "$found" != "{{ ARCH_LINT_VERSION }}" ]]; then
-        echo "arch-lint {{ ARCH_LINT_VERSION }} is pinned, found $found." >&2
+    if [[ "$found" != "$pinned" ]]; then
+        echo "arch-lint $pinned is pinned (mise.toml), found $found." >&2
         echo "Run: just install-tools" >&2
         exit 1
     fi
@@ -287,12 +293,11 @@ gate-selftest: _arch-version _rumdl-version
 # Setup
 # ---------------------------------------------------------------------------
 
-# Installs the pinned tooling. The toolchain itself comes from
+# Installs the pinned tooling from mise.toml. The toolchain itself comes from
 # rust-toolchain.toml and needs no command.
-[doc("Install the pinned arch-lint.")]
+[doc("Install the pinned tooling (mise install).")]
 install-tools:
-    cargo install arch-lint-cli --version {{ ARCH_LINT_VERSION }} --locked
-    cargo install rumdl --version {{ RUMDL_VERSION }} --locked
+    mise install
 
 # Installs the git hooks.
 [doc("Install the lefthook git hooks.")]

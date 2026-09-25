@@ -568,17 +568,18 @@ trust anchor rollover. Write them where the reasoning is freshest.
 
 ### 8. Documentation linting (amendment, 2026-09-22)
 
-- **The gate lints markdown, using `rumdl` pinned to exactly 0.2.75.** It installs through
-  `cargo install --locked`, exactly as arch-lint does, so the documentation gate reaches
-  the repository by a route that already exists and is pinned by a mechanism already in
-  place. *Rationale for not using `markdownlint-cli2`*: it is the better-known tool with
-  the larger rule set, but adopting it makes a Node runtime a build requirement of a Rust
-  project purely to check prose — a second toolchain to install in CI, pin, and keep
-  current, on every machine, forever. *Accepted cost*: `rumdl` is pre-1.0 and its rule set
-  will move. A minor bump can rename a rule or change a default. This is the same hazard
-  already accepted for arch-lint and rustc and it takes the same mitigation — pin exactly,
-  treat an upgrade as a change to verify. It is milder in one respect worth stating: a
-  markdown rule change makes the gate *noisy*, not silently inert.
+- **The gate lints markdown, using `rumdl` pinned to exactly 0.2.75.** It installs
+  through `mise install`, exactly as arch-lint does, pinned once in mise.toml, so the
+  documentation gate reaches the repository by a route that already exists and is pinned
+  by a mechanism already in place. *Rationale for not using `markdownlint-cli2`*: it is
+  the better-known tool with the larger rule set, but adopting it makes a Node runtime a
+  build requirement of a Rust project purely to check prose — a second toolchain to
+  install in CI, pin, and keep current, on every machine, forever. *Accepted cost*:
+  `rumdl` is pre-1.0 and its rule set will move. A minor bump can rename a rule or
+  change a default. This is the same hazard already accepted for arch-lint and rustc and
+  it takes the same mitigation — pin exactly, treat an upgrade as a change to verify. It
+  is milder in one respect worth stating: a markdown rule change makes the gate *noisy*,
+  not silently inert.
 
 - **One policy over every document — after the two tiers were retired.** *(Updated
   2026-09-22: this decision originally split the repository into two tiers. The split has
@@ -1176,10 +1177,11 @@ the counterpart to, and before the `justfile` that invokes it.*
 
 1. **Responsibility**: one `rumdl.toml` at the repository root that gates the repository's
    prose, distinguishing the two tiers described in Approach §8.
-2. **Pin the tool to exactly `0.2.75`**, not a range, installed with
-   `cargo install rumdl --version 0.2.75 --locked`. Add it to the same `install-tools`
-   recipe and the same version-check preflight that already guard arch-lint, so an
-   unexpected version stops the gate rather than quietly changing what it means.
+2. **Pin the tool to exactly `0.2.75`**, not a range, in mise.toml alongside
+   arch-lint's pin. `just install-tools` runs `mise install` against that file, and the
+   version-check preflight reads the same pin with `mise config get` instead of
+   restating it, so an unexpected version stops the gate rather than quietly changing
+   what it means.
 3. **Global settings**:
    - `respect_gitignore` on, so build output and untracked scratch files are never
      analysed.
