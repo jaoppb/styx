@@ -1373,7 +1373,7 @@ styx binary (single process, shared Arc state)
    `CredentialGeneration(u64)`, `AdminCredential`, `CredentialState`, `PasswordPolicy`,
    `Argon2Params`.
 3. Methods:
-   - `AdminCredential::verify(&self, candidate: &SecretString, hasher: &dyn PasswordHasher) -> Result<bool, AuthError>`
+   - `AdminCredential::verify(&self, candidate: &SecretString, hasher: &impl PasswordHasher) -> Result<bool, AuthError>`
      — delegates to the port; never compares bytes itself.
    - `AdminCredential::rotated(self, hash: Argon2idHash, now: Timestamp) -> AdminCredential`
      — the **only** way to change the hash. It replaces the hash, sets `rotated_at`, and
@@ -1517,7 +1517,7 @@ styx binary (single process, shared Arc state)
 ### 11. Implement `application::bootstrap` — `CredentialBootstrap`
 
 1. Responsibility: the first-boot path, and the reason the LAN never sees a setup form.
-2. `run(&self, store: &dyn CredentialStore, hasher: &dyn PasswordHasher, policy: &PasswordPolicy) -> Result<BootstrapOutcome, BootstrapError>`
+2. `run(&self, store: &impl CredentialStore, hasher: &impl PasswordHasher, policy: &PasswordPolicy) -> Result<BootstrapOutcome, BootstrapError>`
    - Logic:
      1. `store.load()`. If `Present`: if `STYX_ADMIN_PASSWORD` is also set, log a `warn`
         that it was **ignored** and name the recovery path; return `AlreadyPresent`.

@@ -103,21 +103,21 @@ code, 12d is CI, 12e is procedure. **12e must not start until 12a–12d are gree
 classDiagram
 direction TB
 
-class Supervisor {
-    -Vec~SupervisedTask~ tasks
-    -Arc~dyn Clock~ clock
-    -ShutdownCoordinator shutdown
-    -Arc~dyn FailureObserver~ observer
-    +register(TaskSpec, Arc~dyn TaskFactory~) TaskIdResult
+class Supervisor~F, O, C~ {
+    -Vec~SupervisedTask~F~~ tasks
+    -Arc~C~ clock
+    -ShutdownCoordinator~C~ shutdown
+    -Arc~O~ observer
+    +register(TaskSpec, Arc~F~) TaskIdResult
     +run() ExitResult
     -on_termination(TaskId, TaskOutcome) RestartDecision
     -restart(TaskId, Duration) UnitResult
 }
 
-class SupervisedTask {
+class SupervisedTask~F~ {
     +TaskId id
     +TaskSpec spec
-    +Arc~dyn TaskFactory~ factory
+    +Arc~F~ factory
     +RestartLedger ledger
     +Option~TaskHandle~ handle
 }
@@ -205,7 +205,11 @@ class PanicReport {
     +Option~String~ location
     +Option~String~ backtrace
     +PoisonSuspicion poison
-    +from_box_any(Box~dyn Any~) PanicReport
+    +from_payload(PanicPayload) PanicReport
+}
+
+class PanicPayload {
+    +String message
 }
 
 class PoisonSuspicion {
@@ -214,16 +218,16 @@ class PoisonSuspicion {
     Suspected
 }
 
-class TaskFactory {
+class TaskFactory~C~ {
     <<trait>>
     +name() &'static str
-    +spawn(TaskContext) TaskJoinHandle
+    +spawn(TaskContext~C~) TaskJoinHandle
 }
 
-class TaskContext {
+class TaskContext~C~ {
     +Arc~AppState~ state
     +CancellationToken cancel
-    +Arc~dyn Clock~ clock
+    +Arc~C~ clock
 }
 
 class TaskHandle {
@@ -233,10 +237,10 @@ class TaskHandle {
     +Instant started_at
 }
 
-class ShutdownCoordinator {
+class ShutdownCoordinator~C~ {
     -CancellationToken root
     -Duration drain_deadline
-    -Arc~dyn Clock~ clock
+    -Arc~C~ clock
     +token() CancellationToken
     +trigger(ExitReason) void
     +drain_all(TaskHandleList) ShutdownResult
@@ -298,22 +302,22 @@ class ShutdownError {
     TaskPanickedDuringDrain
 }
 
-class CatchPanicFuture~F~ {
+class CatchPanicFuture~F, O~ {
     -F inner
     -TaskId owner
-    -Arc~dyn FailureObserver~ observer
+    -Arc~O~ observer
     -Option~String~ route
     +poll(Context) PollCaught
 }
 
-class PanicBoundaryLayer {
-    +Arc~dyn FailureObserver~ observer
-    +layer(S service) PanicBoundaryService~S~
+class PanicBoundaryLayer~O~ {
+    +Arc~O~ observer
+    +layer(S service) PanicBoundaryService~S, O~
 }
 
-class PanicBoundaryService~S~ {
+class PanicBoundaryService~S, O~ {
     -S inner
-    -Arc~dyn FailureObserver~ observer
+    -Arc~O~ observer
     +call(Request) CatchPanicFuture
 }
 
@@ -864,7 +868,7 @@ xtask/src/
 ### Dependencies
 
 1. `Supervisor` depends on `Clock`, `ShutdownCoordinator`, `FailureObserver` and a set
-   of `Arc<dyn TaskFactory>`.
+   of `Arc<F>` where `F: TaskFactory<C>`.
 2. `ShutdownCoordinator` depends on `Clock` and `tokio_util::sync::CancellationToken`.
 3. Every `TaskFactory` adapter depends on `Arc<AppState>` (the shared `Arc` state the
    single-process architecture is built on) and receives a child `CancellationToken`.
@@ -961,10 +965,10 @@ passed.**
 2. `PanicReport { message: String, location: Option<String>, backtrace: Option<String>, poison: PoisonSuspicion }`.
 3. `PoisonSuspicion { None, Suspected }`.
 4. Methods:
-   - `PanicReport::from_box_any(payload: Box<dyn Any + Send>) -> PanicReport`
-     - Logic: downcast to `&str`, then to `String`, else record
-       `"non-string panic payload"`. Never `unwrap`. Location and backtrace come from a
-       panic hook installed in 12a.8, not from the payload.
+   - `PanicReport::from_payload(payload: PanicPayload) -> PanicReport`
+     - Logic: downcast or extract string representation (`&str`, then `String`), else
+       record `"non-string panic payload"`. Never `unwrap`. Location and backtrace come
+       from a panic hook installed in 12a.8, not from the payload.
 5. Constraints: `PanicReport` must be `Send + 'static` and must not borrow from the
    panicking task's state.
 
@@ -984,11 +988,11 @@ passed.**
 
 #### 12a.6 — Define the `TaskFactory` and `FailureObserver` ports
 
-1. `TaskFactory` (trait, `Send + Sync`):
+1. `TaskFactory<C: Clock>` (trait, `Send + Sync`):
    - `fn id(&self) -> TaskId`
    - `fn tier(&self) -> TaskTier`
-   - `fn spawn(&self, ctx: TaskContext) -> JoinHandle<Result<(), TaskError>>`
-2. `TaskContext { state: Arc<AppState>, cancel: CancellationToken, clock: Arc<dyn Clock> }`.
+   - `fn spawn(&self, ctx: TaskContext<C>) -> JoinHandle<Result<(), TaskError>>`
+2. `TaskContext<C> { state: Arc<AppState>, cancel: CancellationToken, clock: Arc<C> }`.
 3. `FailureObserver` (trait, `Send + Sync`):
    - `fn task_terminated(&self, id: TaskId, outcome: &TaskOutcome)`
    - `fn task_restarted(&self, id: TaskId, attempt: u32, delay: Duration)`
@@ -1003,7 +1007,7 @@ passed.**
 1. Responsibility: own every long-lived task's lifetime, classify termination, apply
    policy.
 2. Methods:
-   - `register(&mut self, factory: Arc<dyn TaskFactory>) -> Result<TaskId, SupervisorError>`
+   - `register(&mut self, factory: Arc<F>) -> Result<TaskId, SupervisorError>`
      - Logic: reject a duplicate `TaskId` with `SupervisorError::DuplicateTaskId`.
    - `run(self) -> Result<ExitReason, SupervisorError>`
      - Logic:
@@ -1012,8 +1016,8 @@ passed.**
        3. On each completion, map `Result<Result<(), TaskError>, JoinError>` to a
           `TaskOutcome`: `Ok(Ok(()))` → `Completed`; `Ok(Err(e))` → `Failed(e)`;
           `Err(join)` where `join.is_panic()` →
-          `Panicked(PanicReport::from_box_any(join.into_panic()))`; `Err(join)` where
-          `is_cancelled()` → `Cancelled`.
+          `Panicked(PanicReport::from_payload(PanicPayload::extract(join.into_panic())))`;
+          `Err(join)` where `is_cancelled()` → `Cancelled`.
        4. Report to the `FailureObserver`.
        5. Compute a `RestartDecision` via `on_termination`.
        6. Act: sleep the backoff on the `Clock` then respawn; or shed; or trigger
@@ -1032,7 +1036,7 @@ passed.**
 #### 12a.8 — Install a `tracing`-emitting panic hook
 
 1. Responsibility: capture panic location and backtrace at panic time, before unwinding
-   loses them, since `Box<dyn Any>` carries neither.
+   loses them, since a panic payload carries neither.
 2. Logic: `std::panic::set_hook` storing location and a captured backtrace in a
    task-local, and emitting a `tracing::error!` event immediately. Chain to the previous
    hook so nothing is lost.
@@ -1085,13 +1089,14 @@ passed.**
 
 ### GROUP 12b — The panic boundary. Depends on 12a
 
-#### 12b.1 — Implement `CatchPanicFuture<F>`
+#### 12b.1 — Implement `CatchPanicFuture<F, O>`
 
 1. Responsibility: be the catching frame for a panic raised at **any** poll of the inner
    future, including after an `await`.
 2. Structure:
-   `#[pin_project] struct CatchPanicFuture<F> { #[pin] inner: F, owner: TaskId, observer: Arc<dyn FailureObserver>, route: Option<String> }`.
-3. `impl Future for CatchPanicFuture<F>`:
+   `#[pin_project] struct CatchPanicFuture<F, O> { #[pin] inner: F, owner: TaskId,`
+   `observer: Arc<O>, route: Option<String> }`.
+3. `impl<F, O: FailureObserver> Future for CatchPanicFuture<F, O>`:
    - `type Output = Result<F::Output, CaughtPanic>`
    - `fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output>`
      - Logic:
@@ -1114,14 +1119,15 @@ passed.**
 
 #### 12b.2 — Implement `PanicBoundaryLayer` and `PanicBoundaryService`
 
-1. `PanicBoundaryLayer { observer: Arc<dyn FailureObserver> }` implements
-   `tower::Layer<S>`, producing `PanicBoundaryService<S>`.
-2. `PanicBoundaryService<S>` implements `tower::Service<Request>`:
+1. `PanicBoundaryLayer<O> { observer: Arc<O> }` implements `tower::Layer<S>`, producing
+   `PanicBoundaryService<S, O>`.
+2. `PanicBoundaryService<S, O>` implements `tower::Service<Request>`:
    - `poll_ready` is itself wrapped — a panic in `poll_ready` is a real failure mode.
-   - `call(&mut self, req) -> CatchPanicFuture<S::Future>` capturing the full request URI
-     (path and query string, as received) as `route: Some(..)`. It is captured before
-     the inner service is called, so a panic in middleware still carries it. Logging the
-     query string relies on Phase 11 Norm 16: no secret travels in a query string.
+   - `call(&mut self, req) -> CatchPanicFuture<S::Future, O>` capturing the full request
+     URI (path and query string, as received) as `route: Some(..)`. It is captured
+     before the inner service is called, so a panic in middleware still carries it.
+     Logging the query string relies on Phase 11 Norm 16: no secret travels in a query
+     string.
 3. Constraints: the layer is applied to the **whole `styx-web` request path including
    middleware** — Leptos server functions, SSR rendering, static asset serving, and the
    session/origin-check middleware. It is not applied to the DNS listeners.
@@ -1183,10 +1189,9 @@ passed.**
 
 ### GROUP 12c — Shutdown coordination and wiring. Depends on 12a and 12b
 
-#### 12c.1 — Implement `ShutdownCoordinator`
+#### 12c.1 — Implement `ShutdownCoordinator<C: Clock>`
 
-1. Attributes: `root: CancellationToken`, `drain_deadline: Duration`,
-   `clock: Arc<dyn Clock>`.
+1. Attributes: `root: CancellationToken`, `drain_deadline: Duration`, `clock: Arc<C>`.
 2. Methods:
    - `token(&self) -> CancellationToken` — a child token per task.
    - `trigger(&self, reason: ExitReason)` — cancel the root, emit a `tracing` event
@@ -1444,9 +1449,10 @@ passed.**
    `cargo tree` reads the link graph.
 2. **Ports are traits, adapters are structs.** `TaskFactory`, `FailureObserver` and
    `Clock` are traits in `domain`; their implementations live in `infrastructure` or in
-   the binary. Cross-feature needs are expressed as a port in the consumer's `domain` and
-   implemented by an adapter in the binary — **feature crates never depend on each
-   other.**
+   the binary. Consume ports via static dispatch (`<T: Port>`, `impl Port`) rather than
+   dynamic dispatch (`dyn Port`). Cross-feature needs are expressed as a port in the
+   consumer's `domain` and implemented by an adapter in the binary — **feature crates
+   never depend on each other.**
 3. **Errors are `thiserror` enums returned as `Result<T, E>`.** `SupervisorError`,
    `TaskError`, `ShutdownError`, `SmokeError`. Each variant carries the context needed to
    act on it — a `TaskId`, a path, a deadline — not a bare string. `#[from]` for genuine

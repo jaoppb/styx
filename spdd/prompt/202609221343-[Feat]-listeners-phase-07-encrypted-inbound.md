@@ -309,22 +309,22 @@ class SpkiPin {
   +to_pin_directive() String
 }
 
-class FilesystemCertificateReader {
-  -Arc~dyn Clock~ clock
+class FilesystemCertificateReader~C~ {
+  -Arc~C~ clock
   +read(PathBuf, PathBuf) Result~ServingIdentity, CertificateError~
 }
 
-class SelfSignedGenerator {
-  -Arc~dyn Clock~ clock
+class SelfSignedGenerator~C~ {
+  -Arc~C~ clock
   +load_or_generate(PathBuf, Vec~String~) Result~ServingIdentity, CertificateError~
   -generate(Vec~String~) Result~ServingIdentity, CertificateError~
   -persist(PathBuf, ServingIdentity) Result~(), CertificateError~
 }
 
-class CertificateProvisioner {
-  -Arc~dyn Clock~ clock
-  -FilesystemCertificateReader reader
-  -SelfSignedGenerator generator
+class CertificateProvisioner~C~ {
+  -Arc~C~ clock
+  -FilesystemCertificateReader~C~ reader
+  -SelfSignedGenerator~C~ generator
   +resolve(TlsListenerConfig) Result~ServingIdentity, CertificateError~
   +announce_pin(ServingIdentity)
 }
@@ -1543,11 +1543,12 @@ project has.
    `styx` binary. Feature crates never name each other; `styx-proto` is the single
    explicit exception, because every crate parses through the wire codec.
 
-2. **Dependency wiring**: constructor injection with `Arc<dyn Trait>`. No globals, no
-   lazily initialised statics, no service locator. The `styx` binary is the only place a
-   port meets an implementation. Every component that needs time takes `Arc<dyn Clock>`;
-   `SystemTime::now()` and `Instant::now()` appear only inside `SystemClock` —
-   **including certificate validity windows and handshake and idle deadlines.**
+2. **Dependency wiring**: constructor injection with static dispatch and generics (e.g.
+   `Arc<C>` where `C: Clock`). No globals, no lazily initialised statics, no service
+   locator. The `styx` binary is the only place a port meets an implementation. Every
+   component that needs time takes `Arc<C>` where `C: Clock`; `SystemTime::now()` and
+   `Instant::now()` appear only inside `SystemClock` — **including certificate validity
+   windows and handshake and idle deadlines.**
 
 3. **Error handling**: every fallible function returns `Result<T, E>` with a `thiserror`
    enum (`require-thiserror`). No `unwrap`, no `expect`, no `panic!` outside tests

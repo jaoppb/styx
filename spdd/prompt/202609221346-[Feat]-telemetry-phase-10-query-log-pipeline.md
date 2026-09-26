@@ -975,8 +975,8 @@ styx-telemetry/
    phase's connection handle.
 4. `BoundedRing` implements `LiveRing`; `SnapshotPrivacyConfig` implements
    `PrivacyConfigSource`.
-5. `Clock` (from the server-loop phase) is consumed as `Arc<dyn Clock>`. Nothing in this
-   crate reads the system clock, in production code or in tests.
+5. `Clock` (from the server-loop phase) is consumed as `Arc<C>` where `C: Clock`. Nothing in
+   this crate reads the system clock, in production code or in tests.
 6. `TelemetryError` implements `std::error::Error` via `thiserror::Error`.
 
 ### Dependency direction
@@ -1285,8 +1285,8 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
    sweep call `delete_older_than` forever without ever making progress, which is a
    correctness bug, not a tuning preference. `value(&self) -> usize` is the only accessor;
    there is no setter.
-6. **Constraints**: these traits are object-safe so the binary can hold `Arc<dyn _>`. They
-   name no Turso type and no database concept; `domain` must remain storage-agnostic.
+6. **Constraints**: these traits are statically dispatched via generics rather than `dyn`.
+   They name no Turso type and no database concept; `domain` must remain storage-agnostic.
 
 ### 7. Create `domain::error` — `TelemetryError`
 

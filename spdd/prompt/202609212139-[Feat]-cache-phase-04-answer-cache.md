@@ -360,9 +360,9 @@ class Lookup {
     Expired
 }
 
-class ShardedAnswerCache {
+class ShardedAnswerCache~C~ {
     -Vec~Shard~ shards
-    -Arc~dyn Clock~ clock
+    -Arc~C~ clock
     -CacheCapacity capacity
     -TtlPolicy ttl_policy
     +shard_for(CacheKey) usize
@@ -512,9 +512,9 @@ Eviction "1" --> "1" EvictionReport : reports
   `ShardedAnswerCache` in `infrastructure`. The pipeline depends on the trait.
 - **Phase 5 — Recursion is a separate feature crate and may not name `styx-resolution`.**
   It will declare its own port for this capability in `styx-recursion::domain`, and the
-  `styx` binary will implement that port with an adapter holding the same
-  `Arc<dyn AnswerCache>`. Defining the capability as a trait now is what makes that
-  possible without either violating the layering rule or refactoring this phase.
+  `styx` binary will implement that port with an adapter holding the concrete cache or
+  parameterized over `<A: AnswerCache>`. Defining the capability as a trait now is what
+  makes that possible without violating the layering rule or refactoring this phase.
 - One instance per process, shared by `Arc` across every listener task — the
   single-process, single-binary architecture.
 
@@ -684,11 +684,11 @@ styx-resolution/
 ### Trait (port) relationships
 
 1. `AnswerCache` (in `domain::cache::port`) defines the cache capability: `lookup`,
-   `admit`, `purge_all`, `stats`. It is object-safe so the binary can hold
-   `Arc<dyn AnswerCache>`.
+   `admit`, `purge_all`, `stats`. Consumers prefer static dispatch via generics
+   (`<A: AnswerCache>`, `impl AnswerCache`).
 2. `ShardedAnswerCache` (in `infrastructure::cache::sharded`) implements `AnswerCache`.
-3. `Clock` (from Phase 2) is consumed as `Arc<dyn Clock>`; nothing in this component reads
-   the system clock.
+3. `Clock` (from Phase 2) is consumed generically as `Arc<C>` where `C: Clock`; nothing in
+   this component reads the system clock.
 4. `CacheError` implements `std::error::Error` via `thiserror::Error`.
 5. `CanonicalName` wraps `styx_proto`'s name type; it does not replace it.
 6. `HeapBytes` (in `domain::cache::bytes`) is the one place byte-count arithmetic happens;
@@ -708,9 +708,9 @@ styx-resolution/
    injects it into the pipeline.
 5. **`styx-recursion` (Phase 5) will not depend on `styx-resolution`.** It declares its
    own port in `styx-recursion::domain`; the `styx` binary implements that port with an
-   adapter over the same `Arc<dyn AnswerCache>`. This is the cross-feature rule: feature
-   crates never name each other, cross-feature needs are ports in the consumer's `domain`,
-   implemented by an adapter in the binary.
+   adapter over the concrete cache or generic `<A: AnswerCache>`. This is the
+   cross-feature rule: feature crates never name each other, cross-feature needs are
+   ports in the consumer's `domain`, implemented by an adapter in the binary.
 6. `styx-proto` may be depended on by any crate — it is the one explicit exception to the
    cross-feature rule, because every crate parses through the wire codec, and
    `[[restrict-use]]` must be written so as not to forbid it.
@@ -945,14 +945,15 @@ client query
    meaningful overflow risk to guard — plus `entries: usize` and `bytes: HeapBytes`, the
    latter sharing the same type as `ShardInner::bytes` so a byte count is never reported as
    a bare integer at the one point it becomes externally visible.
-5. **Constraints**: `AnswerCache` is object-safe (`Arc<dyn AnswerCache>`), `Send + Sync`, no
-   `async` — the store is synchronous and no lock is held across an `await`.
+5. **Constraints**: `AnswerCache` is `Send + Sync`, no `async` — the store is synchronous
+   and no lock is held across an `await`. Consumers use static dispatch (`<A: AnswerCache>`,
+   `impl AnswerCache`).
 
 ### 8. Create `infrastructure::cache::sharded` — `ShardedAnswerCache`
 
 1. **Responsibility**: the concurrent, bounded, memory-only store.
-2. **Construction**: `new(clock: Arc<dyn Clock>, capacity: CacheCapacity, ttl: TtlPolicy,
-   shard_count: usize)`. One instance per process, shared by `Arc`.
+2. **Construction**: `new(clock: Arc<C>, capacity: CacheCapacity, ttl: TtlPolicy,
+   shard_count: usize)` where `C: Clock`. One instance per process, shared by `Arc`.
 3. **`shard_for(key)`**: hash the key, index into the shard vector. Uses checked indexing
    — `indexing_slicing = deny`.
 4. **`lookup`**: read-lock the shard, look up, read `Clock::now()` once, check freshness;
