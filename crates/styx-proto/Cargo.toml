@@ -8,6 +8,11 @@ repository.workspace = true
 description = "styx shared foundation: DNS wire types and codec (phase 1)."
 
 [dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+hickory-proto = { version = "0.26", default-features = false, features = ["std", "dnssec-ring"] }
 
 [lints]
 workspace = true
