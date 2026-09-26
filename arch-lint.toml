@@ -107,6 +107,18 @@ name = "styx-proto"
 paths = ["crates/styx-proto/src/**"]
 
 [[scopes]]
+name = "styx-proto-domain"
+paths = ["crates/styx-proto/src/domain/**", "src/domain/**"]
+
+[[scopes]]
+name = "styx-proto-application"
+paths = ["crates/styx-proto/src/application/**", "src/application/**"]
+
+[[scopes]]
+name = "styx-proto-infrastructure"
+paths = ["crates/styx-proto/src/infrastructure/**", "src/infrastructure/**"]
+
+[[scopes]]
 name = "styx-resolution"
 paths = ["crates/styx-resolution/src/**"]
 
@@ -172,6 +184,18 @@ name = "filtering-application-to-infrastructure"
 from = "styx-filtering-application"
 to = ["styx-filtering-infrastructure"]
 message = "application orchestrates over the ports declared in domain; it must not know which adapter implements them. Depend on the port, and let the styx binary inject the adapter at startup"
+
+[[deny-scope-dep]]
+name = "proto-domain-outward"
+from = "styx-proto-domain"
+to = ["styx-proto-application", "styx-proto-infrastructure"]
+message = "domain is the innermost layer: it declares ports and owns error types, and depends outward on nothing. Move the type into domain, or invert the call behind a port"
+
+[[deny-scope-dep]]
+name = "proto-application-to-infrastructure"
+from = "styx-proto-application"
+to = ["styx-proto-infrastructure"]
+message = "application orchestrates over the ports declared in domain; it must not know which adapter implements them"
 
 # ===========================================================================
 # Feature isolation — Structure rules 4-7.

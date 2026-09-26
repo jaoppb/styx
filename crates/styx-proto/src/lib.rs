@@ -1,18 +1,30 @@
-//! styx shared foundation.
+//! styx shared foundation: DNS wire types and codec (Phase 1).
 //!
-//! `styx-proto` is **not a feature crate**. It is the shared foundation every
-//! other crate parses through, and it is the *sole* exemption from the
-//! feature-isolation rule: everyone may name it, and it names no one.
+//! Provides pure, allocation-conscious decoding and encoding of DNS messages,
+//! domain name compression and decompression with loop detection and quadratic
+//! expansion bounds, EDNS(0) OPT pseudo-record handling, and RFC 4034 canonical form.
 //!
-//! That exemption is a dependency *target* exemption only. `styx-proto` is
-//! still bound by the rule as a *source* — it must never name a feature crate.
-//! Phrasing the restriction as "no crate may name another workspace crate"
-//! would break the entire build, which is why the rule in `arch-lint.toml`
-//! denies specific feature crates rather than workspace membership in general.
+//! # Safety
 //!
-//! Unlike a feature crate, this crate has no `domain` / `application` /
-//! `infrastructure` split: it is a codec, not a feature.
-//!
-//! The DNS wire format — header, question, resource record, name compression —
-//! arrives in **Phase 1**. Phase 0 delivers the crate and its place in the
-//! layering rules, and nothing else. See `docs/adr/0001-layering-and-arch-lint.md`.
+//! Unsafe code is strictly forbidden across this crate.
+#![forbid(unsafe_code)]
+
+pub mod application;
+pub mod domain;
+pub mod infrastructure;
+
+// Public re-exports for consumers
+pub use application::canonical::{canonical_name_cmp, canonical_rr_cmp, with_original_ttl};
+pub use domain::edns::{EdnsOption, Opt, DEFAULT_EDNS_UDP_PAYLOAD_SIZE};
+pub use domain::error::{DecodeError, EncodeError, NameError};
+pub use domain::header::{Header, MessageKind, Opcode, ResponseCode};
+pub use domain::message::Message;
+pub use domain::name::{Label, Name, MAX_LABEL_LEN, MAX_NAME_LEN};
+pub use domain::question::Question;
+pub use domain::rdata::basic::{MxRdata, SoaRdata, SrvRdata, TxtRdata};
+pub use domain::rdata::dnssec::{
+    DnskeyRdata, DsRdata, Nsec3ParamRdata, Nsec3Rdata, NsecRdata, RrsigRdata, TypeBitmap,
+};
+pub use domain::rdata::{CharacterString, RData, UnknownRdata};
+pub use domain::record::{RecordClass, RecordType, ResourceRecord, Ttl};
+pub use infrastructure::{frame_tcp, read_tcp_frame_length, MAX_TCP_MESSAGE_LEN};

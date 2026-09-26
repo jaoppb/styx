@@ -16,7 +16,7 @@ members = [
 # The gate self-test fixtures are deliberate rule violations. They stay
 # committed and reviewable, but they are not built by `cargo build --workspace`
 # and not analysed by the normal `arch-lint check` run.
-exclude = ["gate-selftest"]
+exclude = ["gate-selftest", "crates/styx-proto/fuzz"]
 
 [workspace.package]
 version = "0.1.0"
@@ -30,6 +30,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 cargo_metadata = "0.18"
+thiserror = "1"
 
 # ---------------------------------------------------------------------------
 # The denied lint set, declared once. Every member opts in with
