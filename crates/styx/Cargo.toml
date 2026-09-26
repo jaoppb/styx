@@ -22,6 +22,9 @@ tracing-subscriber.workspace = true
 
 # The composition root is the only crate that may name every feature crate.
 # Phases 1+ add them here as they arrive.
+styx-resolution = { path = "../styx-resolution" }
+tokio.workspace = true
+anyhow.workspace = true
 
 [lints]
 workspace = true
