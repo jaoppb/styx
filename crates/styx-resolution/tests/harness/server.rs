@@ -6,21 +6,27 @@ use std::time::Duration;
 
 use styx_resolution::{
     AllowAllFilter, DiscardObserver, FilterPolicy, LocalRecords, MaxResponseSize, NoLocalRecords,
-    Pipeline, QueryObserver, Server, ServerConfig, TerminalHandler,
+    Pipeline, QueryObserver, RefusedTerminal, Server, ServerConfig, TerminalHandler,
 };
 
 use super::clock::TestClock;
 use super::error::HarnessError;
 
 /// Test fixture booting a real server instance on ephemeral ports (port 0).
-pub struct TestServer {
-    server: Server,
+pub struct TestServer<
+    L = NoLocalRecords,
+    F = AllowAllFilter,
+    O = DiscardObserver,
+    C = TestClock,
+    T = RefusedTerminal,
+> {
+    server: Server<L, F, O, C, T>,
     clock: Arc<TestClock>,
     udp_addr: SocketAddr,
     tcp_addr: SocketAddr,
 }
 
-impl TestServer {
+impl TestServer<NoLocalRecords, AllowAllFilter, DiscardObserver, TestClock, RefusedTerminal> {
     /// Boots a `Server` on ephemeral loopback ports with default no-op ports.
     ///
     /// # Errors
@@ -30,28 +36,61 @@ impl TestServer {
             Arc::new(NoLocalRecords::new()),
             Arc::new(AllowAllFilter::new()),
             Arc::new(DiscardObserver::new()),
-            None,
         )
         .await
     }
+}
 
-    /// Boots an ephemeral server with custom hot-path collaborators.
+impl<L, F, O> TestServer<L, F, O, TestClock, RefusedTerminal>
+where
+    L: LocalRecords + Send + Sync + 'static,
+    F: FilterPolicy + Send + Sync + 'static,
+    O: QueryObserver + Send + Sync + 'static,
+{
+    /// Boots an ephemeral server with custom hot-path collaborators and default terminal.
     ///
     /// # Errors
     /// Returns [`HarnessError`] if binding fails.
     pub async fn boot_with_collaborators(
-        local_records: Arc<dyn LocalRecords>,
-        filter: Arc<dyn FilterPolicy>,
-        observer: Arc<dyn QueryObserver>,
-        terminal: Option<Arc<dyn TerminalHandler>>,
+        local_records: Arc<L>,
+        filter: Arc<F>,
+        observer: Arc<O>,
     ) -> Result<Self, HarnessError> {
         let clock = Arc::new(TestClock::new());
-        let mut pipeline = Pipeline::new(local_records, filter, observer, clock.clone());
+        let pipeline = Pipeline::new(local_records, filter, observer, clock.clone());
 
-        if let Some(term) = terminal {
-            pipeline = pipeline.with_terminal(term);
-        }
+        Self::boot_from_pipeline(pipeline, clock).await
+    }
 
+    /// Boots an ephemeral server with custom hot-path collaborators and a custom terminal.
+    ///
+    /// # Errors
+    /// Returns [`HarnessError`] if binding fails.
+    pub async fn boot_with_terminal<T: TerminalHandler + Send + Sync + 'static>(
+        local_records: Arc<L>,
+        filter: Arc<F>,
+        observer: Arc<O>,
+        terminal: Arc<T>,
+    ) -> Result<TestServer<L, F, O, TestClock, T>, HarnessError> {
+        let clock = Arc::new(TestClock::new());
+        let pipeline =
+            Pipeline::new(local_records, filter, observer, clock.clone()).with_terminal(terminal);
+
+        TestServer::boot_from_pipeline(pipeline, clock).await
+    }
+}
+
+impl<L, F, O, T> TestServer<L, F, O, TestClock, T>
+where
+    L: LocalRecords + Send + Sync + 'static,
+    F: FilterPolicy + Send + Sync + 'static,
+    O: QueryObserver + Send + Sync + 'static,
+    T: TerminalHandler + Send + Sync + 'static,
+{
+    async fn boot_from_pipeline(
+        pipeline: Pipeline<L, F, O, TestClock, T>,
+        clock: Arc<TestClock>,
+    ) -> Result<Self, HarnessError> {
         let config = ServerConfig {
             listen_addrs: vec![SocketAddr::from(([127, 0, 0, 1], 0))],
             udp_payload_size_default: MaxResponseSize::classic(),
@@ -59,7 +98,7 @@ impl TestServer {
             query_timeout: Duration::from_secs(2),
         };
 
-        let server = Server::bind(config, Arc::new(pipeline), clock.clone()).await?;
+        let server = Server::bind(config, Arc::new(pipeline), Arc::clone(&clock)).await?;
         let addrs = server.local_addrs();
         let udp_addr = *addrs
             .first()
@@ -75,7 +114,9 @@ impl TestServer {
             tcp_addr,
         })
     }
+}
 
+impl<L, F, O, C, T> TestServer<L, F, O, C, T> {
     /// Returns the OS-assigned bound UDP address.
     #[must_use]
     pub fn udp_addr(&self) -> SocketAddr {

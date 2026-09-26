@@ -8,9 +8,13 @@ use styx_proto::{Header, Message, MessageKind, ResponseCode};
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
+use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::application::Pipeline;
 use crate::domain::clock::Clock;
 use crate::domain::error::ListenerError;
+use crate::domain::ports::filter::FilterPolicy;
+use crate::domain::ports::local::LocalRecords;
+use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::{ClientId, RequestContext, Transport};
 use crate::infrastructure::response::ResponseWriter;
 
@@ -18,22 +22,29 @@ use crate::infrastructure::response::ResponseWriter;
 const RECV_BUFFER_SIZE: usize = 4096;
 
 /// UDP DNS listener dispatching datagrams to the resolution pipeline.
-pub struct UdpListener {
+pub struct UdpListener<L, F, O, C, T = RefusedTerminal> {
     socket: Arc<UdpSocket>,
-    pipeline: Arc<Pipeline>,
-    clock: Arc<dyn Clock>,
+    pipeline: Arc<Pipeline<L, F, O, C, T>>,
+    clock: Arc<C>,
     bound_addr: SocketAddr,
 }
 
-impl UdpListener {
+impl<L, F, O, C, T> UdpListener<L, F, O, C, T>
+where
+    L: LocalRecords + Send + Sync + 'static,
+    F: FilterPolicy + Send + Sync + 'static,
+    O: QueryObserver + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    T: TerminalHandler + Send + Sync + 'static,
+{
     /// Binds a UDP listener to the target address.
     ///
     /// # Errors
     /// Returns [`ListenerError::Io`] if socket binding fails.
     pub async fn bind(
         addr: SocketAddr,
-        pipeline: Arc<Pipeline>,
-        clock: Arc<dyn Clock>,
+        pipeline: Arc<Pipeline<L, F, O, C, T>>,
+        clock: Arc<C>,
     ) -> Result<Self, ListenerError> {
         let socket = UdpSocket::bind(addr).await?;
         let bound_addr = socket.local_addr()?;
@@ -58,27 +69,33 @@ impl UdpListener {
     pub async fn run(&self, cancel: CancellationToken) -> Result<(), ListenerError> {
         let mut buf = [0u8; RECV_BUFFER_SIZE];
 
-        loop {
+        while !cancel.is_cancelled() {
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 recv_res = self.socket.recv_from(&mut buf) => {
-                    match recv_res {
-                        Ok((len, peer)) => {
-                            let received = match buf.get(..len) {
-                                Some(slice) => slice,
-                                None => continue,
-                            };
-                            self.handle_datagram(received, peer).await;
-                        }
-                        Err(err) => {
-                            tracing::error!(%err, addr = %self.bound_addr, "UDP socket recv error");
-                            return Err(ListenerError::Io(err));
-                        }
-                    }
+                    self.handle_recv_result(recv_res, &buf).await?;
                 }
             }
         }
 
+        Ok(())
+    }
+
+    async fn handle_recv_result(
+        &self,
+        recv_res: Result<(usize, SocketAddr), std::io::Error>,
+        buf: &[u8; RECV_BUFFER_SIZE],
+    ) -> Result<(), ListenerError> {
+        let (len, peer) = match recv_res {
+            Ok(pair) => pair,
+            Err(err) => {
+                tracing::error!(%err, addr = %self.bound_addr, "UDP socket recv error");
+                return Err(ListenerError::Io(err));
+            }
+        };
+        if let Some(slice) = buf.get(..len) {
+            self.handle_datagram(slice, peer).await;
+        }
         Ok(())
     }
 
@@ -97,8 +114,7 @@ impl UdpListener {
 
         let client = ClientId::from_socket_addr(peer);
         let max_size = RequestContext::derive_max_response_size(Transport::Udp, &query);
-        let ctx = RequestContext::new(query, client, Transport::Udp, max_size)
-            .with_received_at(received_at);
+        let ctx = RequestContext::new(query, client, Transport::Udp, max_size, received_at);
 
         match self.pipeline.handle(ctx.clone()) {
             Ok(resp) => {
@@ -132,9 +148,10 @@ impl UdpListener {
         resp.header.kind = MessageKind::Response;
         resp.header.rcode = ResponseCode::FORMERR;
 
+        let received_at = self.clock.now_monotonic();
         let client = ClientId::from_socket_addr(peer);
         let max_size = crate::domain::request::MaxResponseSize::classic();
-        let ctx = RequestContext::new(resp.clone(), client, Transport::Udp, max_size);
+        let ctx = RequestContext::new(resp.clone(), client, Transport::Udp, max_size, received_at);
         if let Err(err) = self.send_message(resp, &ctx, peer).await {
             tracing::debug!(%peer, %err, "failed to send UDP formerr");
         }

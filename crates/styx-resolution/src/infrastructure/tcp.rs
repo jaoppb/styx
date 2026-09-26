@@ -10,9 +10,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 
+use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::application::Pipeline;
 use crate::domain::clock::Clock;
 use crate::domain::error::ListenerError;
+use crate::domain::ports::filter::FilterPolicy;
+use crate::domain::ports::local::LocalRecords;
+use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 use crate::infrastructure::response::ResponseWriter;
 
@@ -20,23 +24,30 @@ use crate::infrastructure::response::ResponseWriter;
 const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// TCP DNS listener handling framed stream connections and multiple queries.
-pub struct TcpListener {
+pub struct TcpListener<L, F, O, C, T = RefusedTerminal> {
     listener: TokioTcpListener,
-    pipeline: Arc<Pipeline>,
-    clock: Arc<dyn Clock>,
+    pipeline: Arc<Pipeline<L, F, O, C, T>>,
+    clock: Arc<C>,
     bound_addr: SocketAddr,
     idle_timeout: Duration,
 }
 
-impl TcpListener {
+impl<L, F, O, C, T> TcpListener<L, F, O, C, T>
+where
+    L: LocalRecords + Send + Sync + 'static,
+    F: FilterPolicy + Send + Sync + 'static,
+    O: QueryObserver + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    T: TerminalHandler + Send + Sync + 'static,
+{
     /// Binds a TCP listener to the target address.
     ///
     /// # Errors
     /// Returns [`ListenerError::Io`] if socket binding fails.
     pub async fn bind(
         addr: SocketAddr,
-        pipeline: Arc<Pipeline>,
-        clock: Arc<dyn Clock>,
+        pipeline: Arc<Pipeline<L, F, O, C, T>>,
+        clock: Arc<C>,
         idle_timeout: Option<Duration>,
     ) -> Result<Self, ListenerError> {
         let listener = TokioTcpListener::bind(addr).await?;
@@ -64,32 +75,11 @@ impl TcpListener {
     /// # Errors
     /// Returns [`ListenerError::Io`] on fatal accept failures.
     pub async fn run(&self, cancel: CancellationToken) -> Result<(), ListenerError> {
-        loop {
+        while !cancel.is_cancelled() {
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 accept_res = self.listener.accept() => {
-                    match accept_res {
-                        Ok((stream, peer)) => {
-                            let pipeline = Arc::clone(&self.pipeline);
-                            let clock = Arc::clone(&self.clock);
-                            let timeout = self.idle_timeout;
-                            let conn_cancel = cancel.clone();
-                            tokio::spawn(async move {
-                                Self::handle_connection(
-                                    stream,
-                                    peer,
-                                    pipeline,
-                                    clock,
-                                    timeout,
-                                    conn_cancel,
-                                ).await;
-                            });
-                        }
-                        Err(err) => {
-                            tracing::error!(%err, addr = %self.bound_addr, "TCP accept error");
-                            return Err(ListenerError::Io(err));
-                        }
-                    }
+                    self.handle_accept_result(accept_res, cancel.clone())?;
                 }
             }
         }
@@ -97,38 +87,68 @@ impl TcpListener {
         Ok(())
     }
 
+    fn handle_accept_result(
+        &self,
+        accept_res: Result<(TcpStream, SocketAddr), std::io::Error>,
+        cancel: CancellationToken,
+    ) -> Result<(), ListenerError> {
+        let (stream, peer) = match accept_res {
+            Ok(pair) => pair,
+            Err(err) => {
+                tracing::error!(%err, addr = %self.bound_addr, "TCP accept error");
+                return Err(ListenerError::Io(err));
+            }
+        };
+
+        let pipeline = Arc::clone(&self.pipeline);
+        let clock = Arc::clone(&self.clock);
+        let timeout = self.idle_timeout;
+        tokio::spawn(Self::handle_connection(
+            stream, peer, pipeline, clock, timeout, cancel,
+        ));
+        Ok(())
+    }
+
     async fn handle_connection(
         mut stream: TcpStream,
         peer: SocketAddr,
-        pipeline: Arc<Pipeline>,
-        clock: Arc<dyn Clock>,
+        pipeline: Arc<Pipeline<L, F, O, C, T>>,
+        clock: Arc<C>,
         timeout: Duration,
         cancel: CancellationToken,
     ) {
-        loop {
+        while !cancel.is_cancelled() {
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 frame_res = Self::read_frame(&mut stream, timeout) => {
-                    match frame_res {
-                        Ok(Some(frame)) => {
-                            let keep_going = Self::process_query(
-                                &mut stream,
-                                &frame,
-                                peer,
-                                &pipeline,
-                                &clock,
-                            ).await;
-                            if !keep_going {
-                                break;
-                            }
-                        }
-                        Ok(None) => break,
-                        Err(err) => {
-                            tracing::debug!(%peer, %err, "TCP stream closed or timed out");
-                            break;
-                        }
+                    let should_continue = Self::handle_frame_step(
+                        &mut stream,
+                        peer,
+                        &pipeline,
+                        &clock,
+                        frame_res,
+                    ).await;
+                    if !should_continue {
+                        break;
                     }
                 }
+            }
+        }
+    }
+
+    async fn handle_frame_step(
+        stream: &mut TcpStream,
+        peer: SocketAddr,
+        pipeline: &Arc<Pipeline<L, F, O, C, T>>,
+        clock: &Arc<C>,
+        frame_res: Result<Option<Vec<u8>>, ListenerError>,
+    ) -> bool {
+        match frame_res {
+            Ok(Some(frame)) => Self::process_query(stream, &frame, peer, pipeline, clock).await,
+            Ok(None) => false,
+            Err(err) => {
+                tracing::debug!(%peer, %err, "TCP stream closed or timed out");
+                false
             }
         }
     }
@@ -172,8 +192,8 @@ impl TcpListener {
         stream: &mut TcpStream,
         bytes: &[u8],
         peer: SocketAddr,
-        pipeline: &Arc<Pipeline>,
-        clock: &Arc<dyn Clock>,
+        pipeline: &Arc<Pipeline<L, F, O, C, T>>,
+        clock: &Arc<C>,
     ) -> bool {
         let received_at = clock.now_monotonic();
         let mut decoder = Decoder::new(bytes);
@@ -182,14 +202,13 @@ impl TcpListener {
             Ok(msg) => msg,
             Err(err) => {
                 tracing::warn!(%peer, %err, "malformed TCP query; responding FORMERR");
-                return Self::send_formerr(stream, bytes, peer).await;
+                return Self::send_formerr(stream, bytes, peer, received_at).await;
             }
         };
 
         let client = ClientId::from_socket_addr(peer);
         let max_size = MaxResponseSize::tcp_ceiling();
-        let ctx = RequestContext::new(query, client, Transport::Tcp, max_size)
-            .with_received_at(received_at);
+        let ctx = RequestContext::new(query, client, Transport::Tcp, max_size, received_at);
 
         let response = match pipeline.handle(ctx.clone()) {
             Ok(msg) => msg,
@@ -217,7 +236,12 @@ impl TcpListener {
         }
     }
 
-    async fn send_formerr(stream: &mut TcpStream, bytes: &[u8], peer: SocketAddr) -> bool {
+    async fn send_formerr(
+        stream: &mut TcpStream,
+        bytes: &[u8],
+        peer: SocketAddr,
+        received_at: std::time::Instant,
+    ) -> bool {
         let (Some(&b0), Some(&b1)) = (bytes.first(), bytes.get(1)) else {
             return false;
         };
@@ -232,6 +256,7 @@ impl TcpListener {
             client,
             Transport::Tcp,
             MaxResponseSize::tcp_ceiling(),
+            received_at,
         );
 
         let writer = ResponseWriter::new();

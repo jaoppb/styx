@@ -40,8 +40,14 @@ impl TerminalHandler for LargeAnswerTerminal {
         response.header.opcode = ctx.query.header.opcode;
         response.header.rcode = ResponseCode::NOERROR;
 
-        // Generate 25 TXT records to easily exceed classic 512 bytes limit
-        for i in 0..25 {
+        let count = if question.qname.to_string().starts_with("medium") {
+            5
+        } else {
+            25
+        };
+
+        // Generate TXT records to exceed desired limit
+        for i in 0..count {
             let txt = CharacterString::new(
                 format!("this is a large payload record number {i}").into_bytes(),
             );
@@ -132,11 +138,11 @@ async fn test_tcp_multiple_queries_single_connection() {
 
 #[tokio::test]
 async fn test_udp_truncation_and_tcp_fallback() {
-    let mut server = TestServer::boot_with_collaborators(
+    let mut server = TestServer::boot_with_terminal(
         Arc::new(styx_resolution::NoLocalRecords::new()),
         Arc::new(styx_resolution::AllowAllFilter::new()),
         Arc::new(styx_resolution::DiscardObserver::new()),
-        Some(Arc::new(LargeAnswerTerminal)),
+        Arc::new(LargeAnswerTerminal),
     )
     .await
     .expect("boot server");
@@ -172,7 +178,9 @@ async fn test_udp_truncation_and_tcp_fallback() {
     assert!(!edns_resp.header.truncated, "EDNS(0) 4096 must avoid TC");
     assert!(!edns_resp.answers.is_empty());
 
-    // 4. UDP with advertised EDNS buffer size below 512 (e.g. 100): TC must be set
+    // 4. UDP with advertised EDNS buffer size below 512 (e.g. 100):
+    // Per RFC 6891 Section 6.2.3, values below 512 are clamped to 512.
+    // 4a. A response exceeding 512 bytes still sets TC.
     let mut small_edns_query = query.clone();
     small_edns_query.opt = Some(Opt::new(100, 0, 0, false, Vec::new()));
     let small_edns_resp = client
@@ -181,8 +189,21 @@ async fn test_udp_truncation_and_tcp_fallback() {
         .expect("small edns query");
     assert!(
         small_edns_resp.header.truncated,
-        "Small advertised EDNS forces TC"
+        "Small advertised EDNS clamped to 512 still forces TC when payload > 512"
     );
+
+    // 4b. A response of ~390 bytes (> 100 but < 512) is NOT truncated because 100 is clamped to 512.
+    let mut medium_edns_query = make_query("medium.example.com.", RecordType::TXT);
+    medium_edns_query.opt = Some(Opt::new(100, 0, 0, false, Vec::new()));
+    let medium_edns_resp = client
+        .query_udp(server.udp_addr(), &medium_edns_query)
+        .await
+        .expect("medium edns query");
+    assert!(
+        !medium_edns_resp.header.truncated,
+        "EDNS buffer size 100 must be clamped to 512, avoiding TC for 390-byte answer"
+    );
+    assert!(!medium_edns_resp.answers.is_empty());
 
     server.shutdown().await.expect("shutdown");
 }

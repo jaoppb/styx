@@ -106,7 +106,6 @@ async fn test_injected_clock_advancement() {
         Arc::new(styx_resolution::NoLocalRecords::new()),
         Arc::new(styx_resolution::AllowAllFilter::new()),
         observer.clone(),
-        None,
     )
     .await
     .expect("boot server");
@@ -169,10 +168,9 @@ async fn test_local_records_short_circuit_filter() {
     });
     let observer = Arc::new(CountingObserver::new());
 
-    let mut server =
-        TestServer::boot_with_collaborators(local, filter.clone(), observer.clone(), None)
-            .await
-            .expect("boot server");
+    let mut server = TestServer::boot_with_collaborators(local, filter.clone(), observer.clone())
+        .await
+        .expect("boot server");
 
     let client = DnsClient::new();
     let query = make_query("router.lan.", RecordType::A);
@@ -204,9 +202,9 @@ async fn test_local_records_short_circuit_filter() {
         .first()
         .expect("outcome")
         .clone();
-    assert_eq!(outcome.source, AnswerSource::LocalRecord);
-    assert!(!outcome.cacheable);
-    assert!(outcome.forged);
+    assert_eq!(outcome.source(), AnswerSource::LocalRecord);
+    assert!(!outcome.is_cacheable());
+    assert!(outcome.is_forged());
 
     server.shutdown().await.expect("shutdown");
 }
@@ -220,10 +218,9 @@ async fn test_filter_policy_block_honesty() {
     });
     let observer = Arc::new(CountingObserver::new());
 
-    let mut server =
-        TestServer::boot_with_collaborators(local, filter.clone(), observer.clone(), None)
-            .await
-            .expect("boot server");
+    let mut server = TestServer::boot_with_collaborators(local, filter.clone(), observer.clone())
+        .await
+        .expect("boot server");
 
     let client = DnsClient::new();
     let query = make_query("tracking.adserver.com.", RecordType::A);
@@ -247,9 +244,9 @@ async fn test_filter_policy_block_honesty() {
         .first()
         .expect("outcome")
         .clone();
-    assert_eq!(outcome.source, AnswerSource::Blocked);
-    assert!(outcome.forged);
-    assert!(!outcome.cacheable);
+    assert_eq!(outcome.source(), AnswerSource::Blocked);
+    assert!(outcome.is_forged());
+    assert!(!outcome.is_cacheable());
 
     server.shutdown().await.expect("shutdown");
 }
@@ -261,7 +258,6 @@ async fn test_observer_records_every_query_path() {
         Arc::new(styx_resolution::NoLocalRecords::new()),
         Arc::new(styx_resolution::AllowAllFilter::new()),
         observer.clone(),
-        None,
     )
     .await
     .expect("boot server");

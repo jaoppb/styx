@@ -5,7 +5,7 @@ use std::sync::Arc;
 use styx_proto::{Message, Opcode, Question, RecordClass, ResponseCode, Ttl};
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
-use crate::domain::answer::{AnswerSource, ForgedAnswer, ResolutionOutcome};
+use crate::domain::answer::{ForgedAnswer, ForgedSource, ResolutionOutcome};
 use crate::domain::clock::Clock;
 use crate::domain::error::PipelineError;
 use crate::domain::ports::filter::{FilterPolicy, FilterVerdict};
@@ -22,23 +22,24 @@ const LOCAL_RECORD_TTL: Ttl = Ttl::from_secs(60);
 /// DNS resolution pipeline enforcing fixed stage execution order.
 ///
 /// Order is a correctness property: Local Records -> Filter -> Cache -> Upstream.
-pub struct Pipeline {
-    local_records: Arc<dyn LocalRecords>,
-    filter: Arc<dyn FilterPolicy>,
-    observer: Arc<dyn QueryObserver>,
-    clock: Arc<dyn Clock>,
-    terminal: Arc<dyn TerminalHandler>,
+pub struct Pipeline<L, F, O, C, T = RefusedTerminal> {
+    local_records: Arc<L>,
+    filter: Arc<F>,
+    observer: Arc<O>,
+    clock: Arc<C>,
+    terminal: Arc<T>,
 }
 
-impl Pipeline {
+impl<L, F, O, C> Pipeline<L, F, O, C, RefusedTerminal>
+where
+    L: LocalRecords,
+    F: FilterPolicy,
+    O: QueryObserver,
+    C: Clock,
+{
     /// Creates a new `Pipeline` with default refused terminal.
     #[must_use]
-    pub fn new(
-        local_records: Arc<dyn LocalRecords>,
-        filter: Arc<dyn FilterPolicy>,
-        observer: Arc<dyn QueryObserver>,
-        clock: Arc<dyn Clock>,
-    ) -> Self {
+    pub fn new(local_records: Arc<L>, filter: Arc<F>, observer: Arc<O>, clock: Arc<C>) -> Self {
         Self {
             local_records,
             filter,
@@ -47,12 +48,26 @@ impl Pipeline {
             terminal: Arc::new(RefusedTerminal::new()),
         }
     }
+}
 
+impl<L, F, O, C, T> Pipeline<L, F, O, C, T>
+where
+    L: LocalRecords,
+    F: FilterPolicy,
+    O: QueryObserver,
+    C: Clock,
+    T: TerminalHandler,
+{
     /// Substitutes the terminal handler (used by test fixtures).
     #[must_use]
-    pub fn with_terminal(mut self, terminal: Arc<dyn TerminalHandler>) -> Self {
-        self.terminal = terminal;
-        self
+    pub fn with_terminal<T2: TerminalHandler>(self, terminal: Arc<T2>) -> Pipeline<L, F, O, C, T2> {
+        Pipeline {
+            local_records: self.local_records,
+            filter: self.filter,
+            observer: self.observer,
+            clock: self.clock,
+            terminal,
+        }
     }
 
     /// Handles an incoming DNS query through the fixed pipeline stages.
@@ -110,7 +125,7 @@ impl Pipeline {
             records,
             ResponseCode::NOERROR,
             LOCAL_RECORD_TTL,
-            AnswerSource::LocalRecord,
+            ForgedSource::LocalRecord,
         ))
     }
 
@@ -122,7 +137,7 @@ impl Pipeline {
                 Vec::new(),
                 ResponseCode::NXDOMAIN,
                 BLOCKED_TTL,
-                AnswerSource::Blocked,
+                ForgedSource::Blocked,
             )),
         }
     }
@@ -134,12 +149,8 @@ impl Pipeline {
     ) -> Result<Message, PipelineError> {
         match self.terminal.handle_terminal(ctx) {
             Ok(message) => {
-                let outcome = ResolutionOutcome {
-                    source: AnswerSource::Error,
+                let outcome = ResolutionOutcome::Error {
                     rcode: message.header.rcode,
-                    forged: true,
-                    cacheable: false,
-                    authentic_data: false,
                 };
                 self.record_telemetry(ctx, question, &outcome);
                 Ok(message)
@@ -163,13 +174,7 @@ impl Pipeline {
             ),
         };
 
-        let outcome = ResolutionOutcome {
-            source: AnswerSource::Error,
-            rcode,
-            forged: true,
-            cacheable: false,
-            authentic_data: false,
-        };
+        let outcome = ResolutionOutcome::Error { rcode };
 
         self.record_telemetry(ctx, &fallback_question, &outcome);
         Err(err)

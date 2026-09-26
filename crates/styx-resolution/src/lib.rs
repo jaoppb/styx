@@ -15,7 +15,9 @@ pub mod infrastructure;
 
 // Public re-exports for convenience
 pub use application::{Pipeline, RefusedTerminal, TerminalHandler};
-pub use domain::answer::{AnswerSource, ForgedAnswer, ResolutionOutcome};
+pub use domain::answer::{
+    AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolvedSource,
+};
 pub use domain::clock::Clock;
 pub use domain::error::{ConfigError, ListenerError, PipelineError, ServerError};
 pub use domain::ports::filter::{FilterPolicy, FilterVerdict};

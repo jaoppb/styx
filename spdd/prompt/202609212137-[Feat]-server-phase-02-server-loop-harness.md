@@ -104,9 +104,9 @@ class ServerConfig {
 
 class Server {
   -Arc~Pipeline~ pipeline
-  -Arc~dyn Clock~ clock
+  -Arc~C~ clock
   -Vec~ListenerHandle~ listeners
-  +bind(ServerConfig, Pipeline, Arc~dyn Clock~) Result~Server, ServerError~
+  +bind(ServerConfig, Arc~Pipeline~, Arc~C~) Result~Server, ServerError~
   +local_addrs() Vec~SocketAddr~
   +shutdown() Result~(), ServerError~
 }
@@ -114,6 +114,7 @@ class Server {
 class UdpListener {
   -UdpSocket socket
   -Arc~Pipeline~ pipeline
+  -Arc~C~ clock
   +bound_addr() SocketAddr
   +run(CancellationToken) Result~(), ListenerError~
 }
@@ -121,6 +122,7 @@ class UdpListener {
 class TcpListener {
   -TcpListener socket
   -Arc~Pipeline~ pipeline
+  -Arc~C~ clock
   +bound_addr() SocketAddr
   +run(CancellationToken) Result~(), ListenerError~
 }
@@ -137,9 +139,8 @@ class RequestContext {
   +Transport transport
   +Instant received_at
   +MaxResponseSize max_response_size
-  +bool edns_present
-  +Option~ResolutionOutcome~ outcome
-  +new(Message, ClientId, Transport, MaxResponseSize) RequestContext
+  +new(Message, ClientId, Transport, MaxResponseSize, Instant) RequestContext
+  +has_edns() bool
 }
 
 class ClientId {
@@ -156,11 +157,28 @@ class MaxResponseSize {
 }
 
 class ResolutionOutcome {
-  +AnswerSource source
-  +ResponseCode rcode
-  +bool forged
-  +bool cacheable
-  +bool authentic_data
+  <<enumeration>>
+  Forged(ForgedSource, ResponseCode)
+  Resolved(ResolvedSource, ResponseCode, bool, bool)
+  Error(ResponseCode)
+  +rcode() ResponseCode
+  +source() AnswerSource
+  +is_forged() bool
+  +is_cacheable() bool
+  +authentic_data() bool
+}
+
+class ForgedSource {
+  <<enumeration>>
+  LocalRecord
+  Blocked
+}
+
+class ResolvedSource {
+  <<enumeration>>
+  CacheHit
+  Upstream
+  Recursion
 }
 
 class AnswerSource {
@@ -174,17 +192,18 @@ class AnswerSource {
 }
 
 class Pipeline {
-  -Arc~dyn LocalRecords~ local_records
-  -Arc~dyn FilterPolicy~ filter
-  -Arc~dyn QueryObserver~ observer
-  -Arc~dyn Clock~ clock
+  -Arc~L~ local_records
+  -Arc~F~ filter
+  -Arc~O~ observer
+  -Arc~C~ clock
+  -Arc~T~ terminal
   +handle(RequestContext) Result~Message, PipelineError~
 }
 
 class ForgedAnswer {
   -Message message
-  -AnswerSource source
-  +build(RequestContext, Vec~Record~, ResponseCode, Ttl) ForgedAnswer
+  -ForgedSource source
+  +build(RequestContext, Vec~Record~, ResponseCode, Ttl, ForgedSource) ForgedAnswer
   +outcome() ResolutionOutcome
   +into_response() Message
 }
@@ -283,17 +302,16 @@ class ZoneScript {
 
 class TestServer {
   -Server server
-  -TestClock clock
+  -Arc~TestClock~ clock
   -SocketAddr udp_addr
   -SocketAddr tcp_addr
-  +server() Server
-  +clock() TestClock
   +udp_addr() SocketAddr
   +tcp_addr() SocketAddr
+  +clock() Arc~TestClock~
   +boot_ephemeral() Result~TestServer, HarnessError~
-  +with_filter(Arc~dyn FilterPolicy~) TestServer
-  +with_local_records(Arc~dyn LocalRecords~) TestServer
-  +with_observer(Arc~dyn QueryObserver~) TestServer
+  +boot_with_collaborators(Arc~L~, Arc~F~, Arc~O~) Result~TestServer, HarnessError~
+  +boot_with_terminal(Arc~L~, Arc~F~, Arc~O~, Arc~T~) Result~TestServer, HarnessError~
+  +shutdown() Result~(), HarnessError~
 }
 
 class DnsClient {
@@ -311,8 +329,9 @@ TcpListener --> RequestContext : produces
 RequestContext "1" --> "1" ClientId : identifies
 RequestContext "1" --> "1" Transport : arrived on
 RequestContext "1" --> "1" MaxResponseSize : bounds truncation to
-RequestContext "1" --> "0..1" ResolutionOutcome : records
-ResolutionOutcome "1" --> "1" AnswerSource : attributes
+ResolutionOutcome "1" --> "1" ForgedSource : holds
+ResolutionOutcome "1" --> "1" ResolvedSource : holds
+ResolutionOutcome "1" --> "1" AnswerSource : maps to
 Pipeline --> LocalRecords : stage 1
 Pipeline --> FilterPolicy : stage 2
 Pipeline --> ForgedAnswer : constructs via
@@ -357,12 +376,18 @@ concerns, not a zone-file server.
   `Server::local_addrs()` reports what was actually bound, so many test servers can run
   concurrently without collisions.
 - **Truncation is the server's half of TCP fallback.** When an assembled response exceeds
-  the permitted size — the EDNS(0) OPT advertised UDP payload size if present, otherwise
-  the classic 512-byte limit — emit a response with TC set so the client retries over TCP.
-  Centralise this size arithmetic at one point in `ResponseWriter`, because every offset
-  and every subtraction is a checked operation under `indexing_slicing = deny` and
-  `arithmetic_side_effects = deny`, and spreading it through the listeners multiplies
-  that tax.
+  the permitted size — the EDNS(0) OPT advertised UDP payload size (clamped to at least
+  512 bytes per RFC 6891 Section 6.2.3) if present, otherwise the classic 512-byte limit —
+  emit a response with TC set so the client retries over TCP. Centralise this size
+  arithmetic at one point in `ResponseWriter`, because every offset and every subtraction is
+  a checked operation under `indexing_slicing = deny` and `arithmetic_side_effects = deny`,
+  and spreading it through the listeners multiplies that tax.
+- **Static compile-time dispatch over dynamic trait objects.** `Pipeline`, `Server`,
+  `UdpListener`, and `TcpListener` are monomorphized generic types
+  (`Pipeline<L, F, O, C, T>`). Collaborator ports (`LocalRecords`, `FilterPolicy`,
+  `QueryObserver`, `Clock`, `TerminalHandler`) are compile-time generic parameters rather
+  than `Arc<dyn Trait>` trait objects, eliminating virtual dispatch overhead and avoiding
+  object-safety limits on the hot path.
 - **TCP framing is stream framing.** The two-byte length prefix means partial reads split
   across packets, and multiple queries on one connection. This class of bug is exactly
   what in-memory test transports never surface, which is the main reason the harness uses
@@ -551,18 +576,21 @@ concerns, not a zone-file server.
    to forbid this.
 2. **`styx-resolution`** *(this phase creates it)* —
    - `domain` — `RequestContext`, `ClientId`, `Transport`, `MaxResponseSize`,
-     `ResolutionOutcome`, `AnswerSource`, `ForgedAnswer`, the `Clock` trait, the
-     `FilterPolicy` trait, the `FilterVerdict` enum, the `LocalRecords` trait, the
-     `QueryObserver` trait, `QueryDetail`, and the `thiserror` error enums — the latter
-     split by concept into `error::pipeline`, `error::listener`, `error::server` and
-     `error::config` rather than one flat `error` module accumulating every concern
-     (`HarnessError` lives with the harness instead; see item 4). **No I/O, no `unwrap`,
-     no dependency on `application` or `infrastructure`.**
-   - `application` — `Pipeline`, which orchestrates the fixed stage order and owns the
-     `Arc<dyn …>` handles to the four ports. Depends on `domain` only.
+     `ResolutionOutcome`, `ForgedSource`, `ResolvedSource`, `AnswerSource`,
+     `ForgedAnswer`, the `Clock` trait, the `FilterPolicy` trait, the `FilterVerdict`
+     enum, the `LocalRecords` trait, the `QueryObserver` trait, `QueryDetail`, and the
+     `thiserror` error enums — the latter split by concept into `error::pipeline`,
+     `error::listener`, `error::server` and `error::config` rather than one flat `error`
+     module accumulating every concern (`HarnessError` lives with the harness instead;
+     see item 4). **No I/O, no `unwrap`, no dependency on `application` or
+     `infrastructure`.**
+   - `application` — `Pipeline`, which orchestrates the fixed stage order and holds the
+     compile-time generic collaborator handles (`Arc<L>`, `Arc<F>`, `Arc<O>`, `Arc<C>`,
+     `Arc<T>`). Depends on `domain` only.
    - `infrastructure` — `UdpListener`, `TcpListener`, `Server`, `ResponseWriter`,
-     `SystemClock`, and the no-op port implementations `AllowAllFilter`,
-     `NoLocalRecords`, `DiscardObserver`. Depends on `domain` and `application`.
+     `SystemClock`, and the no-op port implementations `AllowAllFilter`, `NoLocalRecords`,
+     `DiscardObserver`. Generic over collaborator ports. Depends on `domain` and
+     `application`.
 3. **`styx`** *(the binary)* — reads `ServerConfig` from TOML, constructs `SystemClock`,
    selects the port implementations, builds the `Pipeline`, binds the `Server`, and
    supervises the listener tasks. **This is the only place that knows both a port and its
@@ -728,20 +756,22 @@ concerns, not a zone-file server.
 2. **`Transport`**: `Udp` | `Tcp`. Extended in phase 7 for DoT/DoH; **never for QUIC —
    DoQ (RFC 9250) is a v1 non-goal, inbound and outbound.**
 3. **`RequestContext`**: decoded query, `ClientId`, `Transport`, receipt instant (from the
-   injected `Clock`), `max_response_size`, whether EDNS(0) OPT was present, and a slot for
-   the `ResolutionOutcome`.
+   injected `Clock` passed explicitly to `RequestContext::new`), and `max_response_size`.
+   EDNS OPT presence is queried via `has_edns(&self) -> bool` derived from `query.opt`,
+   rather than maintaining a duplicate boolean flag. Response outcome is deliberately not
+   stored in `RequestContext` to maintain clean separation of request and response concerns.
 4. **`MaxResponseSize(u16)`**, also in `domain::request`: the byte ceiling every truncation
    decision is checked against. It carries a named constant — `CLASSIC_LIMIT = 512`, the
    pre-EDNS default cited by name in Approach §1 — and three constructors instead of one
    bare integer a caller could confuse with any other `u16`: `classic()` for the no-OPT
-   case; `from_edns_advertised(u16)`, which accepts the advertised value verbatim,
-   including one *below* 512; and `tcp_ceiling()`, which returns `u16::MAX` — the literal
-   ceiling the two-byte TCP length prefix imposes, not an arbitrary sentinel standing in
-   for "unbounded". `fits(usize) -> bool` is the one checked comparison
+   case; `from_edns_advertised(u16)`, which clamps values *below* 512 up to 512 per RFC 6891
+   Section 6.2.3; and `tcp_ceiling()`, which returns `u16::MAX` — the literal ceiling the
+   two-byte TCP length prefix imposes, not an arbitrary sentinel standing in for
+   "unbounded". `fits(usize) -> bool` is the one checked comparison
    `ResponseWriter::truncate_if_needed` (Operation 10) routes every size check through,
    rather than scattering bare `<` comparisons across the listeners.
 5. **`max_response_size` derivation**: EDNS(0) advertised UDP payload size when OPT is
-   present (including the case where it is advertised *below* 512), 512 when absent, and
+   present (clamped to at least 512 per RFC 6891 Section 6.2.3), 512 when absent, and
    effectively unbounded on TCP subject to the 16-bit length prefix — the three
    `MaxResponseSize` constructors above, one per branch.
 6. **Constraint**: **no EDNS Client Subnet option is ever read or emitted.** ECS (RFC
@@ -760,33 +790,45 @@ concerns, not a zone-file server.
    apart from forwarded (`Upstream`) ones. In this phase only `LocalRecord`, `Blocked`
    and `Error` are constructed. The other three variants are declared now so the enum
    never changes shape under the rollups.
-2. **`ResolutionOutcome`**: `source`, `rcode`, `forged: bool`, `cacheable: bool`,
-   `authentic_data: bool`.
-3. **`ForgedAnswer::build(ctx, records, rcode, ttl: Ttl) -> ForgedAnswer`** — **the only way
-   to construct an answer styx invented.** The TTL parameter is Phase 1's `styx-proto`
-   `Ttl`, not a bare `u32`: it is the shared foundation crate's already-checked,
-   saturating-decrement type, and reusing it here is the newtype rule applied to a value
-   that already carries the rule elsewhere, not a fresh type invented for this phase.
+2. **`ResolutionOutcome`**: sum-type enum forbidding invalid state combinations:
+   - `Forged { source: ForgedSource, rcode: ResponseCode }` — always uncacheable, forged,
+     and AD cleared.
+   - `Resolved { source: ResolvedSource, rcode: ResponseCode, cacheable: bool, authentic_data: bool }`
+     — real resolved answers with provenance, cacheability, and DNSSEC authenticity flags.
+   - `Error { rcode: ResponseCode }` — errors mapped to an RCODE.
+   Exposes helper accessors: `rcode(&self) -> ResponseCode`, `source(&self) -> AnswerSource`,
+   `is_forged(&self) -> bool`, `is_cacheable(&self) -> bool`, and `authentic_data(&self) -> bool`.
+3. **`ForgedSource` & `ResolvedSource`**:
+   - `ForgedSource`: `LocalRecord` | `Blocked`.
+   - `ResolvedSource`: `CacheHit` | `Upstream` | `Recursion`.
+4. **`ForgedAnswer::build(ctx, records, rcode, ttl: Ttl, source: ForgedSource) -> ForgedAnswer`**
+   — **the only way to construct an answer styx invented.** The TTL parameter is Phase 1's
+   `styx-proto` `Ttl`, not a bare `u32`: it is the shared foundation crate's
+   already-checked, saturating-decrement type, and reusing it here is the newtype rule
+   applied to a value that already carries the rule elsewhere, not a fresh type invented for
+   this phase.
    - Logic: copy the question section; set QR, and RA as appropriate; **clear the AD bit
      unconditionally**; attach **no RRSIG and no DNSKEY**; apply the supplied short `Ttl`;
-     set `ResolutionOutcome { forged: true, cacheable: false, authentic_data: false }`.
+     set `ResolutionOutcome::Forged { source, rcode }`.
    - Error handling: none — construction cannot fail; the inputs are already validated.
    - Accessors: `outcome(&self) -> ResolutionOutcome` returns that outcome, carrying the
      private `source` field, so the pipeline reports provenance to the observer without
      ever reading or setting the fields itself. `into_response(self) -> Message`
      consumes the value. Both fields stay private, so a forged answer cannot be relabelled
      after construction.
-4. **Constraints**: `ForgedAnswer` is the sole producer of answers with
-   `forged: true`. Phase 8's five blocked-reply modes and phase 9's local records both go
-   through it. **A block is not a validation verdict**, and filtering is applied *before*
-   validation, so nothing in this type may ever set AD or synthesise a signature.
+5. **Constraints**: `ForgedAnswer` is the sole producer of answers with
+   `is_forged() == true`. Phase 8's five blocked-reply modes and phase 9's local records
+   both go through it. **A block is not a validation verdict**, and filtering is applied
+   *before* validation, so nothing in this type may ever set AD or synthesise a signature.
 
 ### 8. Implement `Pipeline` — `styx-resolution::application::pipeline`
 
 1. **Responsibility**: execute the fixed stage order and record the outcome. No sockets,
    no clock reads other than through the injected `Clock`.
-2. **Dependencies**: `Arc<dyn LocalRecords>`, `Arc<dyn FilterPolicy>`,
-   `Arc<dyn QueryObserver>`, `Arc<dyn Clock>`. All constructor-injected.
+2. **Dependencies**: `Arc<L>`, `Arc<F>`, `Arc<O>`, `Arc<C>`, and `Arc<T>`. Monomorphized
+   generics `Pipeline<L, F, O, C, T = RefusedTerminal>` where `L: LocalRecords`,
+   `F: FilterPolicy`, `O: QueryObserver`, `C: Clock`, `T: TerminalHandler`. All
+   constructor-injected.
 3. **`handle(&self, ctx: RequestContext) -> Result<Message, PipelineError>`**
    - **Input validation**: reject QDCOUNT ≠ 1 and unsupported opcodes/classes with an
      explicit RCODE rather than dropping. A dropped query is retried and amplifies.
@@ -848,8 +890,8 @@ concerns, not a zone-file server.
 ### 11. Implement `UdpListener` — `styx-resolution::infrastructure::udp`
 
 1. **Responsibility**: receive datagrams, dispatch, reply to the sender.
-2. **`bind(addr) -> Result<UdpListener, ListenerError>`**; `bound_addr()` reports the
-   **actual** OS-assigned address, so port 0 works.
+2. **`bind(addr, pipeline, clock) -> Result<UdpListener<L, F, O, C, T>, ListenerError>`**;
+   `bound_addr()` reports the **actual** OS-assigned address, so port 0 works.
 3. **`run(cancel) -> Result<(), ListenerError>`**
    - Logic: loop receiving into a fixed buffer sized for the largest acceptable query;
      decode via `styx-proto`; on decode failure, reply `FORMERR` if a header could be
@@ -860,10 +902,12 @@ concerns, not a zone-file server.
 4. **Constraints**: no `unwrap`/`expect`; no blocking I/O (`no-sync-io`); `tracing` spans
    per query carrying the client address and the question, subject to later privacy
    levels.
-5. **Shape constraint** *(amendment, 2026-09-24)*: the loop body in item 3 — decode,
-   recover-or-warn, dispatch, reply — is a named helper such as `handle_datagram`, called
-   once per iteration, so `run` stays a thin loop and the helper stays within
-   `excessive_nesting`'s threshold of 4 and `too_many_lines`' 60-line cap.
+5. **Shape constraint** *(amendment, 2026-09-24)*: the loop body in item 3 is cleanly
+   factored into helper methods: `handle_recv_result` processes socket reception and
+   delegates to `handle_datagram`, so `run` stays a thin loop and nesting stays strictly
+   below clippy's threshold of 4, with line counts within `too_many_lines`' 60-line cap.
+   All request timestamps passed to `RequestContext::new` are read from
+   `self.clock.now_monotonic()`.
 
 ### 12. Implement `TcpListener` — `styx-resolution::infrastructure::tcp`
 
@@ -877,12 +921,12 @@ concerns, not a zone-file server.
    - Error handling: a framing error closes that connection only, never the listener.
 3. **Constraints**: TCP is a peer transport, not a fallback-only path — a client that
    never tries UDP must be served identically.
-4. **Shape constraint** *(amendment, 2026-09-24)*: the per-connection task is a named
-   helper (for example `handle_connection`), and reading the length prefix is factored into
-   its own helper (for example `read_frame`) rather than inlined into the query loop, so
-   that handling multiple queries per connection plus partial-read recovery does not push
-   either function past `excessive_nesting`'s threshold of 4 or `too_many_lines`' 60-line
-   cap.
+4. **Shape constraint** *(amendment, 2026-09-24)*: the listener loop extracts
+   `handle_accept_result`, the per-connection loop extracts `handle_frame_step`, and
+   reading frames is factored into `read_frame`, so handling multiple queries per
+   connection plus partial-read recovery stays within `excessive_nesting`'s threshold of 4
+   and `too_many_lines`' 60-line cap. Timestamps passed to `RequestContext::new` are read
+   from `clock.now_monotonic()`.
 
 ### 13. Implement `Server` and `ServerConfig` — `styx-resolution::infrastructure::server` and the `styx` binary
 
@@ -890,11 +934,12 @@ concerns, not a zone-file server.
    addresses, default UDP payload size, TCP idle timeout, query timeout. **Infrastructure
    only.** No policy field may appear here, and none of these may ever be mirrored in the
    database.
-2. **`Server::bind(config, pipeline, clock) -> Result<Server, ServerError>`**: bind one
-   UDP and one TCP listener per configured address; spawn each as a **supervised** task
-   under a shared cancellation token; record handles.
-3. **`local_addrs() -> Vec<SocketAddr>`**: the actual bound addresses, for the port-0
-   case.
+2. **`Server::bind(config, pipeline, clock) -> Result<Server<L, F, O, C, T>, ServerError>`**:
+   bind one UDP and one TCP listener per configured address; spawn each as a **supervised**
+   task under a shared cancellation token; record handles.
+3. **`local_addrs() -> Vec<SocketAddr>`** and **`shutdown()`**: implemented on unconstrained
+   `Server<L, F, O, C, T>` so consumers can access bound sockets and trigger graceful
+   shutdown without carrying collaborator bounds.
 4. **`shutdown()`**: cancel, await all listener tasks, return. Must not hang with
    in-flight queries, or every ephemeral-server test leaks one.
 5. **Binary wiring**: construct `SystemClock`, `AllowAllFilter`, `NoLocalRecords`,
@@ -943,10 +988,9 @@ concerns, not a zone-file server.
 1. **`TestServer::boot_ephemeral()`**: build a `Pipeline` with the no-op ports and a
    `TestClock`, bind a `Server` on port 0, return the fixture with the **actual** UDP and
    TCP addresses read back from the OS.
-2. **`with_filter` / `with_local_records` / `with_observer`**: substitute a test double
-   for any port. *Why these exist:* they are how the pipeline-order and port-injectability
-   safeguards are proven, and they prove the ports are genuinely injectable rather than
-   decorative.
+2. **`boot_with_collaborators` / `boot_with_terminal`**: parameterized constructors
+   injecting test doubles for ports (`Arc<L>`, `Arc<F>`, `Arc<O>`, and optional
+   `Arc<T>`) using compile-time generics rather than trait objects.
 3. **`DnsClient::query_udp` / `query_tcp`**: drive the server over **real sockets**,
    encoding the query with `hickory-proto`, returning the raw response for assertion.
 4. **Constraints**: every test binds its own ephemeral ports and tears down cleanly.
@@ -960,7 +1004,8 @@ concerns, not a zone-file server.
    multiple queries on one TCP connection; a length prefix split across two packets.
 2. **Truncation**: a response exceeding 512 bytes with no EDNS present sets TC; the same
    query over TCP returns the full response; EDNS advertising a larger size avoids TC;
-   EDNS advertising below 512 is honoured.
+   EDNS advertising below 512 is clamped to 512 per RFC 6891 Section 6.2.3, avoiding
+   truncation for answers smaller than 512 bytes.
 3. **Malformed input**: truncated datagram, QDCOUNT of 0, QDCOUNT of 2, unknown opcode,
    unknown class — each yields the mapped RCODE and never terminates the listener.
 4. **Clock**: at least one test whose outcome depends on `TestClock::advance` — otherwise
@@ -994,10 +1039,11 @@ concerns, not a zone-file server.
    crates never name each other; `styx-proto` is the single explicit exception, because
    every crate parses through the wire codec.
 
-2. **Dependency wiring**: constructor injection with `Arc<dyn Trait>`. No globals, no
-   lazily-initialised statics, no service locator. The `styx` binary is the only place a
-   port meets an implementation. Every component that needs time takes `Arc<dyn Clock>`;
-   `SystemTime::now()` and `Instant::now()` appear only inside `SystemClock`.
+2. **Dependency wiring**: constructor injection with compile-time generic parameters (`L:
+   LocalRecords`, `F: FilterPolicy`, `O: QueryObserver`, `C: Clock`, `T: TerminalHandler`).
+   No globals, no lazily-initialised statics, no service locator. The `styx` binary is the
+   only place a port meets an implementation. Every component that needs time takes
+   `Arc<C>`; `SystemTime::now()` and `Instant::now()` appear only inside `SystemClock`.
 
 3. **Error handling**: every fallible function returns `Result<T, E>` with a `thiserror`
    enum (`require-thiserror`). No `unwrap`, no `expect`, no `panic!` outside tests
@@ -1054,19 +1100,16 @@ concerns, not a zone-file server.
     (b) which phase implements it, and (c) the reason it exists on the hot path now. The
     forged-answer rule is documented on `ForgedAnswer::build`, not in a separate file.
 
-12. **Primitive obsession is avoided per `AGENTS.md`; a newtype wraps a primitive that
-    carries domain rules.** A value gets its own type when it has a validated range,
-    checked arithmetic, a non-trivial wire encoding, or named constants attached to it —
-    not merely because it is a `u16`, a `u32`, a `bool` or a `String`. A plain named field
-    with no independent validation and no risk of being confused with an unrelated value
-    at a call site is not primitive obsession; the test is domain rules attached to the
-    value, not the primitive-ness of its type — which is why `ResolutionOutcome`'s
-    `forged`, `cacheable` and `authentic_data` stay bare `bool`s. This phase's own
-    newtypes are the worked examples: `MaxResponseSize`, with the named `CLASSIC_LIMIT`
-    constant and the checked `fits` comparison every truncation decision routes through
-    instead of a bare `u16`; and `ForgedAnswer::build`'s TTL parameter, which reuses Phase
-    1's `Ttl` rather than reinventing a bare `u32` for a value that already carries the
-    rule elsewhere.
+12. **Domain state integrity is modeled via sum types over bags of booleans.** A value gets
+    its own type when it has a validated range, checked arithmetic, or when multiple
+    fields combine to form valid/invalid states. `ResolutionOutcome` is an algebraic enum
+    (`Forged`, `Resolved`, `Error`) with provenance sub-enums (`ForgedSource`,
+    `ResolvedSource`), forbidding illegal states — such as forged answers claiming
+    authentic data or cacheability — by construction. Other newtypes include
+    `MaxResponseSize`, with the named `CLASSIC_LIMIT` constant and the checked `fits`
+    comparison every truncation decision routes through instead of a bare `u16`; and
+    `ForgedAnswer::build`'s TTL parameter, which reuses Phase 1's `Ttl` rather than
+    reinventing a bare `u32`.
 
 ---
 
@@ -1093,10 +1136,10 @@ and expensive to discover later:
 - **S3 — The pipeline order is enforced.** A `LocalRecords` double that answers
   short-circuits before the `FilterPolicy` double is consulted; a `Block` verdict produces
   no outbound traffic; neither result is marked cacheable.
-- **S4 — Forged answers are honest.** Every answer with `forged: true` has AD cleared,
-  carries no RRSIG, and has `cacheable: false`. Asserted once at `ForgedAnswer::build`,
-  since phase 8's five blocked-reply modes and phase 9's local records all pass through
-  it.
+- **S4 — Forged answers are honest.** Every answer with `ResolutionOutcome::Forged` has AD
+  cleared, carries no RRSIG, and is uncacheable. Enforced structurally by the
+  `ResolutionOutcome` enum, since phase 8's five blocked-reply modes and phase 9's local
+  records all pass through it.
 
 ### 2. Functional constraints
 
@@ -1106,7 +1149,7 @@ and expensive to discover later:
   (additional → authority → answer), never below header + question. A response that fits
   never sets TC.
 - The permitted size is the EDNS(0) advertised UDP payload size when OPT is present —
-  including values below 512 — and 512 when absent.
+  clamped to at least 512 per RFC 6891 Section 6.2.3 — and 512 when absent.
 - The TCP length prefix is handled as stream framing: partial reads across packets, and
   multiple queries per connection.
 - Every query receives a response, including malformed ones, mapped to an explicit RCODE.

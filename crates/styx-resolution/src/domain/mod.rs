@@ -16,7 +16,7 @@ pub mod error;
 pub mod ports;
 pub mod request;
 
-pub use answer::{AnswerSource, ForgedAnswer, ResolutionOutcome};
+pub use answer::{AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolvedSource};
 pub use clock::Clock;
 pub use error::{ConfigError, ListenerError, PipelineError, ServerError};
 pub use ports::{FilterPolicy, FilterVerdict, LocalRecords, QueryDetail, QueryObserver};

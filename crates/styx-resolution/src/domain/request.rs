@@ -5,8 +5,6 @@ use std::time::Instant;
 
 use styx_proto::Message;
 
-use crate::domain::answer::ResolutionOutcome;
-
 /// Identity of a DNS client making a query.
 ///
 /// In Phase 2, this is derived strictly from the socket peer IP address.
@@ -62,10 +60,15 @@ impl MaxResponseSize {
 
     /// Creates a `MaxResponseSize` from an EDNS(0) advertised UDP payload size.
     ///
-    /// Accepts the advertised value verbatim, including values below 512.
+    /// Clamps the advertised value to at least 512 per RFC 6891 Section 6.2.3.
     #[must_use]
     pub const fn from_edns_advertised(advertised: u16) -> Self {
-        Self { bytes: advertised }
+        let clamped = if advertised < Self::CLASSIC_LIMIT {
+            Self::CLASSIC_LIMIT
+        } else {
+            advertised
+        };
+        Self { bytes: clamped }
     }
 
     /// Creates a `MaxResponseSize` representing the maximum 16-bit TCP frame payload (`u16::MAX`).
@@ -88,7 +91,7 @@ impl MaxResponseSize {
     }
 }
 
-/// Encapsulates the entire context of an inbound DNS query.
+/// Encapsulates the inbound context of a DNS query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestContext {
     /// Decoded DNS query message.
@@ -97,14 +100,10 @@ pub struct RequestContext {
     pub client: ClientId,
     /// Transport protocol on which the query was received.
     pub transport: Transport,
-    /// Monotonic timestamp when the query was received.
+    /// Monotonic timestamp when the query was received (derived from Clock).
     pub received_at: Instant,
     /// Computed response size ceiling for truncation decisions.
     pub max_response_size: MaxResponseSize,
-    /// Whether an EDNS(0) OPT pseudo-record was present in the query.
-    pub edns_present: bool,
-    /// Final resolution outcome audit record, populated on response path.
-    pub outcome: Option<ResolutionOutcome>,
 }
 
 impl RequestContext {
@@ -115,17 +114,21 @@ impl RequestContext {
         client: ClientId,
         transport: Transport,
         max_response_size: MaxResponseSize,
+        received_at: Instant,
     ) -> Self {
-        let edns_present = query.opt.is_some();
         Self {
             query,
             client,
             transport,
-            received_at: Instant::now(),
+            received_at,
             max_response_size,
-            edns_present,
-            outcome: None,
         }
+    }
+
+    /// Returns `true` if an EDNS(0) OPT pseudo-record was present in the query.
+    #[must_use]
+    pub fn has_edns(&self) -> bool {
+        self.query.opt.is_some()
     }
 
     /// Sets the received monotonic instant.

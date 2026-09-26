@@ -24,19 +24,127 @@ pub enum AnswerSource {
     Error,
 }
 
+/// Provenance of a forged answer synthesized by styx.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ForgedSource {
+    /// Matched an operator-configured local record in storage.
+    LocalRecord,
+    /// Synthesized via block policy (e.g. adlist filter).
+    Blocked,
+}
+
+impl From<ForgedSource> for AnswerSource {
+    fn from(source: ForgedSource) -> Self {
+        match source {
+            ForgedSource::LocalRecord => Self::LocalRecord,
+            ForgedSource::Blocked => Self::Blocked,
+        }
+    }
+}
+
+/// Provenance of an authentic or upstream resolved answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResolvedSource {
+    /// Retrieved from the in-memory answer cache.
+    CacheHit,
+    /// Forwarded to and answered by an upstream resolver.
+    Upstream,
+    /// Resolved iteratively via the recursion engine.
+    Recursion,
+}
+
+impl From<ResolvedSource> for AnswerSource {
+    fn from(source: ResolvedSource) -> Self {
+        match source {
+            ResolvedSource::CacheHit => Self::CacheHit,
+            ResolvedSource::Upstream => Self::Upstream,
+            ResolvedSource::Recursion => Self::Recursion,
+        }
+    }
+}
+
 /// Metadata and audit record of a resolution decision.
+///
+/// Encoded as an enum to structurally forbid impossible states (such as
+/// a forged or error answer being marked as cacheable or authentic).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolutionOutcome {
-    /// Which pipeline stage produced the answer.
-    pub source: AnswerSource,
-    /// The DNS response code returned to the client.
-    pub rcode: ResponseCode,
-    /// Whether the answer was invented/synthesized by styx rather than authoritative.
-    pub forged: bool,
-    /// Whether this answer is eligible for insertion into the global answer cache.
-    pub cacheable: bool,
-    /// Whether the authentic data (AD) bit was verified and set.
-    pub authentic_data: bool,
+pub enum ResolutionOutcome {
+    /// Answer synthesized by styx. Never cacheable; authentic data is always false.
+    Forged {
+        /// Source that triggered the forged answer.
+        source: ForgedSource,
+        /// DNS response code.
+        rcode: ResponseCode,
+    },
+    /// Resolved authoritative answer (from cache, upstream, or recursion).
+    Resolved {
+        /// Resolution path provenance.
+        source: ResolvedSource,
+        /// DNS response code.
+        rcode: ResponseCode,
+        /// Whether the answer is eligible for the global cache.
+        cacheable: bool,
+        /// Whether DNSSEC validation succeeded and authentic data is set.
+        authentic_data: bool,
+    },
+    /// Synthesized protocol error response (FORMERR, NOTIMP, etc.). Never cacheable.
+    Error {
+        /// DNS response code.
+        rcode: ResponseCode,
+    },
+}
+
+impl ResolutionOutcome {
+    /// Returns the DNS response code associated with this outcome.
+    #[must_use]
+    pub const fn rcode(&self) -> ResponseCode {
+        match self {
+            Self::Forged { rcode, .. } | Self::Resolved { rcode, .. } | Self::Error { rcode } => {
+                *rcode
+            }
+        }
+    }
+
+    /// Returns `true` if the answer was synthesized/invented by styx.
+    #[must_use]
+    pub const fn is_forged(&self) -> bool {
+        matches!(self, Self::Forged { .. })
+    }
+
+    /// Returns `true` if this answer is eligible for insertion into the answer cache.
+    #[must_use]
+    pub const fn is_cacheable(&self) -> bool {
+        match self {
+            Self::Resolved { cacheable, .. } => *cacheable,
+            Self::Forged { .. } | Self::Error { .. } => false,
+        }
+    }
+
+    /// Returns `true` if the authentic data (AD) flag is verified and valid.
+    #[must_use]
+    pub const fn authentic_data(&self) -> bool {
+        match self {
+            Self::Resolved { authentic_data, .. } => *authentic_data,
+            Self::Forged { .. } | Self::Error { .. } => false,
+        }
+    }
+
+    /// Returns the general provenance [`AnswerSource`] of this outcome.
+    #[must_use]
+    pub const fn source(&self) -> AnswerSource {
+        match self {
+            Self::Forged { source, .. } => match source {
+                ForgedSource::LocalRecord => AnswerSource::LocalRecord,
+                ForgedSource::Blocked => AnswerSource::Blocked,
+            },
+            Self::Resolved { source, .. } => match source {
+                ResolvedSource::CacheHit => AnswerSource::CacheHit,
+                ResolvedSource::Upstream => AnswerSource::Upstream,
+                ResolvedSource::Recursion => AnswerSource::Recursion,
+            },
+            Self::Error { .. } => AnswerSource::Error,
+        }
+    }
 }
 
 /// A synthesized DNS answer produced inside styx.
@@ -48,7 +156,7 @@ pub struct ResolutionOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForgedAnswer {
     message: Message,
-    source: AnswerSource,
+    source: ForgedSource,
 }
 
 impl ForgedAnswer {
@@ -68,6 +176,18 @@ impl ForgedAnswer {
         records: Vec<ResourceRecord>,
         rcode: ResponseCode,
         ttl: Ttl,
+    ) -> Self {
+        Self::build_with_source(ctx, records, rcode, ttl, ForgedSource::LocalRecord)
+    }
+
+    /// Constructs a forged answer with a specific [`ForgedSource`].
+    #[must_use]
+    pub fn build_with_source(
+        ctx: &RequestContext,
+        records: Vec<ResourceRecord>,
+        rcode: ResponseCode,
+        ttl: Ttl,
+        source: ForgedSource,
     ) -> Self {
         let mut header = Header::new_query(ctx.query.header.id, ctx.query.header.opcode, false);
         header.kind = MessageKind::Response;
@@ -98,35 +218,15 @@ impl ForgedAnswer {
             message.opt = Some(opt);
         }
 
-        Self {
-            message,
-            source: AnswerSource::LocalRecord,
-        }
-    }
-
-    /// Constructs a forged answer with a specific [`AnswerSource`].
-    #[must_use]
-    pub fn build_with_source(
-        ctx: &RequestContext,
-        records: Vec<ResourceRecord>,
-        rcode: ResponseCode,
-        ttl: Ttl,
-        source: AnswerSource,
-    ) -> Self {
-        let mut forged = Self::build(ctx, records, rcode, ttl);
-        forged.source = source;
-        forged
+        Self { message, source }
     }
 
     /// Returns the resolution outcome audit descriptor for this forged answer.
     #[must_use]
     pub fn outcome(&self) -> ResolutionOutcome {
-        ResolutionOutcome {
+        ResolutionOutcome::Forged {
             source: self.source,
             rcode: self.message.header.rcode,
-            forged: true,
-            cacheable: false,
-            authentic_data: false,
         }
     }
 

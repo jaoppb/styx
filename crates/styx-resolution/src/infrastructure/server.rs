@@ -9,9 +9,13 @@ use serde::Deserialize;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::application::Pipeline;
 use crate::domain::clock::Clock;
 use crate::domain::error::{ConfigError, ListenerError, ServerError};
+use crate::domain::ports::filter::FilterPolicy;
+use crate::domain::ports::local::LocalRecords;
+use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::MaxResponseSize;
 use crate::infrastructure::tcp::TcpListener;
 use crate::infrastructure::udp::UdpListener;
@@ -92,23 +96,30 @@ impl ServerConfig {
 }
 
 /// Supervised DNS server managing UDP and TCP listener tasks.
-pub struct Server {
-    _pipeline: Arc<Pipeline>,
-    _clock: Arc<dyn Clock>,
+pub struct Server<L, F, O, C, T = RefusedTerminal> {
+    _pipeline: Arc<Pipeline<L, F, O, C, T>>,
+    _clock: Arc<C>,
     local_addrs: Vec<SocketAddr>,
     listeners: Vec<JoinHandle<Result<(), ListenerError>>>,
     cancel: CancellationToken,
 }
 
-impl Server {
+impl<L, F, O, C, T> Server<L, F, O, C, T>
+where
+    L: LocalRecords + Send + Sync + 'static,
+    F: FilterPolicy + Send + Sync + 'static,
+    O: QueryObserver + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    T: TerminalHandler + Send + Sync + 'static,
+{
     /// Binds listeners on all configured addresses and spawns supervised tasks.
     ///
     /// # Errors
     /// Returns [`ServerError`] if binding any socket fails.
     pub async fn bind(
         config: ServerConfig,
-        pipeline: Arc<Pipeline>,
-        clock: Arc<dyn Clock>,
+        pipeline: Arc<Pipeline<L, F, O, C, T>>,
+        clock: Arc<C>,
     ) -> Result<Self, ServerError> {
         let cancel = CancellationToken::new();
         let mut local_addrs = Vec::new();
@@ -148,7 +159,9 @@ impl Server {
             cancel,
         })
     }
+}
 
+impl<L, F, O, C, T> Server<L, F, O, C, T> {
     /// Returns the OS-assigned bound local addresses.
     #[must_use]
     pub fn local_addrs(&self) -> Vec<SocketAddr> {
@@ -169,26 +182,42 @@ impl Server {
         }
         Ok(())
     }
+}
 
+impl<L, F, O, C, T> Server<L, F, O, C, T>
+where
+    L: LocalRecords + Send + Sync + 'static,
+    F: FilterPolicy + Send + Sync + 'static,
+    O: QueryObserver + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    T: TerminalHandler + Send + Sync + 'static,
+{
     fn spawn_udp_supervisor(
-        udp: UdpListener,
+        udp: UdpListener<L, F, O, C, T>,
         cancel: CancellationToken,
     ) -> JoinHandle<Result<(), ListenerError>> {
         tokio::spawn(run_udp_supervisor(udp, cancel))
     }
 
     fn spawn_tcp_supervisor(
-        tcp: TcpListener,
+        tcp: TcpListener<L, F, O, C, T>,
         cancel: CancellationToken,
     ) -> JoinHandle<Result<(), ListenerError>> {
         tokio::spawn(run_tcp_supervisor(tcp, cancel))
     }
 }
 
-async fn run_udp_supervisor(
-    udp: UdpListener,
+async fn run_udp_supervisor<L, F, O, C, T>(
+    udp: UdpListener<L, F, O, C, T>,
     cancel: CancellationToken,
-) -> Result<(), ListenerError> {
+) -> Result<(), ListenerError>
+where
+    L: LocalRecords + Send + Sync + 'static,
+    F: FilterPolicy + Send + Sync + 'static,
+    O: QueryObserver + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    T: TerminalHandler + Send + Sync + 'static,
+{
     let mut backoff = Duration::from_millis(50);
     while !cancel.is_cancelled() {
         let Err(err) = udp.run(cancel.clone()).await else {
@@ -201,10 +230,17 @@ async fn run_udp_supervisor(
     Ok(())
 }
 
-async fn run_tcp_supervisor(
-    tcp: TcpListener,
+async fn run_tcp_supervisor<L, F, O, C, T>(
+    tcp: TcpListener<L, F, O, C, T>,
     cancel: CancellationToken,
-) -> Result<(), ListenerError> {
+) -> Result<(), ListenerError>
+where
+    L: LocalRecords + Send + Sync + 'static,
+    F: FilterPolicy + Send + Sync + 'static,
+    O: QueryObserver + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    T: TerminalHandler + Send + Sync + 'static,
+{
     let mut backoff = Duration::from_millis(50);
     while !cancel.is_cancelled() {
         let Err(err) = tcp.run(cancel.clone()).await else {
