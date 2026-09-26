@@ -1,9 +1,28 @@
-# The one place these two versions are pinned. `justfile`'s `_arch-version` and
-# `_rumdl-version` preflights read the pin from here (`mise config get`) rather
-# than restating it, and `just install-tools` is just `mise install`. The
-# Rust toolchain itself is not listed here — it already has one home, in
-# rust-toolchain.toml — and CI reads this same file instead of carrying its
-# own copy of these two numbers.
+# The one place every pinned external tool's version lives.
+#
+# `arch-lint-cli` and `rumdl` are read back out of this file by justfile's
+# `_arch-version`/`_rumdl-version` preflights (`mise config get`), because a
+# silent version drift in either one changes what the gate means — that's the
+# failure mode those two preflights exist to catch.
+#
+# `just`, `lefthook` and `cross` are pinned here too, but don't get that same
+# gate-level check: `just` is already running the recipe by the time a preflight
+# inside one could inspect it, `lefthook` only touches the bypassable local
+# hooks (never `just gate` itself), and `cross` lives entirely in the release
+# workflow. `mise install` still gets everyone the exact pinned build of each,
+# matching the "pin exactly, not a range" rule this repository applies
+# everywhere else — they just don't need a second belt-and-suspenders check on
+# top of it.
+#
+# The Rust toolchain itself is still not listed here. rust-toolchain.toml
+# remains its one home: rustup/cargo already honour it automatically, per
+# directory, with no extra tooling and no shim to keep on PATH, and it pins
+# components and cross targets that a `[tools] rust = "…"` entry does not.
+# Duplicating the channel number into this file would be a second hand-kept
+# copy of it — the exact problem this file exists to avoid.
 [tools]
 "cargo:arch-lint-cli" = "0.6.0"
 "cargo:rumdl" = "0.2.75"
+just = "1.58.0"
+lefthook = "2.1.14"
+"cargo:cross" = "0.2.5"

@@ -33,9 +33,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Static musl binaries, so the cutover does not inherit the host's libc.
-      - name: Install cross
-        run: cargo install cross --locked
+      # cross is pinned in mise.toml, the same file arch-lint/rumdl/just/
+      # lefthook are pinned in. Static musl binaries, so the cutover does not
+      # inherit the host's libc.
+      - uses: jdx/mise-action@v2
 
       - name: Build
         run: cross build --release --locked --target ${{ matrix.target }} --package styx

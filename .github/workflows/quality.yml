@@ -28,12 +28,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: extractions/setup-just@v2
-
-      # arch-lint and rumdl are pinned once, in mise.toml. This action installs
-      # mise itself, then runs `mise install` against that file — the same
-      # `mise install` behind `just install-tools` — so there is no second
-      # copy of either version number here to drift from it.
+      # arch-lint, rumdl, just and lefthook are all pinned once, in mise.toml.
+      # This action installs mise itself, then runs `mise install` against that
+      # file — the same `mise install` behind `just install-tools` — and puts
+      # its shims on PATH, so the `just gate` step below finds a `just` binary
+      # without a separate setup-just step, at the version this file pins.
       - uses: jdx/mise-action@v2
 
       # The whole per-push gate, in one step, via the same target a developer

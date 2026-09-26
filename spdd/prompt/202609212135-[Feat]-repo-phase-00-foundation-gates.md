@@ -860,7 +860,7 @@ styx/
 ├── Cargo.toml                  # virtual manifest: members, [workspace.lints], [workspace.dependencies]
 ├── AGENTS.md                   # engineering guidelines every phase codes against
 ├── rust-toolchain.toml         # pinned rustc (the version the 21 lint names were verified against)
-├── mise.toml                   # pins arch-lint-cli and rumdl; `just install-tools` is `mise install`
+├── mise.toml                   # pins arch-lint, rumdl, just, lefthook, cross — `just install-tools`
 ├── arch-lint.toml              # syn engine — NO [[layers]]
 ├── clippy.toml                 # 5 allow-*-in-tests entries, nesting and function-length thresholds
 ├── rumdl.toml                  # markdown: tier split, no [[layers]]-style trap here
@@ -893,15 +893,22 @@ Declared once in `[workspace.dependencies]`; members reference them with
 No other dependency is introduced. **No DNS crate of any kind**, and no `hickory-*` — not
 even under `[dev-dependencies]`, which stays empty until Phase 1.
 
-**Pinned external tools** are not Cargo dependencies of any crate. Both versions are
-pinned once, in `mise.toml`; `just install-tools` is `mise install` against that file,
-and the gate's `_arch-version`/`_rumdl-version` preflights read the same pin with
-`mise config get` rather than restating it:
+**Pinned external tools** are not Cargo dependencies of any crate. All five versions are
+pinned once, in `mise.toml`; `just install-tools` is `mise install` against that file.
+Only `arch-lint` and `rumdl` also get a gate-level check — the `_arch-version`/
+`_rumdl-version` preflights, reading the same pin with `mise config get` rather than
+restating it — because only those two determine what the gate itself enforces. `just`
+is already running the recipe by the time a preflight inside one could inspect it,
+`lefthook` touches only the bypassable local hooks, and `cross` lives entirely in the
+release workflow, not `just gate`:
 
 | Tool | Version | Why |
 |---|---|---|
-| `arch-lint` (`arch-lint-cli`) | exactly `0.6.0` | Layering, use-restrictions and the rule set. |
-| `rumdl` | exactly `0.2.75` | The markdown gate. Pre-1.0, so the exact pin matters more, not less. |
+| `arch-lint` (`arch-lint-cli`) | exactly `0.6.0` | Layering, use-restrictions and the rule set. Gate-checked. |
+| `rumdl` | exactly `0.2.75` | The markdown gate. Pre-1.0, so the exact pin matters more, not less. Gate-checked. |
+| `just` | exactly `1.58.0` | Runs every recipe in this table, including `install-tools` itself. |
+| `lefthook` | exactly `2.1.14` | The pre-commit/pre-push hooks `just install-hooks` wires up. |
+| `cross` | exactly `0.2.5` | Builds the musl release artifacts phase 12 consumes. |
 
 ### Crate classification (what the link-graph gate keys on)
 
