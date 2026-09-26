@@ -910,6 +910,13 @@ release workflow, not `just gate`:
 | `lefthook` | exactly `2.1.14` | The pre-commit/pre-push hooks `just install-hooks` wires up. |
 | `cross` | exactly `0.2.5` | Builds the musl release artifacts phase 12 consumes. |
 
+**rustc and Cargo are deliberately not in this table.** They stay pinned solely by
+`rust-toolchain.toml` (channel, components and musl targets in one place already), which
+`cargo`/`rustup` honour automatically per directory with no shim to keep on PATH. mise
+cannot read that file's `[toolchain]` schema, so a `[tools] rust = "…"` entry in
+`mise.toml` would be a second hand-kept copy of the same channel number rather than a
+route to the existing one — the exact duplication `mise.toml` exists to avoid.
+
 ### Crate classification (what the link-graph gate keys on)
 
 | Class | Members | Rule |
