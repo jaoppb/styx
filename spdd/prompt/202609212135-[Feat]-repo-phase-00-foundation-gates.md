@@ -860,6 +860,7 @@ styx/
 ├── Cargo.toml                  # virtual manifest: members, [workspace.lints], [workspace.dependencies]
 ├── AGENTS.md                   # engineering guidelines every phase codes against
 ├── rust-toolchain.toml         # pinned rustc (the version the 21 lint names were verified against)
+├── mise.toml                   # pins arch-lint-cli and rumdl; `just install-tools` is `mise install`
 ├── arch-lint.toml              # syn engine — NO [[layers]]
 ├── clippy.toml                 # 5 allow-*-in-tests entries, nesting and function-length thresholds
 ├── rumdl.toml                  # markdown: tier split, no [[layers]]-style trap here
@@ -892,8 +893,10 @@ Declared once in `[workspace.dependencies]`; members reference them with
 No other dependency is introduced. **No DNS crate of any kind**, and no `hickory-*` — not
 even under `[dev-dependencies]`, which stays empty until Phase 1.
 
-**Pinned external tools** are not Cargo dependencies of any crate — they are installed by
-`just install-tools` and version-checked by the gate:
+**Pinned external tools** are not Cargo dependencies of any crate. Both versions are
+pinned once, in `mise.toml`; `just install-tools` is `mise install` against that file,
+and the gate's `_arch-version`/`_rumdl-version` preflights read the same pin with
+`mise config get` rather than restating it:
 
 | Tool | Version | Why |
 |---|---|---|
