@@ -6,3 +6,9 @@
 //! Every fallible operation returns `Result<T, E>` with a crate-owned
 //! `thiserror` enum. No synchronous I/O: a database outage must degrade
 //! logging and admin, never resolution.
+
+pub mod pipeline;
+pub mod terminal;
+
+pub use pipeline::Pipeline;
+pub use terminal::{RefusedTerminal, TerminalHandler};

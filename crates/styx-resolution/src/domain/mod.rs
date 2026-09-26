@@ -9,3 +9,15 @@
 //! the binary — that indirection is what keeps the two features independent.
 //!
 //! No synchronous I/O, no `unwrap`, no `expect`, no `panic!`.
+
+pub mod answer;
+pub mod clock;
+pub mod error;
+pub mod ports;
+pub mod request;
+
+pub use answer::{AnswerSource, ForgedAnswer, ResolutionOutcome};
+pub use clock::Clock;
+pub use error::{ConfigError, ListenerError, PipelineError, ServerError};
+pub use ports::{FilterPolicy, FilterVerdict, LocalRecords, QueryDetail, QueryObserver};
+pub use request::{ClientId, MaxResponseSize, RequestContext, Transport};
