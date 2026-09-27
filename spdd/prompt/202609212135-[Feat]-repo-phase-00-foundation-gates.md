@@ -70,9 +70,11 @@ Concretely, this phase must:
 - **Write the durable engineering-norms document every later phase codes against** —
   `AGENTS.md` at the repository root, covering this phase's own conventions (ports and
   adapters, generics over `dyn`, `thiserror`, checked arithmetic, no synchronous I/O,
-  `tracing`) and a Rust-adapted Object Calisthenics ruleset, so that "wrap a primitive when
-  it carries domain rules" is written down once, in phase 0, rather than re-derived by
-  every later phase's generation prompt.
+  `tracing`), a visual workspace layout and module structure of currently active crates so
+  agents locate components without searching the whole codebase, and a Rust-adapted
+  Object Calisthenics ruleset, so that "wrap a primitive when it carries domain rules" is
+  written down once, in phase 0, rather than re-derived by every later phase's generation
+  prompt.
 - **Mechanise every `AGENTS.md` rule a tool can check** *(amendment, 2026-09-24)* — no
   synchronous I/O in `domain`/`application`, `anyhow` only in the `styx` binary and
   `xtask`, `tracing` rather than print macros, and the measurable proxies of three Object
@@ -314,6 +316,7 @@ class EngineeringGuidelines {
   <<AGENTS.md, repo root>>
   +String scope "phases 0 through 12"
   +Vec~String~ repo_conventions
+  +String workspace_layout_and_module_map
   +Vec~String~ calisthenics_rules
   +String primitive_obsession_test
   +Vec~String~ mechanically_enforced_subset
@@ -698,6 +701,18 @@ trust anchor rollover. Write them where the reasoning is freshest.
   from; this phase does not modify it. A later phase that finds Phase 1 in violation of a
   rule stated here has found a defect in the rule's wording, not licence to silently
   rewrite shipped code — the SPDD "fix the prompt first" principle applies.
+- **Visual workspace layout and module map to guide agent navigation**: Autonomous agents
+  frequently need to locate components, ports, and layer implementations across the
+  codebase. To avoid forcing an agent to search the entire filesystem or run discovery
+  commands repeatedly (issue #19), `AGENTS.md` carries a dedicated section `Workspace
+  layout and module structure` positioned immediately after `Repository conventions` and
+  before `Object Calisthenics`. To keep context concise and avoid pollution, this section
+  uses a visual directory tree inside a fenced `text` block focusing on the overall
+  structure rather than enumerating every file. It outlines currently existing crates
+  (`crates/styx`, `crates/styx-proto`, `crates/styx-resolution`, `crates/styx-filtering`,
+  `xtask`), their layer modules (`domain`, `application`, `infrastructure`), key ports and
+  primary responsibilities. As future phases land, this section is updated iteratively as
+  part of each phase's deliverables.
 
 ### 10. Mechanising the `AGENTS.md` conventions (amendment, 2026-09-24)
 
@@ -872,7 +887,7 @@ named `bool` fields.
 ```text
 styx/
 ├── Cargo.toml                  # virtual manifest: members, [workspace.lints], [workspace.dependencies]
-├── AGENTS.md                   # engineering guidelines every phase codes against
+├── AGENTS.md                   # engineering guidelines and module map every phase codes against
 ├── rust-toolchain.toml         # pinned rustc (the version the 21 lint names were verified against)
 ├── mise.toml                   # pins arch-lint, rumdl, just, lefthook, cross — `just install-tools`
 ├── arch-lint.toml              # syn engine — NO [[layers]]
@@ -1478,6 +1493,14 @@ the counterpart to, and before the `justfile` that invokes it.*
      tests; checked arithmetic and no indexing outside an audited primitive; no
      synchronous I/O in `domain` or `application`; `tracing` over `println!`. Link each
      to the ADR that explains it where one exists, rather than re-deriving the rationale.
+   - **Workspace layout and module structure section**: add a top-level section between
+     Repository conventions and Object Calisthenics displaying a concise visual directory
+     tree in a fenced `text` block. It maps the currently existing crates (`crates/styx`,
+     `crates/styx-proto`, `crates/styx-resolution`, `crates/styx-filtering`, `xtask`),
+     their layer modules (`domain`, `application`, `infrastructure`), key ports and
+     primary responsibilities, avoiding exhaustive file listings to keep context concise.
+     Include a binding convention that subsequent phases must update this layout when
+     introducing new crates or altering module topologies.
    - **Object Calisthenics section**: the Rust-adapted ruleset from Approach §9 in full —
      the primitive-obsession/newtype rule stated first and in the most detail, citing
      Phase 1's `Ttl`, `RecordType`, `RecordClass` and `ResponseCode` by name as the worked
@@ -1502,18 +1525,19 @@ the counterpart to, and before the `justfile` that invokes it.*
      list without turning the gate red.
    - **Object Calisthenics section**: where a rule is now gated, the rule's own
      paragraph states the number, so a reader learns the limit where they learn the rule.
-3. **Constraints**: no code blocks of any language — this is prose guidance, not a
+3. **Constraints**: no code blocks of any language except the fenced `text` block for the
+   visual workspace layout and module structure — the document is prose guidance, not a
    generated artefact, and the file is linted by the same `rumdl.toml` as every other
    hand-written document (it is not `spdd/**`, so the wrapping exemption does not apply to
    it). It must not duplicate ADR rationale; it must not contradict Phase 1's
    already-implemented use of newtypes, which it cites as precedent rather than something
    this phase revises.
 4. **Completion criterion**: `AGENTS.md` exists at the repository root, `just gate`'s
-   markdown step passes with it included, and it states the primitive-obsession/newtype
-   rule with the exact test — *domain rules attached to the value*, not primitive-ness
-   alone — given in Approach §9, and its Enforcement section lists every check that
-   Approach §10 adds, with each threshold matching the value in `clippy.toml` and in
-   `xtask`.
+   markdown step passes with it included, it states the workspace layout and module map
+   covering all active crates, it states the primitive-obsession/newtype rule with the
+   exact test — *domain rules attached to the value*, not primitive-ness alone — given in
+   Approach §9, and its Enforcement section lists every check that Approach §10 adds,
+   with each threshold matching the value in `clippy.toml` and in `xtask`.
 
 ---
 
@@ -1632,6 +1656,12 @@ the counterpart to, and before the `justfile` that invokes it.*
     allocation and vtable indirection, and preserves trait flexibility. Reserve dynamic
     dispatch (`dyn`) for cases where heterogeneous runtime collections or true type
     erasure are strictly necessary. Reviewed in code review, not lint-gated.
+
+20. **Workspace layout and module structure in `AGENTS.md` is maintained across phases.**
+    `AGENTS.md` carries a visual directory tree of currently active crates and layer
+    modules to guide agents without requiring full-codebase searches. When a phase adds
+    a new crate or significantly reorganizes module layout, updating this section in
+    `AGENTS.md` is a required deliverable of that phase.
 
 ---
 
@@ -1805,6 +1835,11 @@ the counterpart to, and before the `justfile` that invokes it.*
   `Box<dyn Error>` on public boundaries. Every threshold it states matches `clippy.toml`
   and `xtask`. A document that names a number the gate does not enforce is the prose form
   of an inert config.
+- `AGENTS.md` contains the `Workspace layout and module structure` section with a concise
+  visual tree of all currently active crates (`styx`, `styx-proto`, `styx-resolution`,
+  `styx-filtering`, `xtask`), layer modules and core responsibilities; subsequent phases
+  are bound by the convention to update this layout when introducing new crates or
+  reorganizing modules.
 
 ### 9. Known limitations carried forward, to be re-verified in later phases
 
