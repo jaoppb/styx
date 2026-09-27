@@ -8,7 +8,13 @@
 //! logging and admin, never resolution.
 
 pub mod pipeline;
+pub mod pool;
+pub mod probe_scheduler;
+pub mod strategies;
 pub mod terminal;
 
 pub use pipeline::Pipeline;
+pub use pool::{PoolMember, UpstreamPool};
+pub use probe_scheduler::ProbeScheduler;
+pub use strategies::{OrderedFailover, RaceAll, RoundRobin, Weighted};
 pub use terminal::{RefusedTerminal, TerminalHandler};

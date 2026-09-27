@@ -4,8 +4,10 @@ pub mod config;
 pub mod listener;
 pub mod pipeline;
 pub mod server;
+pub mod upstream;
 
 pub use config::ConfigError;
 pub use listener::ListenerError;
 pub use pipeline::PipelineError;
 pub use server::ServerError;
+pub use upstream::{FailureClass, PoolError, UpstreamError};
