@@ -25,25 +25,112 @@ pub struct MessageFlags {
 /// A cached Resource Record Set (RRset) sharing owner, type, class, and TTL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedRRset {
-    /// Owner domain name in canonical form.
-    pub owner: CanonicalName,
-    /// DNS record type.
-    pub rtype: RecordType,
-    /// DNS record class.
-    pub rclass: RecordClass,
-    /// Distinct RDATA values in this RRset.
-    pub rdata: Vec<RData>,
-    /// Original TTL as received from upstream.
-    pub original_ttl: Ttl,
-    /// Absolute expiration deadline.
-    pub deadline: Deadline,
-    /// DNSSEC security verdict.
-    pub security: SecurityStatus,
-    /// Attached RRSIG signatures (deferred to Phase 6; `None` in Phase 4).
-    pub signatures: Option<Vec<RrsigRdata>>,
+    owner: CanonicalName,
+    rtype: RecordType,
+    rclass: RecordClass,
+    rdata: Vec<RData>,
+    original_ttl: Ttl,
+    deadline: Deadline,
+    security: SecurityStatus,
+    signatures: Option<Vec<RrsigRdata>>,
 }
 
 impl CachedRRset {
+    /// Creates a new `CachedRRset` with indeterminate security and no signatures.
+    #[must_use]
+    pub fn new(
+        owner: CanonicalName,
+        rtype: RecordType,
+        rclass: RecordClass,
+        rdata: Vec<RData>,
+        original_ttl: Ttl,
+        deadline: Deadline,
+    ) -> Self {
+        Self {
+            owner,
+            rtype,
+            rclass,
+            rdata,
+            original_ttl,
+            deadline,
+            security: SecurityStatus::Indeterminate,
+            signatures: None,
+        }
+    }
+
+    /// Creates a new `CachedRRset` with explicit security status and optional signatures.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_security(
+        owner: CanonicalName,
+        rtype: RecordType,
+        rclass: RecordClass,
+        rdata: Vec<RData>,
+        original_ttl: Ttl,
+        deadline: Deadline,
+        security: SecurityStatus,
+        signatures: Option<Vec<RrsigRdata>>,
+    ) -> Self {
+        Self {
+            owner,
+            rtype,
+            rclass,
+            rdata,
+            original_ttl,
+            deadline,
+            security,
+            signatures,
+        }
+    }
+
+    /// Owner domain name in canonical form.
+    #[must_use]
+    pub const fn owner(&self) -> &CanonicalName {
+        &self.owner
+    }
+
+    /// DNS record type.
+    #[must_use]
+    pub const fn rtype(&self) -> RecordType {
+        self.rtype
+    }
+
+    /// DNS record class.
+    #[must_use]
+    pub const fn rclass(&self) -> RecordClass {
+        self.rclass
+    }
+
+    /// Accessor for the RRset's RDATA collection.
+    #[must_use]
+    pub fn rdata(&self) -> &[RData] {
+        &self.rdata
+    }
+
+    /// Accessor for the original TTL.
+    #[must_use]
+    pub const fn original_ttl(&self) -> Ttl {
+        self.original_ttl
+    }
+
+    /// Absolute expiration deadline.
+    #[must_use]
+    pub const fn deadline(&self) -> Deadline {
+        self.deadline
+    }
+
+    /// DNSSEC security verdict.
+    #[must_use]
+    pub const fn security(&self) -> SecurityStatus {
+        self.security
+    }
+
+    /// Attached RRSIG signatures.
+    #[must_use]
+    pub fn signatures(&self) -> Option<&[RrsigRdata]> {
+        self.signatures.as_deref()
+    }
+
     /// Computes the remaining time-to-live for this RRset relative to `now`.
     ///
     /// # Errors
@@ -76,38 +163,76 @@ impl CachedRRset {
         let total = base.saturating_add(name_bytes).saturating_add(rdata_bytes);
         HeapBytes::new(total)
     }
-
-    /// Accessor for the RRset's RDATA collection.
-    #[must_use]
-    pub fn rdata(&self) -> &[RData] {
-        &self.rdata
-    }
-
-    /// Accessor for the original TTL.
-    #[must_use]
-    pub const fn original_ttl(&self) -> Ttl {
-        self.original_ttl
-    }
 }
 
 /// A cached composite DNS message (used for CNAME chains or multi-section answers).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedMessage {
-    /// Response status code.
-    pub rcode: ResponseCode,
-    /// Preserved header flags.
-    pub flags: MessageFlags,
-    /// Answer section RRsets.
-    pub answer: Vec<CachedRRset>,
-    /// Authority section RRsets.
-    pub authority: Vec<CachedRRset>,
-    /// Additional section RRsets.
-    pub additional: Vec<CachedRRset>,
-    /// Overall entry deadline (earliest deadline among all contained RRsets).
-    pub deadline: Deadline,
+    rcode: ResponseCode,
+    flags: MessageFlags,
+    answer: Vec<CachedRRset>,
+    authority: Vec<CachedRRset>,
+    additional: Vec<CachedRRset>,
+    deadline: Deadline,
 }
 
 impl CachedMessage {
+    /// Creates a new `CachedMessage`.
+    #[must_use]
+    pub fn new(
+        rcode: ResponseCode,
+        flags: MessageFlags,
+        answer: Vec<CachedRRset>,
+        authority: Vec<CachedRRset>,
+        additional: Vec<CachedRRset>,
+        deadline: Deadline,
+    ) -> Self {
+        Self {
+            rcode,
+            flags,
+            answer,
+            authority,
+            additional,
+            deadline,
+        }
+    }
+
+    /// Response status code.
+    #[must_use]
+    pub const fn rcode(&self) -> ResponseCode {
+        self.rcode
+    }
+
+    /// Preserved header flags.
+    #[must_use]
+    pub const fn flags(&self) -> MessageFlags {
+        self.flags
+    }
+
+    /// Answer section RRsets.
+    #[must_use]
+    pub fn answer(&self) -> &[CachedRRset] {
+        &self.answer
+    }
+
+    /// Authority section RRsets.
+    #[must_use]
+    pub fn authority(&self) -> &[CachedRRset] {
+        &self.authority
+    }
+
+    /// Additional section RRsets.
+    #[must_use]
+    pub fn additional(&self) -> &[CachedRRset] {
+        &self.additional
+    }
+
+    /// Overall entry deadline (earliest deadline among all contained RRsets).
+    #[must_use]
+    pub const fn deadline(&self) -> Deadline {
+        self.deadline
+    }
+
     /// Assembles an outgoing DNS [`Message`] with recomputed remaining TTLs.
     ///
     /// # Errors
@@ -171,8 +296,8 @@ impl PositiveEntry {
     #[must_use]
     pub fn deadline(&self) -> Deadline {
         match self {
-            Self::RRset(rrset) => rrset.deadline,
-            Self::Message(msg) => msg.deadline,
+            Self::RRset(rrset) => rrset.deadline(),
+            Self::Message(msg) => msg.deadline(),
         }
     }
 
@@ -196,7 +321,7 @@ impl PositiveEntry {
                 header.kind = MessageKind::Response;
                 header.rcode = ResponseCode::NOERROR;
                 header.recursion_available = true;
-                header.authentic_data = rrset.security == SecurityStatus::Secure;
+                header.authentic_data = rrset.security() == SecurityStatus::Secure;
 
                 let mut msg = Message::new(header);
                 msg.questions.push(Question::new(

@@ -28,4 +28,13 @@ pub enum CacheError {
     /// Heap byte accounting arithmetic overflowed.
     #[error("cache byte accounting overflowed")]
     ByteAccountingOverflow,
+
+    /// Configured TTL floor exceeds ceiling.
+    #[error("TTL floor ({floor}s) exceeds ceiling ({ceiling}s)")]
+    InvalidTtlBounds {
+        /// Configured minimum TTL.
+        floor: u32,
+        /// Configured maximum TTL.
+        ceiling: u32,
+    },
 }

@@ -56,8 +56,7 @@ pub struct AdmissionOutcome {
 /// Gatekeeper deciding what may enter the answer cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Admission {
-    /// Policy governing TTL clamping and negative derivation.
-    pub ttl: TtlPolicy,
+    ttl: TtlPolicy,
 }
 
 struct RawRRset {
@@ -73,6 +72,12 @@ impl Admission {
     #[must_use]
     pub const fn new(ttl: TtlPolicy) -> Self {
         Self { ttl }
+    }
+
+    /// Returns the configured TTL policy.
+    #[must_use]
+    pub const fn ttl(&self) -> &TtlPolicy {
+        &self.ttl
     }
 
     /// Evaluates a DNS message and its provenance source for cache admission.
@@ -211,23 +216,17 @@ impl Admission {
             return;
         };
 
-        let soa_rrset = CachedRRset {
-            owner: CanonicalName::canonicalize(&rr.owner),
-            rtype: RecordType::SOA,
-            rclass: rr.rclass,
-            rdata: vec![rr.rdata.clone()],
-            original_ttl: rr.ttl,
+        let soa_rrset = CachedRRset::new(
+            CanonicalName::canonicalize(&rr.owner),
+            RecordType::SOA,
+            rr.rclass,
+            vec![rr.rdata.clone()],
+            rr.ttl,
             deadline,
-            security: SecurityStatus::Indeterminate,
-            signatures: None,
-        };
+        );
 
-        let negative_entry = NegativeEntry {
-            kind,
-            soa: soa_rrset,
-            deadline,
-            security: SecurityStatus::Indeterminate,
-        };
+        let negative_entry =
+            NegativeEntry::new(kind, soa_rrset, deadline, SecurityStatus::Indeterminate);
 
         outcome.admitted.push(CacheEntry::Negative(negative_entry));
     }
@@ -268,21 +267,21 @@ impl Admission {
             .iter()
             .chain(&authority_rrsets)
             .chain(&additional_rrsets)
-            .map(|r| r.deadline)
+            .map(|r| r.deadline())
             .min()
             .unwrap_or(fallback_deadline);
 
-        let cached_msg = CachedMessage {
-            rcode: message.header.rcode,
-            flags: MessageFlags {
+        let cached_msg = CachedMessage::new(
+            message.header.rcode,
+            MessageFlags {
                 authoritative: message.header.authoritative,
                 authentic_data: message.header.authentic_data,
             },
-            answer: answer_rrsets,
-            authority: authority_rrsets,
-            additional: additional_rrsets,
-            deadline: earliest_deadline,
-        };
+            answer_rrsets,
+            authority_rrsets,
+            additional_rrsets,
+            earliest_deadline,
+        );
 
         outcome
             .admitted
@@ -320,16 +319,9 @@ impl Admission {
 
             let clamped_ttl = self.ttl.clamp(raw.ttl);
             if let Ok(deadline) = Deadline::from_ttl(now, clamped_ttl) {
-                admitted.push(CachedRRset {
-                    owner: raw.owner,
-                    rtype: raw.rtype,
-                    rclass: raw.rclass,
-                    rdata: raw.rdata,
-                    original_ttl: raw.ttl,
-                    deadline,
-                    security: SecurityStatus::Indeterminate,
-                    signatures: None,
-                });
+                admitted.push(CachedRRset::new(
+                    raw.owner, raw.rtype, raw.rclass, raw.rdata, raw.ttl, deadline,
+                ));
             }
         }
 
@@ -371,16 +363,9 @@ impl Admission {
 
             let clamped_ttl = self.ttl.clamp(raw.ttl);
             if let Ok(deadline) = Deadline::from_ttl(now, clamped_ttl) {
-                admitted.push(CachedRRset {
-                    owner: raw.owner,
-                    rtype: raw.rtype,
-                    rclass: raw.rclass,
-                    rdata: raw.rdata,
-                    original_ttl: raw.ttl,
-                    deadline,
-                    security: SecurityStatus::Indeterminate,
-                    signatures: None,
-                });
+                admitted.push(CachedRRset::new(
+                    raw.owner, raw.rtype, raw.rclass, raw.rdata, raw.ttl, deadline,
+                ));
             }
         }
 
@@ -401,7 +386,7 @@ impl Admission {
             let is_address = matches!(raw.rtype, RecordType::A | RecordType::AAAA);
             let is_glue = is_address
                 && authority_rrsets.iter().any(|auth| {
-                    auth.rtype == RecordType::NS && raw.owner.is_subdomain_of(&auth.owner)
+                    auth.rtype() == RecordType::NS && raw.owner.is_subdomain_of(auth.owner())
                 });
 
             if !is_glue {
@@ -424,16 +409,9 @@ impl Admission {
 
             let clamped_ttl = self.ttl.clamp(raw.ttl);
             if let Ok(deadline) = Deadline::from_ttl(now, clamped_ttl) {
-                admitted.push(CachedRRset {
-                    owner: raw.owner,
-                    rtype: raw.rtype,
-                    rclass: raw.rclass,
-                    rdata: raw.rdata,
-                    original_ttl: raw.ttl,
-                    deadline,
-                    security: SecurityStatus::Indeterminate,
-                    signatures: None,
-                });
+                admitted.push(CachedRRset::new(
+                    raw.owner, raw.rtype, raw.rclass, raw.rdata, raw.ttl, deadline,
+                ));
             }
         }
 

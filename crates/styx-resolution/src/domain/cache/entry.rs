@@ -43,7 +43,7 @@ impl CacheEntry {
     pub fn deadline(&self) -> Deadline {
         match self {
             Self::Positive(entry) => entry.deadline(),
-            Self::Negative(entry) => entry.deadline,
+            Self::Negative(entry) => entry.deadline(),
         }
     }
 

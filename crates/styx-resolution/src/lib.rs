@@ -19,12 +19,13 @@ pub use application::{
     RoundRobin, TerminalHandler, UpstreamPool, Weighted,
 };
 pub use domain::answer::{
-    AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolvedSource,
+    AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse, ResolvedSource,
 };
 pub use domain::cache::{
-    Admission, AdmissionOutcome, AnswerCache, Bailiwick, CacheCapacity, CacheEntry, CacheError,
-    CacheKey, CacheStats, CanonicalName, Deadline, DenialKind, HeapBytes, Lookup, MessageFlags,
-    NegativeEntry, PositiveEntry, RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
+    Admission, AdmissionOutcome, AdmittedCount, AnswerCache, Bailiwick, CacheCapacity, CacheEntry,
+    CacheError, CacheKey, CacheStats, CanonicalName, Deadline, DenialKind, HeapBytes, Lookup,
+    MessageFlags, NegativeEntry, PositiveEntry, PurgedCount, RejectReason, RejectedRecord,
+    SecurityStatus, TtlPolicy,
 };
 pub use domain::circuit::{CircuitConfig, CircuitState, FailureCount};
 pub use domain::clock::Clock;
@@ -42,7 +43,9 @@ pub use domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 pub use domain::selection::{MemberView, Selection, SelectionStrategy, StrategyName};
 pub use domain::upstream::{Upstream, UpstreamId, UpstreamKind, UpstreamResponse};
 pub use domain::weight::Weight;
-pub use infrastructure::cache::{Eviction, EvictionReport, ShardedAnswerCache, DEFAULT_SHARDS};
+pub use infrastructure::cache::{
+    Eviction, EvictionReport, Shard, ShardedAnswerCache, DEFAULT_SHARDS,
+};
 pub use infrastructure::clock::SystemClock;
 pub use infrastructure::do53::Do53Forwarder;
 pub use infrastructure::filter::AllowAllFilter;

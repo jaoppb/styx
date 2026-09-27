@@ -25,7 +25,11 @@ impl Eviction {
     /// Pass 1: Sweeps and removes all expired entries.
     /// Pass 2: If still over capacity, evicts least-recently-used fresh entries.
     #[must_use]
-    pub fn evict(shard: &mut ShardInner, now: Instant, capacity: CacheCapacity) -> EvictionReport {
+    pub(crate) fn evict(
+        shard: &mut ShardInner,
+        now: Instant,
+        capacity: CacheCapacity,
+    ) -> EvictionReport {
         let mut report = EvictionReport::default();
 
         let (unexpired, reclaimed) = Self::reclaim_expired(shard, now);

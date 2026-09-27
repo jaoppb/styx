@@ -4,7 +4,7 @@ use std::future::Future;
 
 use styx_proto::{Message, ResponseCode};
 
-use crate::domain::answer::ResolutionOutcome;
+use crate::domain::answer::{ResolutionOutcome, ResolutionResponse};
 use crate::domain::error::PipelineError;
 use crate::domain::request::RequestContext;
 
@@ -17,7 +17,7 @@ pub trait TerminalHandler: Send + Sync + 'static {
     fn handle_terminal(
         &self,
         ctx: &RequestContext,
-    ) -> impl Future<Output = Result<(Message, ResolutionOutcome), PipelineError>> + Send;
+    ) -> impl Future<Output = Result<ResolutionResponse, PipelineError>> + Send;
 }
 
 /// Default terminal implementation returning REFUSED with echoed questions.
@@ -36,7 +36,7 @@ impl TerminalHandler for RefusedTerminal {
     async fn handle_terminal(
         &self,
         ctx: &RequestContext,
-    ) -> Result<(Message, ResolutionOutcome), PipelineError> {
+    ) -> Result<ResolutionResponse, PipelineError> {
         let question = ctx
             .query
             .questions
@@ -59,6 +59,6 @@ impl TerminalHandler for RefusedTerminal {
             rcode: ResponseCode::REFUSED,
         };
 
-        Ok((response, outcome))
+        Ok(ResolutionResponse::new(response, outcome))
     }
 }

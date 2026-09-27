@@ -17,6 +17,66 @@ pub enum Lookup {
     Expired,
 }
 
+/// Count of entries successfully admitted into answer cache storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct AdmittedCount(usize);
+
+impl AdmittedCount {
+    /// Creates a new `AdmittedCount`.
+    #[must_use]
+    pub const fn new(count: usize) -> Self {
+        Self(count)
+    }
+
+    /// Returns the raw count as `usize`.
+    #[must_use]
+    pub const fn count(self) -> usize {
+        self.0
+    }
+
+    /// Returns the raw count as `usize`.
+    #[must_use]
+    pub const fn as_usize(self) -> usize {
+        self.0
+    }
+}
+
+impl std::fmt::Display for AdmittedCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Count of entries purged from answer cache storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct PurgedCount(usize);
+
+impl PurgedCount {
+    /// Creates a new `PurgedCount`.
+    #[must_use]
+    pub const fn new(count: usize) -> Self {
+        Self(count)
+    }
+
+    /// Returns the raw count as `usize`.
+    #[must_use]
+    pub const fn count(self) -> usize {
+        self.0
+    }
+
+    /// Returns the raw count as `usize`.
+    #[must_use]
+    pub const fn as_usize(self) -> usize {
+        self.0
+    }
+}
+
+impl std::fmt::Display for PurgedCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// The answer cache port.
 ///
 /// Implementations must be thread-safe (`Send + Sync`) and synchronous.
@@ -28,14 +88,15 @@ pub trait AnswerCache: Send + Sync {
 
     /// Stores admitted cache entries from an [`AdmissionOutcome`].
     ///
-    /// Returns the number of entries successfully admitted into storage.
+    /// Returns the count of entries successfully admitted into storage.
     ///
     /// # Errors
     /// Returns [`CacheError`] if byte accounting overflows.
-    fn admit(&self, key: &CacheKey, outcome: AdmissionOutcome) -> Result<usize, CacheError>;
+    fn admit(&self, key: &CacheKey, outcome: AdmissionOutcome)
+        -> Result<AdmittedCount, CacheError>;
 
-    /// Purges all entries from the cache, returning the total number of removed entries.
-    fn purge_all(&self) -> usize;
+    /// Purges all entries from the cache, returning the total count of removed entries.
+    fn purge_all(&self) -> PurgedCount;
 
     /// Returns a point-in-time snapshot of cache performance and capacity statistics.
     fn stats(&self) -> CacheStats;

@@ -21,7 +21,7 @@ pub use entry::{CacheEntry, SecurityStatus};
 pub use error::CacheError;
 pub use key::{CacheKey, CanonicalName};
 pub use negative_entry::{DenialKind, NegativeEntry};
-pub use port::{AnswerCache, Lookup};
+pub use port::{AdmittedCount, AnswerCache, Lookup, PurgedCount};
 pub use positive_entry::{CachedMessage, CachedRRset, MessageFlags, PositiveEntry};
 pub use stats::{AtomicCacheCounters, CacheStats};
 pub use ttl::{

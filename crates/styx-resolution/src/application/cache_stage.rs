@@ -2,11 +2,9 @@
 
 use std::sync::Arc;
 
-use styx_proto::Message;
-
 use crate::application::pool::UpstreamPool;
 use crate::application::terminal::TerminalHandler;
-use crate::domain::answer::{AnswerSource, ResolutionOutcome, ResolvedSource};
+use crate::domain::answer::{AnswerSource, ResolutionOutcome, ResolutionResponse, ResolvedSource};
 use crate::domain::cache::admission::Admission;
 use crate::domain::cache::bailiwick::Bailiwick;
 use crate::domain::cache::entry::CacheEntry;
@@ -78,7 +76,7 @@ where
         query_id: u16,
         key: &CacheKey,
         entry: CacheEntry,
-    ) -> Result<(Message, ResolutionOutcome), PipelineError> {
+    ) -> Result<ResolutionResponse, PipelineError> {
         let now = self.clock.now_monotonic();
         let mut message = entry
             .to_response(key, now)
@@ -92,14 +90,14 @@ where
             authentic_data: message.header.authentic_data,
         };
 
-        Ok((message, outcome))
+        Ok(ResolutionResponse::new(message, outcome))
     }
 
     async fn resolve_uncacheable(
         &self,
         query_id: u16,
         question: &styx_proto::Question,
-    ) -> Result<(Message, ResolutionOutcome), PipelineError> {
+    ) -> Result<ResolutionResponse, PipelineError> {
         let upstream_resp = self.pool.resolve(question).await?;
         let mut message = upstream_resp.message;
         message.header.id = query_id;
@@ -116,7 +114,7 @@ where
             authentic_data: message.header.authentic_data,
         };
 
-        Ok((message, outcome))
+        Ok(ResolutionResponse::new(message, outcome))
     }
 
     async fn resolve_and_admit(
@@ -124,7 +122,7 @@ where
         query_id: u16,
         question: &styx_proto::Question,
         key: &CacheKey,
-    ) -> Result<(Message, ResolutionOutcome), PipelineError> {
+    ) -> Result<ResolutionResponse, PipelineError> {
         let upstream_resp = self.pool.resolve(question).await?;
         let now = self.clock.now_monotonic();
 
@@ -155,7 +153,7 @@ where
             authentic_data: message.header.authentic_data,
         };
 
-        Ok((message, outcome))
+        Ok(ResolutionResponse::new(message, outcome))
     }
 }
 
@@ -169,7 +167,7 @@ where
     async fn handle_terminal(
         &self,
         ctx: &RequestContext,
-    ) -> Result<(Message, ResolutionOutcome), PipelineError> {
+    ) -> Result<ResolutionResponse, PipelineError> {
         let question = ctx
             .query
             .questions

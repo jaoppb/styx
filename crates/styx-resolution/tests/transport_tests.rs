@@ -12,7 +12,8 @@ use styx_proto::{
     ResourceRecord, ResponseCode, Ttl,
 };
 use styx_resolution::{
-    PipelineError, RequestContext, ResolutionOutcome, ResolvedSource, TerminalHandler,
+    PipelineError, RequestContext, ResolutionOutcome, ResolutionResponse, ResolvedSource,
+    TerminalHandler,
 };
 
 fn make_query(name: &str, rtype: RecordType) -> Message {
@@ -34,7 +35,7 @@ impl TerminalHandler for LargeAnswerTerminal {
     async fn handle_terminal(
         &self,
         ctx: &RequestContext,
-    ) -> Result<(Message, ResolutionOutcome), PipelineError> {
+    ) -> Result<ResolutionResponse, PipelineError> {
         let question = ctx
             .query
             .questions
@@ -78,7 +79,7 @@ impl TerminalHandler for LargeAnswerTerminal {
             authentic_data: false,
         };
 
-        Ok((response, outcome))
+        Ok(ResolutionResponse::new(response, outcome))
     }
 }
 

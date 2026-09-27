@@ -132,9 +132,8 @@ async fn test_bailiwick_store_introspection_poisoned_records_absent() {
     // 3. Store-introspection: iterate all shards and prove poisoned key is absent
     for i in 0..cache.shard_count() {
         if let Some(shard) = cache.shard(i) {
-            let guard = shard.read().expect("read shard");
             assert!(
-                !guard.map.contains_key(&poisoned_key),
+                !shard.contains_key(&poisoned_key),
                 "poisoned key found in cache store!"
             );
         }
@@ -292,7 +291,7 @@ async fn test_concurrent_admissions_safety() {
     assert!(stats.hits > 0 || stats.misses > 0);
 
     let purged = cache.purge_all();
-    assert_eq!(purged, stats.entries);
+    assert_eq!(purged.count(), stats.entries);
     assert_eq!(cache.stats().entries, 0);
     assert_eq!(cache.stats().bytes, HeapBytes::zero());
 }

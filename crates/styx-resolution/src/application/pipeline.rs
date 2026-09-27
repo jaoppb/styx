@@ -148,7 +148,8 @@ where
         question: &Question,
     ) -> Result<Message, PipelineError> {
         match self.terminal.handle_terminal(ctx).await {
-            Ok((message, outcome)) => {
+            Ok(terminal_response) => {
+                let (message, outcome) = terminal_response.into_parts();
                 self.record_telemetry(ctx, question, &outcome);
                 Ok(message)
             }

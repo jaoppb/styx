@@ -68,12 +68,9 @@ impl Deadline {
 /// Policy governing TTL limits and negative caching derivations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TtlPolicy {
-    /// Minimum TTL clamp for positive responses.
-    pub floor: Ttl,
-    /// Maximum TTL clamp for positive responses.
-    pub ceiling: Ttl,
-    /// Maximum TTL clamp for RFC 2308 negative responses.
-    pub negative_ceiling: Ttl,
+    floor: Ttl,
+    ceiling: Ttl,
+    negative_ceiling: Ttl,
 }
 
 impl Default for TtlPolicy {
@@ -88,13 +85,39 @@ impl Default for TtlPolicy {
 
 impl TtlPolicy {
     /// Creates a new `TtlPolicy` with the given constraints.
-    #[must_use]
-    pub const fn new(floor: Ttl, ceiling: Ttl, negative_ceiling: Ttl) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// Returns [`CacheError::InvalidTtlBounds`] if `floor > ceiling`.
+    pub fn new(floor: Ttl, ceiling: Ttl, negative_ceiling: Ttl) -> Result<Self, CacheError> {
+        if floor.seconds() > ceiling.seconds() {
+            return Err(CacheError::InvalidTtlBounds {
+                floor: floor.seconds(),
+                ceiling: ceiling.seconds(),
+            });
+        }
+        Ok(Self {
             floor,
             ceiling,
             negative_ceiling,
-        }
+        })
+    }
+
+    /// Minimum TTL clamp for positive responses.
+    #[must_use]
+    pub const fn floor(&self) -> Ttl {
+        self.floor
+    }
+
+    /// Maximum TTL clamp for positive responses.
+    #[must_use]
+    pub const fn ceiling(&self) -> Ttl {
+        self.ceiling
+    }
+
+    /// Maximum TTL clamp for RFC 2308 negative responses.
+    #[must_use]
+    pub const fn negative_ceiling(&self) -> Ttl {
+        self.negative_ceiling
     }
 
     /// Clamps a TTL between the configured floor and ceiling.
@@ -136,5 +159,29 @@ impl TtlPolicy {
         let min_ttl = soa_ttl.seconds().min(soa_minimum);
         let clamped = min_ttl.min(self.negative_ceiling.seconds());
         Ttl::from_secs(clamped)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ttl_policy_invariants() {
+        let valid = TtlPolicy::new(Ttl::from_secs(5), Ttl::from_secs(300), Ttl::from_secs(60));
+        assert!(valid.is_ok());
+        let policy = valid.expect("valid policy");
+        assert_eq!(policy.floor(), Ttl::from_secs(5));
+        assert_eq!(policy.ceiling(), Ttl::from_secs(300));
+        assert_eq!(policy.negative_ceiling(), Ttl::from_secs(60));
+
+        let invalid = TtlPolicy::new(Ttl::from_secs(500), Ttl::from_secs(100), Ttl::from_secs(60));
+        assert_eq!(
+            invalid,
+            Err(CacheError::InvalidTtlBounds {
+                floor: 500,
+                ceiling: 100,
+            })
+        );
     }
 }

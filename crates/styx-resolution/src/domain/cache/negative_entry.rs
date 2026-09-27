@@ -23,17 +23,52 @@ pub enum DenialKind {
 /// A cached negative response (RFC 2308), timed and validated by an authority SOA.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NegativeEntry {
-    /// The denial variety (NXDOMAIN vs NODATA).
-    pub kind: DenialKind,
-    /// The SOA record proving and timing this negative response.
-    pub soa: CachedRRset,
-    /// Absolute expiration deadline computed from SOA TTL and MINIMUM.
-    pub deadline: Deadline,
-    /// DNSSEC security status of the denial proof.
-    pub security: SecurityStatus,
+    kind: DenialKind,
+    soa: CachedRRset,
+    deadline: Deadline,
+    security: SecurityStatus,
 }
 
 impl NegativeEntry {
+    /// Creates a new `NegativeEntry`.
+    #[must_use]
+    pub const fn new(
+        kind: DenialKind,
+        soa: CachedRRset,
+        deadline: Deadline,
+        security: SecurityStatus,
+    ) -> Self {
+        Self {
+            kind,
+            soa,
+            deadline,
+            security,
+        }
+    }
+
+    /// The denial variety (NXDOMAIN vs NODATA).
+    #[must_use]
+    pub const fn kind(&self) -> DenialKind {
+        self.kind
+    }
+
+    /// The SOA record proving and timing this negative response.
+    #[must_use]
+    pub const fn soa(&self) -> &CachedRRset {
+        &self.soa
+    }
+
+    /// Absolute expiration deadline computed from SOA TTL and MINIMUM.
+    #[must_use]
+    pub const fn deadline(&self) -> Deadline {
+        self.deadline
+    }
+
+    /// DNSSEC security status of the denial proof.
+    #[must_use]
+    pub const fn security(&self) -> SecurityStatus {
+        self.security
+    }
     /// Assembles an outgoing DNS response [`Message`] representing this negative answer.
     ///
     /// # Errors

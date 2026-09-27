@@ -4,4 +4,4 @@ pub mod eviction;
 pub mod sharded;
 
 pub use eviction::{Eviction, EvictionReport};
-pub use sharded::{ShardedAnswerCache, DEFAULT_SHARDS};
+pub use sharded::{Shard, ShardedAnswerCache, DEFAULT_SHARDS};

@@ -11,10 +11,8 @@ pub const DEFAULT_MAX_BYTES: usize = 20 * 1024 * 1024;
 /// Upper memory and entry bounds for the answer cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheCapacity {
-    /// Maximum number of cached entries allowed.
-    pub max_entries: usize,
-    /// Maximum estimated heap bytes allowed across all entries.
-    pub max_bytes: HeapBytes,
+    max_entries: usize,
+    max_bytes: HeapBytes,
 }
 
 impl Default for CacheCapacity {
@@ -34,6 +32,18 @@ impl CacheCapacity {
             max_entries,
             max_bytes,
         }
+    }
+
+    /// Maximum number of cached entries allowed.
+    #[must_use]
+    pub const fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    /// Maximum estimated heap bytes allowed across all entries.
+    #[must_use]
+    pub const fn max_bytes(&self) -> HeapBytes {
+        self.max_bytes
     }
 
     /// Returns `true` if current entry count or byte usage exceeds the configured bounds.
