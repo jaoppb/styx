@@ -69,8 +69,8 @@ code-spans = false
 # ===========================================================================
 # Per-path rule exemptions.
 #
-# There is exactly one, and the distinction it rests on is the important part
-# of this file.
+# There are three, and the distinction they rest on is the important part of
+# this file.
 #
 # A per-path exemption is legitimate when the rule DOES NOT APPLY to the
 # content — the same reason MD013 above exempts tables, code blocks and code
@@ -80,7 +80,7 @@ code-spans = false
 # content that should comply, so the exemption was retired by teaching the
 # commands and reflowing the contracts — not by keeping it.
 #
-# The one below is the legitimate kind.
+# The ones below are the legitimate kind.
 #
 # MD023 (indented headings) and MD035 (indented horizontal rules) fire on
 # spdd-reasons-canvas's SKILL.md, where the seven REASONS stage headings and
@@ -103,6 +103,17 @@ code-spans = false
 # they pass: they were wrapped, their fences languaged, and each was given an
 # H1 and real `##` section headings. This is a two-rule exemption scoped to one
 # file, not an excluded directory.
+#
+# Two more of the same kind, for GitHub-rendered community files:
+#
+#   README.md — MD033 because the badges and banner switch between the light and
+#   dark theme through <picture>/<source>, which has no Markdown syntax; MD041
+#   because the banner sits above the first heading by design.
+#
+#   .github/pull_request_template.md — MD041 because a PR body is rendered under
+#   the PR's own title, so the template has no H1 of its own to give.
 # ===========================================================================
 [per-file-ignores]
 ".agents/skills/spdd-reasons-canvas/**" = ["MD023", "MD035"]
+"README.md" = ["MD033", "MD041"]
+".github/pull_request_template.md" = ["MD041"]
