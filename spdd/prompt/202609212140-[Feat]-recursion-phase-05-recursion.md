@@ -75,10 +75,12 @@ at a public forwarder at all.
 classDiagram
 direction TB
 
-class Recursor {
+class Recursor~C, T, D, M~ {
     +Arc~InfraCache~ infra
-    +Arc~dyn Clock~ clock
-    +Arc~DiagnosticsPublisher~ diagnostics
+    +Arc~C~ clock
+    +Arc~T~ transport
+    +Arc~D~ diagnostics
+    +Arc~M~ chain_material
     +RecursorConfig config
     +resolve(Question) Result~Message, RecursionError~
 }
@@ -570,8 +572,8 @@ from the UI.**
 
 1. `styx-recursion` depends on `styx-proto` only. It depends on
    **no other feature crate**.
-2. `Recursor` (application) holds `Arc<InfraCache>`, `Arc<dyn Clock>`,
-   `Arc<dyn Transport>`, `Arc<dyn DiagnosticsSink>`, `Arc<dyn ChainMaterialSink>` and its
+2. `Recursor<C: Clock, T: Transport, D: DiagnosticsSink, M: ChainMaterialSink>`
+   (application) holds `Arc<InfraCache>`, `Arc<C>`, `Arc<T>`, `Arc<D>`, `Arc<M>` and its
    config.
 3. `Recursor` drives `Descent` (domain) and never lets `Descent` touch a socket, a clock
    or a cache.
@@ -902,7 +904,8 @@ first.**
 2. **Ports are traits** — declared in the consumer's `domain`, implemented by adapters,
    wired in the `styx` binary. No crate wires another crate. There are
    **no annotations and no framework-managed injection**: dependencies are constructor
-   parameters, held as `Arc<dyn Trait>` where shared.
+   parameters, held as generic `Arc<T>` or direct generics where shared, never dynamic
+   dispatch.
 3. **Errors** — `thiserror` enums, `Result<T, E>` everywhere, `#[from]` for conversions,
    `#[error("…")]` messages that name the zone and the question class but never a client
    identity. No `unwrap`, no `expect`, no `panic!` in shipping code, no `Box<dyn Error>`

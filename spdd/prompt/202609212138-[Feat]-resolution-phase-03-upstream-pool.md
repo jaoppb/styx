@@ -125,9 +125,17 @@ class FailureClass {
     AnswerFault
 }
 
-class UpstreamPool {
+class UpstreamTransport {
+    <<enum>>
+    Udp
+    Tcp
+    Tls
+    Https
+}
+
+class UpstreamPool~S~ {
     -members Vec~PoolMember~
-    -strategy Arc~dyn SelectionStrategy~
+    -strategy S
     -clock ClockHandle
     -probe_policy ProbePolicy
     +resolve(query) UpstreamResult
@@ -138,7 +146,7 @@ class UpstreamPool {
 
 class PoolMember {
     +id UpstreamId
-    +upstream Arc~dyn Upstream~
+    +upstream UpstreamTransport
     +weight Weight
     +canary CanaryConfig
     +health RwLock~HealthState~
@@ -354,8 +362,10 @@ PoolConfig ..> ConfigError : fails with
   canary, can differ; and the answer's provenance is stamped on `UpstreamResponse`. It is
   **not** a dispatch switch in the request pipeline. Nothing branches on it to decide
   *how* to resolve; the cache stage only maps it to an `AnswerSource` for reporting.
-- Trait objects (`Arc<dyn Upstream>`) rather than generics, because a pool holds members
-  of mixed kinds at runtime from file config.
+- Static dispatch via enum (`UpstreamTransport`) rather than trait objects, so the pool
+  holds members of mixed kinds at runtime from file config without dynamic dispatch.
+  The pool is parameterized generically over strategy:
+  `UpstreamPool<S: SelectionStrategy>`.
 
 ### 2. Health — a fold, not a subsystem
 
@@ -548,8 +558,8 @@ different concept from the state machine it drives (`CircuitState`), and `Weight
    of any kind — a `[[restrict-use]]` rule denies `std::fs`, the blocking socket types and
    `std::io::{Read, Write, BufRead, Seek}` here even though nothing in this layer is async.
 2. **`application`** — the pool and the probe scheduler. Orchestrates: selects,
-   dispatches, records, schedules. Holds `Arc<dyn Upstream>` and
-   `Arc<dyn SelectionStrategy>`; speaks no wire format. All dispatch to a real upstream
+   dispatches, records, schedules. Holds `UpstreamTransport` (implementing `Upstream`)
+   and `S: SelectionStrategy`; speaks no wire format. All dispatch to a real upstream
    goes through the `Upstream` port's `async fn resolve`, never a raw socket call, so the
    same `[[restrict-use]]` sync-I/O denial applies here without narrowing what this layer
    can already do.
@@ -588,7 +598,7 @@ Ordered by dependency. Each task is independently completable and independently 
      Like `answered_by`, `kind` is stamped by the pool from the member that answered
      (Operation 6), never chosen by the adapter, so no implementation can mislabel its
      own answers.
-3. **Trait**: `Upstream` (async, object-safe via `Arc<dyn Upstream + Send + Sync>`)
+3. **Trait**: `Upstream` (async, statically dispatched via `UpstreamTransport` enum)
    - `fn id(&self) -> UpstreamId`
    - `fn kind(&self) -> UpstreamKind`
    - `async fn resolve(&self, query: &Question, deadline: Instant) -> Result<UpstreamResponse, UpstreamError>`
@@ -686,7 +696,7 @@ Ordered by dependency. Each task is independently completable and independently 
 3. **Trait**: `SelectionStrategy: Send + Sync`
    - `fn name(&self) -> StrategyName`
    - `fn select(&self, candidates: &[MemberView], now: Instant) -> Selection`
-4. **Constraints**: synchronous, no I/O, no health mutation, no `Arc<dyn Upstream>`
+4. **Constraints**: synchronous, no I/O, no health mutation, no `UpstreamTransport`
    access. Availability filtering is applied by the pool when building the projection, so
    no strategy re-derives the circuit rule.
 
@@ -716,8 +726,9 @@ Ordered by dependency. Each task is independently completable and independently 
 
 1. **Responsibility**: own the members and their health; select, dispatch, record, and
    expose a read-only snapshot. **Sole owner and sole writer of `HealthState`.**
-2. **Fields**: `members: Vec<PoolMember>`, `strategy: Arc<dyn SelectionStrategy>`,
-   `clock: ClockHandle`, `circuit: CircuitConfig`, `probe_policy: ProbePolicy`.
+2. **Fields**: `members: Vec<PoolMember>`, `strategy: S` (where
+   `UpstreamPool<S: SelectionStrategy>`), `clock: ClockHandle`, `circuit: CircuitConfig`,
+   `probe_policy: ProbePolicy`.
 3. **Methods**:
    - `async fn resolve(&self, query: &Question) -> Result<UpstreamResponse, PoolError>` is
      a short dispatcher, not the place the per-strategy logic lives: read `now` from the
@@ -920,8 +931,8 @@ Ordered by dependency. Each task is independently completable and independently 
      real link graph and they catch different mistakes.
 2. **Ports and traits**
    - Ports are traits in `domain`. Adapters live in `infrastructure` or in the binary.
-   - Trait objects behind `Arc<dyn Trait + Send + Sync>` where runtime mix is required
-     (pool members, strategy); generics elsewhere.
+   - Static dispatch over dynamic dispatch: `UpstreamTransport` enum for pool members,
+     generics for strategy (`UpstreamPool<S: SelectionStrategy>`); no `dyn` trait objects.
    - **No trait is introduced for something the owner already holds concretely** — this is
      the rule that forbids a `HealthCheck` trait.
 3. **Errors**

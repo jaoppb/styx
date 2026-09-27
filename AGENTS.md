@@ -21,6 +21,12 @@ this document revises.
   living either in the same crate's `infrastructure` module or in the `styx` binary for
   cross-feature wiring. The `styx` binary is the composition root: it constructs adapters
   and injects them into ports by value at startup, with no runtime service locator.
+- **Prefer generics over dynamic dispatch (`dyn`).** Trait consumption in ports and
+  adapters favours static dispatch via generics (`<T: Port>`, `impl Port`) rather than
+  dynamic dispatch (`dyn Port`, `Arc<dyn Port>`). Static dispatch enables inlining and
+  monomorphization, eliminates allocation and vtable indirection, and preserves trait
+  flexibility. Dynamic dispatch (`dyn`) is reserved for cases where heterogeneous runtime
+  collections or true type erasure are strictly required.
 - **Feature crates never depend on each other.** A cross-feature need is a port in the
   consumer's `domain`, implemented by an adapter the `styx` binary wires in.
   `styx-proto` is shared foundation and the sole exemption: every crate may depend on it,
@@ -173,6 +179,7 @@ catching that drift is what review is for:
 - The half of the setter rule `partial_pub_fields` cannot see: a fully private struct that
   still exposes a `&mut` accessor or an unvalidated setter.
 - No `Box<dyn Error>` on a public boundary.
+- Preferring generics over dynamic dispatch (`dyn`).
 
 **The amendment this section records**: Norms 3, 6 and 7 each claimed an arch-lint rule
 already enforced no-synchronous-I/O-by-layer, `tracing`-only logging and no-`anyhow`.

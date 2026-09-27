@@ -1833,8 +1833,9 @@ immediately: it is never cached and never validated.
    non-async `std::fs::read_to_string` in `application` fails the gate exactly like an
    `await`ed one.
 4. **Ports as traits** — `AdlistFetcher`, `RuleStore`, `IngestJournal` and `Clock` are
-   traits in `domain::ports`, object-safe, `Send + Sync`, consumed as `Arc<dyn …>`. No
-   `async` on the matcher side; no lock held across an `await` anywhere.
+   traits in `domain::ports`, `Send + Sync`, consumed via generics (`<F, S, J, C>`) rather
+   than dynamic dispatch. No `async` on the matcher side; no lock held across an `await`
+   anywhere.
 5. **Error handling** — `thiserror` enums returned through `Result<T, E>`, never a bare
    `String` and never `anyhow` — `styx-filtering` is a library crate, and `no-anyhow-filtering`
    (`[[restrict-use]]`, Phase 0 Approach §10) denies `anyhow` and everything under it

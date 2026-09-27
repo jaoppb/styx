@@ -1216,7 +1216,7 @@ every message free of file paths, connection strings and credential material.
    Cross-feature needs are ports in the consumer's `domain`, wired in the binary.
    `styx-web` may depend on `styx_storage::application`.
 3. **Ports are traits.** Every outward capability is a trait in `domain::port`, `async`
-   where the driver is, object-safe where the binary needs `Arc<dyn …>`.
+   where the driver is, statically dispatched via generics rather than dynamic dispatch.
 4. **Errors.** One `thiserror` enum per crate; `Result<T, StorageError>` at every public
    boundary; `#[from]` for driver errors; `?` for propagation. No `unwrap`/`expect`
    outside tests. No panic on any path reachable from a query.

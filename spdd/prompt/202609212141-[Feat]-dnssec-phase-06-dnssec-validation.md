@@ -113,10 +113,10 @@ class MaterialOrigin {
     PulledOnDemand
 }
 
-class Validator {
-    +clock: Arc~dyn Clock~
+class Validator~C~ {
+    +clock: Arc~C~
     +policy: ValidationPolicy
-    +validate(msg: Message, src: dyn ChainSource, anchors: dyn TrustAnchorSource) ValidationOutcome
+    +validate(msg: Message, src: S, anchors: A) ValidationOutcome
 }
 
 class ValidationOutcome {
@@ -301,9 +301,9 @@ attacker-facing NSEC3 primitives — see Norm 14.
   "chain material observed en route" field to `Upstream` would add a field that is
   **permanently empty for every forwarder** — structurally meaningless for one of the
   two kinds the port exists to unify, and invisibly so at the call site, since the pool
-  hands back a `dyn Upstream` without saying which kind it is. A dedicated port keeps
-  `Upstream` honest and keeps the *validation logic* single, which is the part that
-  must not fork.
+  hands back an `UpstreamTransport` member without saying which kind it is. A dedicated
+  port keeps `Upstream` honest and keeps the *validation logic* single, which is the part
+  that must not fork.
 - Consequence to design for: the push adapter must still subject pushed material to the
   same bailiwick rules the descent and cache enforce. Push is a shortcut around a
   fetch, not around provenance checking.
@@ -459,8 +459,8 @@ attacker-facing NSEC3 primitives — see Norm 14.
 4. `TrustAnchorSource` is a trait in `styx_dnssec::domain::ports`.
 5. `PinnedRootAnchor` implements `TrustAnchorSource` from a compiled-in IANA anchor.
 6. `FileTrustAnchor` implements `TrustAnchorSource` from the `trust-anchor` TOML path.
-7. `Clock` is the trait from Phase 2, injected as `Arc<dyn Clock>`; the validator never
-   reads wall-clock time directly.
+7. `Clock` is the trait from Phase 2, injected as `Arc<C>` where `C: Clock`; the validator
+   never reads wall-clock time directly.
 8. Error types are `thiserror` enums: `ValidationError`, `ChainSourceError`,
    `TrustAnchorError`, `DenialError`. Every fallible function returns
    `Result<T, E>`; no `unwrap`, no `expect`, no panic in shipping code.
@@ -505,8 +505,8 @@ attacker-facing NSEC3 primitives — see Norm 14.
 
 ### Dependencies
 
-1. `Validator` depends on `dyn ChainSource`, `dyn TrustAnchorSource` and
-   `Arc<dyn Clock>` — all trait objects, all injected.
+1. `Validator` depends on `ChainSource`, `TrustAnchorSource` and `Clock` — all statically
+   dispatched via generics (`<C: Clock>` and method generics on `validate`).
 2. `Validator` depends on `styx-proto` for record types and canonical encoding.
 3. `Validator` does **not** depend on `styx-recursion`, `styx-resolution` or any other
    feature crate. Cargo must be able to prove this.
@@ -999,8 +999,9 @@ attacker-facing NSEC3 primitives — see Norm 14.
    `infrastructure` are modules *inside* it. Feature crates never name each other;
    cross-feature needs are traits in the consumer's own `domain`, implemented by
    adapters in the `styx` binary. `styx-proto` is the one permitted shared dependency.
-2. **Ports are traits**: `ChainSource`, `TrustAnchorSource`, `Clock`. Injected as
-   `Arc<dyn …>` or generic parameters; never constructed inside `domain`.
+2. **Ports are traits**: `ChainSource`, `TrustAnchorSource`, `Clock`. Injected as generic
+   parameters (e.g. `Arc<C>` where `C: Clock`, and method generics on `validate`); never
+   dynamic dispatch.
 3. **Errors are `thiserror` enums**, one per failure domain
    (`ValidationError`, `ChainSourceError`, `TrustAnchorError`, `DenialError`), returned
    through `Result<T, E>`. Errors carry the `VerdictReason` where one applies, so a log

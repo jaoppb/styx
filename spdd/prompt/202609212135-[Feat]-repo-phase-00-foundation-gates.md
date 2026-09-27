@@ -69,10 +69,10 @@ Concretely, this phase must:
   from-scratch rule, and the pinned root trust anchor.
 - **Write the durable engineering-norms document every later phase codes against** —
   `AGENTS.md` at the repository root, covering this phase's own conventions (ports and
-  adapters, `thiserror`, checked arithmetic, no synchronous I/O, `tracing`) and a
-  Rust-adapted Object Calisthenics ruleset, so that "wrap a primitive when it carries
-  domain rules" is written down once, in phase 0, rather than re-derived by every later
-  phase's generation prompt.
+  adapters, generics over `dyn`, `thiserror`, checked arithmetic, no synchronous I/O,
+  `tracing`) and a Rust-adapted Object Calisthenics ruleset, so that "wrap a primitive when
+  it carries domain rules" is written down once, in phase 0, rather than re-derived by
+  every later phase's generation prompt.
 - **Mechanise every `AGENTS.md` rule a tool can check** *(amendment, 2026-09-24)* — no
   synchronous I/O in `domain`/`application`, `anyhow` only in the `styx` binary and
   `xtask`, `tracing` rather than print macros, and the measurable proxies of three Object
@@ -389,6 +389,14 @@ convention; they do not reshape it.
   rewrite to recover. It must be enforced from the first commit, which is why it is a
   phase 0 deliverable and not a phase 8 discovery.
 
+- **Prefer generics (static dispatch) over trait objects (`dyn`).** Trait consumption in
+  ports and adapters favours static dispatch via generics / parameterized types (`T: Port`
+  or `impl Port`) rather than dynamic dispatch (`dyn Port`, `Arc<dyn Port>`). Static
+  dispatch preserves monomorphization, inlining, and compiler optimizations while avoiding
+  vtable indirection, heap allocation, and object-safety restrictions. Dynamic dispatch
+  (`dyn`) is reserved for cases where heterogeneous runtime collections or true type
+  erasure are strictly necessary.
+
 - **`styx-proto` is shared foundation, not a feature crate, and is the single explicit
   exception.** Every crate parses through the wire codec, so the "feature crates never
   depend on each other" rule does not reach it. The use-restrictions must be written so as
@@ -631,11 +639,11 @@ trust anchor rollover. Write them where the reasoning is freshest.
   place as conventions are learned. Both live in the repository, both are gated as prose,
   and neither substitutes for the other.
 - **Write it in phase 0, not when the first feature crate needs it.** Every rule it states
-  — ports as traits, `thiserror` at boundaries, checked arithmetic, no synchronous I/O in
-  `domain`/`application`, `tracing` over `println!` — is already decided above;
-  `AGENTS.md` is where those decisions become the guidance a later phase's generation
-  reads before it writes a line of code, the same role Approach and Norms play inside this
-  canvas.
+  — ports as traits, generics over `dyn`, `thiserror` at boundaries, checked arithmetic,
+  no synchronous I/O in `domain`/`application`, `tracing` over `println!` — is already
+  decided above; `AGENTS.md` is where those decisions become the guidance a later phase's
+  generation reads before it writes a line of code, the same role Approach and Norms play
+  inside this canvas.
 - **Fold in a Rust-adapted Object Calisthenics ruleset**, because the original nine rules
   target Java-shaped OOP and several do not survive translation unchanged. Record which
   do, how, and — as importantly — which are consciously dropped or downgraded, so a later
@@ -772,9 +780,11 @@ founding failure: a check that is believed to exist, but does not.
   lint silently dropped from the root manifest would still leave the others failing.
 
 **Judgement stays in review**: "wrap a primitive that carries domain rules", first-class
-collections, full words, and the downgraded "one dot per line". No lint can decide
-whether a `u16` has domain rules attached. A proxy such as `struct_excessive_bools` would
-push against `AGENTS.md`'s explicit permission for plain named `bool` fields.
+collections, full words, preferring generics over `dyn`, and the downgraded "one dot per
+line". No lint can decide whether a `u16` has domain rules attached, or whether a trait
+object is genuinely required over static dispatch. A proxy such as
+`struct_excessive_bools` would push against `AGENTS.md`'s explicit permission for plain
+named `bool` fields.
 
 ### Alternatives considered and rejected
 
@@ -831,12 +841,16 @@ push against `AGENTS.md`'s explicit permission for plain named `bool` fields.
 2. An **adapter** is a type implementing that trait, living either in the same crate's
    `infrastructure` module (for its own infrastructure) or in the `styx` binary (for
    cross-feature wiring).
-3. Every fallible operation returns `Result<T, E>` where `E` is a `thiserror`-derived enum
+3. **Prefer generics over `dyn`**: consumers prefer static dispatch via generics or
+   parameterized types (`T: Port`, `impl Port`) over dynamic dispatch (`dyn Port` / trait
+   objects). Dynamic dispatch (`dyn`) is reserved for cases where heterogeneous runtime
+   collections or true type erasure are strictly required.
+4. Every fallible operation returns `Result<T, E>` where `E` is a `thiserror`-derived enum
    owned by the crate that defines the port. Errors are enums, not strings, and never
    panics.
-4. The `styx` binary is the **composition root**: it constructs adapters and injects them
+5. The `styx` binary is the **composition root**: it constructs adapters and injects them
    into ports by value at startup. There is no runtime service locator and no reflection.
-5. `styx-proto` is depended upon by every crate and depends on none of them.
+6. `styx-proto` is depended upon by every crate and depends on none of them.
 
 ### Dependency rules (what the gates enforce)
 
@@ -1458,12 +1472,12 @@ the counterpart to, and before the `justfile` that invokes it.*
    - Write `AGENTS.md` at the repository root.
    - **Repository conventions section**: restate, in prose, the conventions already fixed
      by this phase — crate-per-feature with `domain`/`application`/`infrastructure` as
-     modules; ports as traits in `domain`, adapters in `infrastructure` or the `styx`
-     binary; `thiserror` enums at every fallible boundary, `anyhow` reserved for the
-     composition root; no `unwrap`/`expect`/`panic!` outside tests; checked arithmetic and
-     no indexing outside an audited primitive; no synchronous I/O in `domain` or
-     `application`; `tracing` over `println!`. Link each to the ADR that explains it where
-     one exists, rather than re-deriving the rationale.
+     modules; ports as traits in `domain`, preferring generics over `dyn`, adapters in
+     `infrastructure` or the `styx` binary; `thiserror` enums at every fallible boundary,
+     `anyhow` reserved for the composition root; no `unwrap`/`expect`/`panic!` outside
+     tests; checked arithmetic and no indexing outside an audited primitive; no
+     synchronous I/O in `domain` or `application`; `tracing` over `println!`. Link each
+     to the ADR that explains it where one exists, rather than re-deriving the rationale.
    - **Object Calisthenics section**: the Rust-adapted ruleset from Approach §9 in full —
      the primitive-obsession/newtype rule stated first and in the most detail, citing
      Phase 1's `Ttl`, `RecordType`, `RecordClass` and `ResponseCode` by name as the worked
@@ -1481,11 +1495,11 @@ the counterpart to, and before the `justfile` that invokes it.*
      (threshold 4), function length (60 code lines), module length (400 counted lines
      per file, no exemption) and mixed field visibility. Each is named with the tool
      that enforces it. **Review only**: wrapping primitives that carry domain rules,
-     first-class collections, full words, the "one dot per line" guidance, and the
-     half of the setter rule that `partial_pub_fields` cannot see, and the convention
-     against `Box<dyn Error>` on a public boundary. The section says
-     plainly that generated code can drift from the review-only list without turning the
-     gate red.
+     first-class collections, full words, the "one dot per line" guidance, the half of
+     the setter rule that `partial_pub_fields` cannot see, the convention against
+     `Box<dyn Error>` on a public boundary, and preferring generics over dynamic dispatch
+     (`dyn`). The section says plainly that generated code can drift from the review-only
+     list without turning the gate red.
    - **Object Calisthenics section**: where a rule is now gated, the rule's own
      paragraph states the number, so a reader learns the limit where they learn the rule.
 3. **Constraints**: no code blocks of any language — this is prose guidance, not a
@@ -1509,9 +1523,12 @@ the counterpart to, and before the `justfile` that invokes it.*
    `src/infrastructure/` and a `lib.rs` that declares them. No other top-level module in a
    feature crate. Later phases follow this shape rather than inventing a new one.
 
-2. **Ports are traits in `domain`**. A port names no concrete infrastructure, no sibling
-   feature crate, and no async runtime type in its signature beyond what the trait itself
-   requires. Adapters implement ports in `infrastructure` or in the `styx` binary.
+2. **Ports are traits in `domain`, dispatched statically where possible**. A port names no
+   concrete infrastructure, no sibling feature crate, and no async runtime type in its
+   signature beyond what the trait itself requires. Consumers prefer generics (static
+   dispatch / parameterized types) over dynamic dispatch (`dyn Trait`); trait objects
+   are reserved for heterogeneous collections or runtime type erasure. Adapters
+   implement ports in `infrastructure` or in the `styx` binary.
 
 3. **Errors are `thiserror` enums**. Every fallible operation returns `Result<T, E>` with
    a crate-owned error enum. No `Box<dyn Error>` on a public boundary, no stringly-typed
@@ -1608,6 +1625,13 @@ the counterpart to, and before the `justfile` that invokes it.*
     accessors; a plain data type with no invariant may draw every field `+`. Never mix
     `+` and `-` fields on one type: the gate denies `partial_pub_fields` (Norm 17), so a
     mixed diagram describes code that cannot pass.
+
+19. **Prefer generics over dynamic dispatch (`dyn`)**. Favor static dispatch via generics
+    (`<T: Trait>`, `impl Trait`) over trait objects (`dyn Trait`, `Box<dyn Trait>`,
+    `Arc<dyn Trait>`). Static dispatch enables inlining and monomorphization, avoids
+    allocation and vtable indirection, and preserves trait flexibility. Reserve dynamic
+    dispatch (`dyn`) for cases where heterogeneous runtime collections or true type
+    erasure are strictly necessary. Reviewed in code review, not lint-gated.
 
 ---
 
@@ -1777,9 +1801,10 @@ the counterpart to, and before the `justfile` that invokes it.*
   under `rumdl.toml` like every other hand-written document. It does not restate ADR
   content; it references the ADRs it depends on by path.
 - `AGENTS.md`'s Enforcement section lists the mechanically enforced rules and the
-  review-only rules separately. Every threshold it states matches `clippy.toml` and
-  `xtask`. A document that names a number the gate does not enforce is the prose form of
-  an inert config.
+  review-only rules separately — including preferring generics over `dyn` and the ban on
+  `Box<dyn Error>` on public boundaries. Every threshold it states matches `clippy.toml`
+  and `xtask`. A document that names a number the gate does not enforce is the prose form
+  of an inert config.
 
 ### 9. Known limitations carried forward, to be re-verified in later phases
 
@@ -1822,12 +1847,13 @@ the counterpart to, and before the `justfile` that invokes it.*
   boundary around the web layer and the supervised task model arrive in **Phase 12 —
   Cutover hardening**. Weakening the lint before then removes the only protection there
   is.
-- **`AGENTS.md`'s Object Calisthenics section is only partly mechanically enforced.**
-  Nesting depth, function length, module length and mixed field visibility are gated
-  (Approach §10). No lint checks "wrap this primitive", first-class collections or full
-  words the way clippy checks `.unwrap()`. Compliance with those is a review discipline.
-  A later phase's generated code can drift from them without turning the gate red, and
-  catching that drift depends on review, not on `just gate`.
+- **`AGENTS.md`'s Object Calisthenics and convention sections are only partly mechanically
+  enforced.** Nesting depth, function length, module length and mixed field visibility are
+  gated (Approach §10). No lint checks "wrap this primitive", first-class collections,
+  full words, or preferring generics over `dyn` the way clippy checks `.unwrap()`.
+  Compliance with those is a review discipline. A later phase's generated code can drift
+  from them without turning the gate red, and catching that drift depends on review, not on
+  `just gate`.
 - **The gated shape rules are proxies, not the rules themselves.** `excessive_nesting`
   counts `mod`, `impl` and `fn` blocks as well as control flow. `too_many_lines`
   measures length, not cohesion. The module-size cap counts lines, not concepts: a
