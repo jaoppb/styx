@@ -15,11 +15,16 @@ pub mod infrastructure;
 
 // Public re-exports for convenience
 pub use application::{
-    OrderedFailover, Pipeline, PoolMember, ProbeScheduler, RaceAll, RefusedTerminal, RoundRobin,
-    TerminalHandler, UpstreamPool, Weighted,
+    CacheStage, OrderedFailover, Pipeline, PoolMember, ProbeScheduler, RaceAll, RefusedTerminal,
+    RoundRobin, TerminalHandler, UpstreamPool, Weighted,
 };
 pub use domain::answer::{
     AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolvedSource,
+};
+pub use domain::cache::{
+    Admission, AdmissionOutcome, AnswerCache, Bailiwick, CacheCapacity, CacheEntry, CacheError,
+    CacheKey, CacheStats, CanonicalName, Deadline, DenialKind, HeapBytes, Lookup, MessageFlags,
+    NegativeEntry, PositiveEntry, RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
 };
 pub use domain::circuit::{CircuitConfig, CircuitState, FailureCount};
 pub use domain::clock::Clock;
@@ -37,6 +42,7 @@ pub use domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 pub use domain::selection::{MemberView, Selection, SelectionStrategy, StrategyName};
 pub use domain::upstream::{Upstream, UpstreamId, UpstreamKind, UpstreamResponse};
 pub use domain::weight::Weight;
+pub use infrastructure::cache::{Eviction, EvictionReport, ShardedAnswerCache, DEFAULT_SHARDS};
 pub use infrastructure::clock::SystemClock;
 pub use infrastructure::do53::Do53Forwarder;
 pub use infrastructure::filter::AllowAllFilter;

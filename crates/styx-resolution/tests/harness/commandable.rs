@@ -14,7 +14,7 @@ use hickory_proto::op::{
     Message as HMessage, MessageType as HMessageType, OpCode as HOpCode,
     ResponseCode as HResponseCode,
 };
-use hickory_proto::rr::rdata::A as HA;
+use hickory_proto::rr::rdata::{A as HA, SOA as HSoa};
 use hickory_proto::rr::{
     DNSClass as HDnsClass, Name as HName, RData as HRData, Record as HRecord,
     RecordType as HRecordType,
@@ -45,6 +45,35 @@ pub enum UpstreamBehavior {
     MismatchedId,
     /// Silently drops all queries.
     DropAll,
+    /// Responds with NXDOMAIN and an SOA record in Authority.
+    NxdomainWithSoa {
+        /// Zone name for SOA owner.
+        zone: String,
+        /// TTL on SOA record.
+        ttl: u32,
+        /// Minimum TTL in SOA rdata.
+        minimum: u32,
+    },
+    /// Responds with NOERROR, 0 answers, and an SOA record in Authority.
+    NodataWithSoa {
+        /// Zone name for SOA owner.
+        zone: String,
+        /// TTL on SOA record.
+        ttl: u32,
+        /// Minimum TTL in SOA rdata.
+        minimum: u32,
+    },
+    /// Responds with NXDOMAIN and NO SOA record.
+    NxdomainWithoutSoa,
+    /// Responds with Answer for queried name plus poisoned record in Additional.
+    PoisonedAdditional {
+        /// A record IP for queried name.
+        answer_ip: Ipv4Addr,
+        /// Out of bailiwick name.
+        poisoned_name: String,
+        /// Out of bailiwick IP.
+        poisoned_ip: Ipv4Addr,
+    },
 }
 
 /// In-process commandable fake upstream that counts queries and supports scripted behavior.
@@ -238,6 +267,9 @@ impl CommandableUpstream {
         match behavior {
             UpstreamBehavior::Servfail => hmsg.metadata.response_code = HResponseCode::ServFail,
             UpstreamBehavior::Refused => hmsg.metadata.response_code = HResponseCode::Refused,
+            UpstreamBehavior::NxdomainWithSoa { .. } | UpstreamBehavior::NxdomainWithoutSoa => {
+                hmsg.metadata.response_code = HResponseCode::NXDomain;
+            }
             _ => hmsg.metadata.response_code = HResponseCode::NoError,
         }
 
@@ -249,23 +281,63 @@ impl CommandableUpstream {
         query.set_query_class(HDnsClass::IN);
         hmsg.add_query(query);
 
-        if !hmsg.metadata.truncation
-            && matches!(
-                behavior,
-                UpstreamBehavior::Normal
-                    | UpstreamBehavior::Delay(_)
-                    | UpstreamBehavior::TruncateUdp
-                    | UpstreamBehavior::MismatchedId
-            )
-        {
-            let rec =
-                HRecord::from_rdata(h_qname, 3600, HRData::A(HA(Ipv4Addr::new(192, 0, 2, 1))));
-            hmsg.add_answer(rec);
-        }
+        let is_truncated = hmsg.metadata.truncation;
+        Self::apply_behavior_records(&mut hmsg, &h_qname, behavior, is_truncated)?;
 
         let mut out = Vec::new();
         let mut encoder = BinEncoder::new(&mut out);
         hmsg.emit(&mut encoder).ok()?;
         Some(out)
+    }
+
+    fn apply_behavior_records(
+        hmsg: &mut HMessage,
+        h_qname: &HName,
+        behavior: &UpstreamBehavior,
+        is_truncated: bool,
+    ) -> Option<()> {
+        match behavior {
+            UpstreamBehavior::NxdomainWithSoa { zone, ttl, minimum }
+            | UpstreamBehavior::NodataWithSoa { zone, ttl, minimum } => {
+                let mname = HName::from_str(&format!("ns1.{zone}")).ok()?;
+                let rname = HName::from_str(&format!("hostmaster.{zone}")).ok()?;
+                let soa_rdata =
+                    HRData::SOA(HSoa::new(mname, rname, 1, 7200, 3600, 1209600, *minimum));
+                let soa_name = HName::from_str(zone).ok()?;
+                let soa_rec = HRecord::from_rdata(soa_name, *ttl, soa_rdata);
+                hmsg.add_authority(soa_rec);
+            }
+            UpstreamBehavior::PoisonedAdditional {
+                answer_ip,
+                poisoned_name,
+                poisoned_ip,
+            } => {
+                let rec = HRecord::from_rdata(h_qname.clone(), 3600, HRData::A(HA(*answer_ip)));
+                hmsg.add_answer(rec);
+                let poison_name = HName::from_str(poisoned_name).ok()?;
+                let poison_rec =
+                    HRecord::from_rdata(poison_name, 3600, HRData::A(HA(*poisoned_ip)));
+                hmsg.add_additional(poison_rec);
+            }
+            _ => {
+                if !is_truncated
+                    && matches!(
+                        behavior,
+                        UpstreamBehavior::Normal
+                            | UpstreamBehavior::Delay(_)
+                            | UpstreamBehavior::TruncateUdp
+                            | UpstreamBehavior::MismatchedId
+                    )
+                {
+                    let rec = HRecord::from_rdata(
+                        h_qname.clone(),
+                        3600,
+                        HRData::A(HA(Ipv4Addr::new(192, 0, 2, 1))),
+                    );
+                    hmsg.add_answer(rec);
+                }
+            }
+        }
+        Some(())
     }
 }

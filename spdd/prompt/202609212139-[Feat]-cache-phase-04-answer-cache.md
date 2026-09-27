@@ -751,7 +751,19 @@ client query
 
 ## Operations
 
-### 1. Create `domain::cache::key` — `CanonicalName`, `CacheKey`
+### 1. Create `domain::cache::error` — `CacheError`
+
+1. **Definition**: a `thiserror` enum. Variants: `TtlOverflow`, `DeadlineInThePast`,
+   `UncacheableQuestion`, `MissingSoa`, `ResponseAssembly`, `ByteAccountingOverflow` (from
+   `HeapBytes::checked_add`, the one other manually accumulated counter in this
+   component).
+2. **Usage**: returned through `Result` from every fallible operation.
+3. **Constraints**: **no `CacheError` may ever fail a client query.** Every call site
+   degrades to "treat it as a miss" or "do not admit this record", logs at `warn`, and
+   continues. The cache is an optimisation; it must not be able to break resolution. Error
+   text must not leak internal state into anything client-visible.
+
+### 2. Create `domain::cache::key` — `CanonicalName`, `CacheKey`
 
 1. **Responsibility**: turn a `Question` into the global cache key, and provide the
    suffix relation the bailiwick rule is expressed in.
@@ -781,7 +793,7 @@ client query
    question and only the question. No indexing that can be out of bounds; label comparison
    uses iterators, not offsets.
 
-### 2. Create `domain::cache::ttl` — `Deadline`, `TtlPolicy`
+### 3. Create `domain::cache::ttl` — `Deadline`, `TtlPolicy`
 
 1. **Responsibility**: the single place in the component where TTL arithmetic happens.
 2. **`Deadline`**
@@ -801,7 +813,7 @@ client query
    `arithmetic_side_effects = deny` applies workspace-wide and this module is where it
    bites. No operation in this module may panic for any input.
 
-### 3. Create `domain::cache::bytes` — `HeapBytes`
+### 4. Create `domain::cache::bytes` — `HeapBytes`
 
 1. **Responsibility**: the single place manual byte-count arithmetic happens for capacity
    accounting — the same role `ttl.rs` plays for TTL arithmetic, for the one other counter
@@ -820,7 +832,7 @@ client query
    `CacheCapacity::max_bytes` and `CacheStats::bytes` all use this type; none of them holds
    a bare `usize` for a byte count.
 
-### 4. Create `domain::cache::entry`, `positive_entry`, `negative_entry` — the entry types
+### 5. Create `domain::cache::entry`, `positive_entry`, `negative_entry` — the entry types
 
 1. **Responsibility**: the three shapes a cached answer can take, plus their freshness,
    split by concept — the shared shape in `entry.rs`, the positive shapes in
@@ -854,7 +866,7 @@ client query
    - **`DenialKind`**: `NxDomain` / `NoData`.
 5. **Constraints**: entries are immutable once admitted; a change means a fresh admission.
 
-### 5. Create `domain::cache::bailiwick` — `Bailiwick`
+### 6. Create `domain::cache::bailiwick` — `Bailiwick`
 
 1. **Responsibility**: the security boundary. Decide which zone a responder is entitled to
    teach the cache about, and whether a given owner name falls inside it.
@@ -873,7 +885,7 @@ client query
    the chain walk. Exhaustively unit-tested; this is the one predicate in the phase whose
    failure is a vulnerability rather than a bug.
 
-### 6. Create `domain::cache::admission` — `Admission`, `AdmissionOutcome`
+### 7. Create `domain::cache::admission` — `Admission`, `AdmissionOutcome`
 
 1. **Responsibility**: the complete answer to "may this be cached at all?", of which the
    bailiwick rule is one clause.
@@ -919,7 +931,7 @@ client query
    branch. This is what keeps the security-critical path clear of both `excessive_nesting`
    (threshold 4) and `too_many_lines` (threshold 60), per Phase 0 Approach §10.
 
-### 7. Create `domain::cache::port`, `capacity`, `stats` — the `AnswerCache` trait
+### 8. Create `domain::cache::port`, `capacity`, `stats` — the `AnswerCache` trait
 
 1. **Responsibility**: the capability, stated independently of the storage mechanism, so
    the pipeline and Phase 5's adapter both depend on a trait — split by concept into
@@ -949,7 +961,7 @@ client query
    and no lock is held across an `await`. Consumers use static dispatch (`<A: AnswerCache>`,
    `impl AnswerCache`).
 
-### 8. Create `infrastructure::cache::sharded` — `ShardedAnswerCache`
+### 9. Create `infrastructure::cache::sharded` — `ShardedAnswerCache`
 
 1. **Responsibility**: the concurrent, bounded, memory-only store.
 2. **Construction**: `new(clock: Arc<C>, capacity: CacheCapacity, ttl: TtlPolicy,
@@ -973,7 +985,7 @@ client query
    (poisoning is handled explicitly and degrades to a miss); no I/O of any kind —
    arch-lint's `no-sync-io` applies.
 
-### 9. Create `infrastructure::cache::eviction` — `Eviction`
+### 10. Create `infrastructure::cache::eviction` — `Eviction`
 
 1. **Responsibility**: keep the store inside its bound, doing bounded work per call.
 2. **`evict(inner, now, capacity) -> EvictionReport`**
@@ -987,18 +999,6 @@ client query
    - Return counts of each, so the two are separately observable — **expiry and eviction
      are different events and the exit criteria name them separately.**
 3. **Constraints**: bounded work per invocation; no unbounded scan on the hot path.
-
-### 10. Create `domain::cache::error` — `CacheError`
-
-1. **Definition**: a `thiserror` enum. Variants: `TtlOverflow`, `DeadlineInThePast`,
-   `UncacheableQuestion`, `MissingSoa`, `ResponseAssembly`, `ByteAccountingOverflow` (from
-   `HeapBytes::checked_add`, the one other manually accumulated counter in this
-   component).
-2. **Usage**: returned through `Result` from every fallible operation.
-3. **Constraints**: **no `CacheError` may ever fail a client query.** Every call site
-   degrades to "treat it as a miss" or "do not admit this record", logs at `warn`, and
-   continues. The cache is an optimisation; it must not be able to break resolution. Error
-   text must not leak internal state into anything client-visible.
 
 ### 11. Create `application::cache_stage` — the pipeline stage
 

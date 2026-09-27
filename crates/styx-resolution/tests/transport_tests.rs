@@ -11,7 +11,9 @@ use styx_proto::{
     Header, Message, MessageKind, Name, Opcode, Opt, Question, RData, RecordClass, RecordType,
     ResourceRecord, ResponseCode, Ttl,
 };
-use styx_resolution::{PipelineError, RequestContext, TerminalHandler};
+use styx_resolution::{
+    PipelineError, RequestContext, ResolutionOutcome, ResolvedSource, TerminalHandler,
+};
 
 fn make_query(name: &str, rtype: RecordType) -> Message {
     let qname = match Name::from_ascii(name) {
@@ -29,7 +31,10 @@ fn make_query(name: &str, rtype: RecordType) -> Message {
 struct LargeAnswerTerminal;
 
 impl TerminalHandler for LargeAnswerTerminal {
-    fn handle_terminal(&self, ctx: &RequestContext) -> Result<Message, PipelineError> {
+    async fn handle_terminal(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<(Message, ResolutionOutcome), PipelineError> {
         let question = ctx
             .query
             .questions
@@ -66,7 +71,14 @@ impl TerminalHandler for LargeAnswerTerminal {
             response.opt = Some(resp_opt);
         }
 
-        Ok(response)
+        let outcome = ResolutionOutcome::Resolved {
+            source: ResolvedSource::Upstream,
+            rcode: ResponseCode::NOERROR,
+            cacheable: false,
+            authentic_data: false,
+        };
+
+        Ok((response, outcome))
     }
 }
 

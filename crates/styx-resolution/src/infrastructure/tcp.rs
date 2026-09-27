@@ -210,7 +210,7 @@ where
         let max_size = MaxResponseSize::tcp_ceiling();
         let ctx = RequestContext::new(query, client, Transport::Tcp, max_size, received_at);
 
-        let response = match pipeline.handle(ctx.clone()) {
+        let response = match pipeline.handle(ctx.clone()).await {
             Ok(msg) => msg,
             Err(err) => {
                 let rcode = err.response_code();
