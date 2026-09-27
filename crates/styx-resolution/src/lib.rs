@@ -14,17 +14,31 @@ pub mod domain;
 pub mod infrastructure;
 
 // Public re-exports for convenience
-pub use application::{Pipeline, RefusedTerminal, TerminalHandler};
+pub use application::{
+    OrderedFailover, Pipeline, PoolMember, ProbeScheduler, RaceAll, RefusedTerminal, RoundRobin,
+    TerminalHandler, UpstreamPool, Weighted,
+};
 pub use domain::answer::{
     AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolvedSource,
 };
+pub use domain::circuit::{CircuitConfig, CircuitState, FailureCount};
 pub use domain::clock::Clock;
-pub use domain::error::{ConfigError, ListenerError, PipelineError, ServerError};
+pub use domain::config::{PoolConfig, Timeouts, UpstreamConfig};
+pub use domain::edns::EdnsBufferSize;
+pub use domain::error::{
+    ConfigError, FailureClass, ListenerError, PipelineError, PoolError, ServerError, UpstreamError,
+};
+pub use domain::health::{HealthState, Outcome};
 pub use domain::ports::filter::{FilterPolicy, FilterVerdict};
 pub use domain::ports::local::LocalRecords;
 pub use domain::ports::observer::{QueryDetail, QueryObserver};
+pub use domain::probe::{CanaryConfig, ProbeConfig, ProbePolicy};
 pub use domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
+pub use domain::selection::{MemberView, Selection, SelectionStrategy, StrategyName};
+pub use domain::upstream::{Upstream, UpstreamId, UpstreamKind, UpstreamResponse};
+pub use domain::weight::Weight;
 pub use infrastructure::clock::SystemClock;
+pub use infrastructure::do53::Do53Forwarder;
 pub use infrastructure::filter::AllowAllFilter;
 pub use infrastructure::local::NoLocalRecords;
 pub use infrastructure::observer::DiscardObserver;

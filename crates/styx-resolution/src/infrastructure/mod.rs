@@ -8,6 +8,7 @@
 //! goes on meaningful operations rather than on everything.
 
 pub mod clock;
+pub mod do53;
 pub mod filter;
 pub mod local;
 pub mod observer;
@@ -17,6 +18,7 @@ pub mod tcp;
 pub mod udp;
 
 pub use clock::SystemClock;
+pub use do53::Do53Forwarder;
 pub use filter::AllowAllFilter;
 pub use local::NoLocalRecords;
 pub use observer::DiscardObserver;
