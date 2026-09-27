@@ -56,6 +56,35 @@ this document revises.
   `[workspace.lints]`; every member crate opts in with `workspace = true` rather than
   re-declaring either.
 
+## Workspace layout and module structure
+
+To help agents navigate and modify the codebase without needing exploratory searches,
+the diagram below maps the currently existing crates and their internal module layers.
+Whenever a phase introduces a new crate or significantly reorganizes an existing one,
+updating this section is a required deliverable of that phase.
+
+```text
+styx/
+├── Cargo.toml                  # Workspace virtual manifest, dependencies, lints
+├── crates/
+│   ├── styx/                   # Composition root binary (startup, CLI, wiring)
+│   │   └── src/main.rs
+│   ├── styx-proto/             # Shared foundation: zero-copy DNS wire codec
+│   │   └── src/
+│   │       ├── domain/         # Wire types: Header, Question, Name, Record, RData, EDNS
+│   │       ├── application/    # Cursor (bounds-checked buffer), Encoder, Decoder
+│   │       └── infrastructure/ # Transport-agnostic codec helpers
+│   ├── styx-resolution/        # DNS resolution engine and upstream forwarding
+│   │   └── src/
+│   │       ├── domain/         # Domain logic, circuit breaker, health, ports/
+│   │       ├── application/    # Pipeline, selection strategies, probe scheduler
+│   │       └── infrastructure/ # UDP/TCP listeners, client transports, port adapters
+│   └── styx-filtering/         # Filtering & blocklist policy engine (skeleton)
+│       └── src/{domain, application, infrastructure}/
+└── xtask/                      # Developer & CI gate tasks (deps, hickory, module-size)
+    └── src/main.rs
+```
+
 ## Object Calisthenics, adapted for Rust
 
 The original nine rules target Java-shaped OOP. Several do not survive translation
