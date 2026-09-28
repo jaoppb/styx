@@ -37,4 +37,8 @@ pub enum CacheError {
         /// Configured maximum TTL.
         ceiling: u32,
     },
+
+    /// Attempted to construct an RRset with no RDATA.
+    #[error("RRset must contain at least one RDATA record")]
+    EmptyRRset,
 }

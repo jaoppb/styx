@@ -6,12 +6,14 @@ use styx_proto::{Message, RData, RecordClass, RecordType, ResourceRecord, Respon
 
 use crate::domain::answer::AnswerSource;
 use crate::domain::cache::bailiwick::Bailiwick;
-use crate::domain::cache::entry::{CacheEntry, SecurityStatus};
+use crate::domain::cache::dnssec::DnssecMetadata;
+use crate::domain::cache::entry::CacheEntry;
 use crate::domain::cache::key::CanonicalName;
 use crate::domain::cache::negative_entry::{DenialKind, NegativeEntry};
 use crate::domain::cache::positive_entry::{
     CachedMessage, CachedRRset, MessageFlags, PositiveEntry,
 };
+use crate::domain::cache::rrset::RRset;
 use crate::domain::cache::ttl::{Deadline, TtlPolicy};
 
 /// The reason a record or response was refused admission into the answer cache.
@@ -216,17 +218,19 @@ impl Admission {
             return;
         };
 
-        let soa_rrset = CachedRRset::new(
+        let Ok(rrset) = RRset::new(
             CanonicalName::canonicalize(&rr.owner),
             RecordType::SOA,
             rr.rclass,
             vec![rr.rdata.clone()],
-            rr.ttl,
-            deadline,
-        );
+        ) else {
+            return;
+        };
+
+        let soa_rrset = CachedRRset::new(rrset, rr.ttl, deadline);
 
         let negative_entry =
-            NegativeEntry::new(kind, soa_rrset, deadline, SecurityStatus::Indeterminate);
+            NegativeEntry::new(kind, soa_rrset, deadline, DnssecMetadata::Indeterminate);
 
         outcome.admitted.push(CacheEntry::Negative(negative_entry));
     }
@@ -317,11 +321,8 @@ impl Admission {
                 continue;
             }
 
-            let clamped_ttl = self.ttl.clamp(raw.ttl);
-            if let Ok(deadline) = Deadline::from_ttl(now, clamped_ttl) {
-                admitted.push(CachedRRset::new(
-                    raw.owner, raw.rtype, raw.rclass, raw.rdata, raw.ttl, deadline,
-                ));
+            if let Some(cached) = self.to_cached_rrset(raw, now) {
+                admitted.push(cached);
             }
         }
 
@@ -361,11 +362,8 @@ impl Admission {
                 continue;
             }
 
-            let clamped_ttl = self.ttl.clamp(raw.ttl);
-            if let Ok(deadline) = Deadline::from_ttl(now, clamped_ttl) {
-                admitted.push(CachedRRset::new(
-                    raw.owner, raw.rtype, raw.rclass, raw.rdata, raw.ttl, deadline,
-                ));
+            if let Some(cached) = self.to_cached_rrset(raw, now) {
+                admitted.push(cached);
             }
         }
 
@@ -407,14 +405,18 @@ impl Admission {
                 continue;
             }
 
-            let clamped_ttl = self.ttl.clamp(raw.ttl);
-            if let Ok(deadline) = Deadline::from_ttl(now, clamped_ttl) {
-                admitted.push(CachedRRset::new(
-                    raw.owner, raw.rtype, raw.rclass, raw.rdata, raw.ttl, deadline,
-                ));
+            if let Some(cached) = self.to_cached_rrset(raw, now) {
+                admitted.push(cached);
             }
         }
 
         admitted
+    }
+
+    fn to_cached_rrset(&self, raw: RawRRset, now: Instant) -> Option<CachedRRset> {
+        let clamped_ttl = self.ttl.clamp(raw.ttl);
+        let deadline = Deadline::from_ttl(now, clamped_ttl).ok()?;
+        let rrset = RRset::new(raw.owner, raw.rtype, raw.rclass, raw.rdata).ok()?;
+        Some(CachedRRset::new(rrset, raw.ttl, deadline))
     }
 }

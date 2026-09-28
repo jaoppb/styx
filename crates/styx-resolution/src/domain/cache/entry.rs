@@ -11,22 +11,7 @@ use crate::domain::cache::negative_entry::NegativeEntry;
 use crate::domain::cache::positive_entry::PositiveEntry;
 use crate::domain::cache::ttl::Deadline;
 
-/// Security validation status of a cached DNS record or response.
-///
-/// In Phase 4, validation logic is deferred to Phase 6 (DNSSEC), so every admitted
-/// entry defaults to [`SecurityStatus::Indeterminate`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum SecurityStatus {
-    /// DNSSEC status cannot be determined or validation is not yet implemented.
-    #[default]
-    Indeterminate,
-    /// Authoritatively proven insecure (unsigned zone with valid NSEC/NSEC3 proof of no DS).
-    Insecure,
-    /// Cryptographically verified with a complete, valid chain of trust to a root anchor.
-    Secure,
-    /// DNSSEC validation failed (signature mismatch, expired signature, or missing proof).
-    Bogus,
-}
+pub use crate::domain::cache::dnssec::SecurityStatus;
 
 /// A stored entry in the answer cache.
 #[derive(Debug, Clone, PartialEq, Eq)]

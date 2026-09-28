@@ -234,22 +234,35 @@ class PositiveEntry {
     Message(CachedMessage)
 }
 
-class CachedRRset {
+class RRset {
     -CanonicalName owner
     -RecordType rtype
     -RecordClass rclass
     -Vec~Rdata~ rdata
+    +new(CanonicalName, RecordType, RecordClass, Vec~Rdata~) Result~RRset, CacheError~
+    +owner() CanonicalName
+    +rtype() RecordType
+    +rclass() RecordClass
+    +rdata() Vec~Rdata~
+    +to_resource_records(Ttl) Vec~ResourceRecord~
+    +heap_size() HeapBytes
+}
+
+class CachedRRset {
+    -RRset rrset
     -Ttl original_ttl
     -Deadline deadline
-    -SecurityStatus security
-    -Option~Vec~Rrsig~~ signatures
-    +new(CanonicalName, RecordType, RecordClass, Vec~Rdata~, Ttl, Deadline) CachedRRset
+    -DnssecMetadata dnssec
+    +new(RRset, Ttl, Deadline) CachedRRset
+    +with_dnssec(RRset, Ttl, Deadline, DnssecMetadata) CachedRRset
+    +rrset() RRset
     +owner() CanonicalName
     +rtype() RecordType
     +rclass() RecordClass
     +rdata() Vec~Rdata~
     +original_ttl() Ttl
     +deadline() Deadline
+    +dnssec() DnssecMetadata
     +security() SecurityStatus
     +signatures() Option~Vec~Rrsig~~
     +remaining_ttl(Instant) Result~Ttl, CacheError~
@@ -279,13 +292,30 @@ class NegativeEntry {
     -DenialKind kind
     -CachedRRset soa
     -Deadline deadline
-    -SecurityStatus security
-    +new(DenialKind, CachedRRset, Deadline, SecurityStatus) NegativeEntry
+    -DnssecMetadata dnssec
+    +new(DenialKind, CachedRRset, Deadline, DnssecMetadata) NegativeEntry
     +kind() DenialKind
     +soa() CachedRRset
     +deadline() Deadline
+    +dnssec() DnssecMetadata
     +security() SecurityStatus
     +to_response(CacheKey, Instant) Result~Message, CacheError~
+    +heap_size() HeapBytes
+}
+
+class DnssecMetadata {
+    <<enumeration>>
+    Indeterminate
+    Insecure
+    Secure
+    Bogus
+    +indeterminate() DnssecMetadata
+    +insecure() DnssecMetadata
+    +secure(Vec~Rrsig~) DnssecMetadata
+    +bogus(Vec~Rrsig~) DnssecMetadata
+    +status() SecurityStatus
+    +signatures() Option~Vec~Rrsig~~
+    +is_secure() bool
     +heap_size() HeapBytes
 }
 
@@ -479,10 +509,13 @@ CacheEntry --> PositiveEntry : Positive
 CacheEntry --> NegativeEntry : Negative
 PositiveEntry --> CachedRRset : RRset
 PositiveEntry --> CachedMessage : Message
+CachedRRset "1" --> "1" RRset : rrset
+CachedRRset "1" --> "1" DnssecMetadata : dnssec
 CachedMessage "1" o-- "0..*" CachedRRset : sections
 NegativeEntry "1" --> "1" DenialKind : kind
 NegativeEntry "1" --> "1" CachedRRset : SOA
-CachedRRset "1" --> "1" SecurityStatus : verdict
+NegativeEntry "1" --> "1" DnssecMetadata : dnssec
+DnssecMetadata ..> SecurityStatus : status
 Admission "1" --> "1" TtlPolicy : clamps with
 Admission "1" ..> "1" Bailiwick : consults
 Admission "1" --> "1" AdmissionOutcome : produces
@@ -712,7 +745,9 @@ styx-resolution/
     domain/
       cache/
         key.rs             CacheKey, CanonicalName
-        entry.rs           CacheEntry, SecurityStatus
+        dnssec.rs          DnssecMetadata, SecurityStatus
+        entry.rs           CacheEntry
+        rrset.rs           RRset
         positive_entry.rs  PositiveEntry, CachedRRset, CachedMessage
         negative_entry.rs  NegativeEntry, DenialKind
         ttl.rs             Deadline, TtlPolicy
@@ -887,45 +922,55 @@ client query
    `CacheCapacity::max_bytes` and `CacheStats::bytes` all use this type; none of them holds
    a bare `usize` for a byte count.
 
-### 5. Create `domain::cache::entry`, `positive_entry`, `negative_entry` — the entry types
+### 5. Create `domain::cache::entry`, `positive_entry`, `negative_entry`, `rrset`, `dnssec` — entry types
 
 1. **Responsibility**: the three shapes a cached answer can take, plus their freshness,
    split by concept — the shared shape in `entry.rs`, the positive shapes in
-   `positive_entry.rs`, the negative shape in `negative_entry.rs` — the way `styx-proto`
-   splits `domain/rdata/basic.rs` from `domain/rdata/dnssec.rs` rather than letting one
-   file accumulate every entry-shaped type.
-2. **`entry.rs`**
-   - **`CacheEntry`**: the `Positive`/`Negative` enum, with `deadline()`, `is_fresh(now)`
-     and `heap_size() -> HeapBytes` for capacity accounting.
+   `positive_entry.rs`, the negative shape in `negative_entry.rs`, the record set in
+   `rrset.rs`, and the DNSSEC state in `dnssec.rs` — the way `styx-proto` splits
+   `domain/rdata/basic.rs` from `domain/rdata/dnssec.rs` rather than letting one file
+   accumulate every entry-shaped type.
+2. **`dnssec.rs` and `entry.rs`**
    - **`SecurityStatus`**: `Indeterminate` / `Insecure` / `Secure` / `Bogus`.
-     **In this phase every admitted entry is `Indeterminate` and `signatures` is `None`.**
-     The type exists now because Phase 6 — DNSSEC hard-fails on bogus answers, and bolting
-     a verdict onto these types one phase later would mean either re-validating on every
-     cache hit or reshaping the store.
-3. **`positive_entry.rs`**
-   - **`CachedRRset`**: owner, type, class, the RDATA set, the original TTL as received,
-     the computed `Deadline`, a `SecurityStatus`, and an optional signature list (all
-     fields private). Constructed via `new(...)` or `with_security(...)`, with read
-     accessors `owner()`, `rtype()`, `rclass()`, `rdata()`, `original_ttl()`,
-     `deadline()`, `security()`, `signatures()`. `remaining_ttl(now)` delegates to
-     `Deadline::remaining`.
+   - **`DnssecMetadata`**: enum (`Indeterminate`, `Insecure`, `Secure { signatures }`,
+     `Bogus { signatures }`) capturing cryptographic status and associated RRSIGs.
+     **In this phase every admitted entry is `Indeterminate`.** The type exists now
+     because Phase 6 — DNSSEC hard-fails on bogus answers, and bolting a verdict onto
+     these types one phase later would mean either re-validating on every cache hit or
+     reshaping the store.
+   - **`CacheEntry`**: the `Positive`/`Negative` enum, with `deadline()`,
+     `is_fresh(now)` and `heap_size() -> HeapBytes` for capacity accounting.
+3. **`rrset.rs` and `positive_entry.rs`**
+   - **`RRset`**: DNS Resource Record Set sharing canonical owner, type, class, and
+     deduplicated non-empty RDATA collection. Enforces `!rdata.is_empty()` returning
+     `Result<Self, CacheError::EmptyRRset>`. Converts to wire `ResourceRecord` items
+     via `to_resource_records(ttl)`.
+   - **`CachedRRset`**: Caching envelope pairing an `RRset` with its `original_ttl`,
+     `deadline`, and `dnssec` (`DnssecMetadata`) (all fields private). Constructed via
+     `new(rrset, original_ttl, deadline)` or `with_dnssec(...)`, with read accessors
+     `rrset()`, `owner()`, `rtype()`, `rclass()`, `rdata()`, `original_ttl()`,
+     `deadline()`, `dnssec()`, `security()`, `signatures()`. `remaining_ttl(now)`
+     delegates to `Deadline::remaining`.
    - **`CachedMessage`**: RCODE, flags, and the answer/authority/additional sections as
      `CachedRRset` vectors, with the entry `Deadline` being the earliest deadline among
-     them (all fields private). Constructed via `new(...)` with read accessors `rcode()`,
-     `flags()`, `answer()`, `authority()`, `additional()`, `deadline()`.
+     them (all fields private). Constructed via `new(...)` with read accessors
+     `rcode()`, `flags()`, `answer()`, `authority()`, `additional()`, `deadline()`.
      `to_response(key, now)` rebuilds a `Message` with every TTL recomputed from `now`.
-     *This is the shape used where an answer does not reduce to one RRset of the queried
-     type — a CNAME chain, or a referral-shaped response arriving on a forwarding path.*
+     *This is the shape used where an answer does not reduce to one RRset of the
+     queried type — a CNAME chain, or a referral-shaped response arriving on a
+     forwarding path.*
    - **`PositiveEntry`**: the `RRset`/`Message` enum wrapping the two shapes above.
 4. **`negative_entry.rs`**
-   - **`NegativeEntry`**: `DenialKind` (`NxDomain` or `NoData`), the SOA that justified and
-     timed it, the `Deadline`, a `SecurityStatus` (all fields private). Constructed via
-     `new(...)` with read accessors `kind()`, `soa()`, `deadline()`, `security()`.
+   - **`NegativeEntry`**: `DenialKind` (`NxDomain` or `NoData`), the SOA that justified
+     and timed it, the `Deadline`, and `dnssec` (`DnssecMetadata`) (all fields
+     private). Constructed via `new(kind, soa, deadline, dnssec)` with read accessors
+     `kind()`, `soa()`, `deadline()`, `dnssec()`, `security()`.
      `to_response(key, now)` produces the correct RCODE for the kind — NXDOMAIN for
-     `NxDomain`, NOERROR with an empty answer section for `NoData` — with the SOA in the
-     authority section and its TTL recomputed.
+     `NxDomain`, NOERROR with an empty answer section for `NoData` — with the SOA in
+     the authority section and its TTL recomputed.
    - **`DenialKind`**: `NxDomain` / `NoData`.
-5. **Constraints**: entries are immutable once admitted; a change means a fresh admission.
+5. **Constraints**: entries are immutable once admitted; a change means a fresh
+   admission.
 
 ### 6. Create `domain::cache::bailiwick` — `Bailiwick`
 
@@ -1174,9 +1219,10 @@ client query
     paired with a saturating subtract that never underflows), `Deadline` (checked construction
     from a `Ttl`, saturating remaining-time arithmetic), `AdmittedCount` and `PurgedCount`
     (semantic count newtypes on `AnswerCache::admit` and `purge_all`) are this phase's worked
-    examples. Furthermore, `TtlPolicy`, `CachedRRset`, `CachedMessage`, `NegativeEntry`,
-    and `CacheCapacity` enforce invariant preservation by keeping all fields private behind
-    constructors and read accessors.
+    examples. Furthermore, `TtlPolicy`, `RRset`, `CachedRRset`, `CachedMessage`,
+    `NegativeEntry`, and `CacheCapacity` enforce invariant preservation by keeping all fields
+    private behind constructors and read accessors, eliminating multiple responsibilities
+    and `too_many_arguments` smells.
     `CacheStats`'s plain `u64` hit/miss/eviction counters stay bare integers deliberately:
     they carry no domain rule beyond straightforward counting, and wrapping them would be
     ceremony with no behaviour behind it.

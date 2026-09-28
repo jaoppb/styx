@@ -27,9 +27,10 @@ pub mod weight;
 
 pub use answer::{AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolvedSource};
 pub use cache::{
-    Admission, AdmissionOutcome, AnswerCache, Bailiwick, CacheCapacity, CacheEntry, CacheError,
-    CacheKey, CacheStats, CanonicalName, Deadline, DenialKind, HeapBytes, Lookup, MessageFlags,
-    NegativeEntry, PositiveEntry, RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
+    Admission, AdmissionOutcome, AdmittedCount, AnswerCache, Bailiwick, CacheCapacity, CacheEntry,
+    CacheError, CacheKey, CacheStats, CanonicalName, Deadline, DenialKind, DnssecMetadata,
+    HeapBytes, Lookup, MessageFlags, NegativeEntry, PositiveEntry, PurgedCount, RRset,
+    RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
 };
 pub use circuit::{CircuitConfig, CircuitState, FailureCount};
 pub use clock::Clock;

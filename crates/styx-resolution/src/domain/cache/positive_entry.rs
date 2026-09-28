@@ -8,9 +8,11 @@ use styx_proto::{
 };
 
 use crate::domain::cache::bytes::HeapBytes;
+use crate::domain::cache::dnssec::DnssecMetadata;
 use crate::domain::cache::entry::SecurityStatus;
 use crate::domain::cache::error::CacheError;
 use crate::domain::cache::key::{CacheKey, CanonicalName};
+use crate::domain::cache::rrset::RRset;
 use crate::domain::cache::ttl::Deadline;
 
 /// Header flags preserved for a cached DNS response message.
@@ -22,89 +24,71 @@ pub struct MessageFlags {
     pub authentic_data: bool,
 }
 
-/// A cached Resource Record Set (RRset) sharing owner, type, class, and TTL.
+/// A cached Resource Record Set (RRset) envelope combining record data, TTL, and DNSSEC state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedRRset {
-    owner: CanonicalName,
-    rtype: RecordType,
-    rclass: RecordClass,
-    rdata: Vec<RData>,
+    rrset: RRset,
     original_ttl: Ttl,
     deadline: Deadline,
-    security: SecurityStatus,
-    signatures: Option<Vec<RrsigRdata>>,
+    dnssec: DnssecMetadata,
 }
 
 impl CachedRRset {
-    /// Creates a new `CachedRRset` with indeterminate security and no signatures.
+    /// Creates a new `CachedRRset` with default (indeterminate) DNSSEC status.
     #[must_use]
-    pub fn new(
-        owner: CanonicalName,
-        rtype: RecordType,
-        rclass: RecordClass,
-        rdata: Vec<RData>,
-        original_ttl: Ttl,
-        deadline: Deadline,
-    ) -> Self {
+    pub const fn new(rrset: RRset, original_ttl: Ttl, deadline: Deadline) -> Self {
         Self {
-            owner,
-            rtype,
-            rclass,
-            rdata,
+            rrset,
             original_ttl,
             deadline,
-            security: SecurityStatus::Indeterminate,
-            signatures: None,
+            dnssec: DnssecMetadata::Indeterminate,
         }
     }
 
-    /// Creates a new `CachedRRset` with explicit security status and optional signatures.
+    /// Creates a new `CachedRRset` with explicit DNSSEC metadata.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_security(
-        owner: CanonicalName,
-        rtype: RecordType,
-        rclass: RecordClass,
-        rdata: Vec<RData>,
+    pub const fn with_dnssec(
+        rrset: RRset,
         original_ttl: Ttl,
         deadline: Deadline,
-        security: SecurityStatus,
-        signatures: Option<Vec<RrsigRdata>>,
+        dnssec: DnssecMetadata,
     ) -> Self {
         Self {
-            owner,
-            rtype,
-            rclass,
-            rdata,
+            rrset,
             original_ttl,
             deadline,
-            security,
-            signatures,
+            dnssec,
         }
+    }
+
+    /// Accessor for the underlying RRset.
+    #[must_use]
+    pub const fn rrset(&self) -> &RRset {
+        &self.rrset
     }
 
     /// Owner domain name in canonical form.
     #[must_use]
     pub const fn owner(&self) -> &CanonicalName {
-        &self.owner
+        self.rrset.owner()
     }
 
     /// DNS record type.
     #[must_use]
     pub const fn rtype(&self) -> RecordType {
-        self.rtype
+        self.rrset.rtype()
     }
 
     /// DNS record class.
     #[must_use]
     pub const fn rclass(&self) -> RecordClass {
-        self.rclass
+        self.rrset.rclass()
     }
 
     /// Accessor for the RRset's RDATA collection.
     #[must_use]
     pub fn rdata(&self) -> &[RData] {
-        &self.rdata
+        self.rrset.rdata()
     }
 
     /// Accessor for the original TTL.
@@ -119,16 +103,22 @@ impl CachedRRset {
         self.deadline
     }
 
+    /// Accessor for the DNSSEC metadata.
+    #[must_use]
+    pub const fn dnssec(&self) -> &DnssecMetadata {
+        &self.dnssec
+    }
+
     /// DNSSEC security verdict.
     #[must_use]
-    pub const fn security(&self) -> SecurityStatus {
-        self.security
+    pub fn security(&self) -> SecurityStatus {
+        self.dnssec.status()
     }
 
     /// Attached RRSIG signatures.
     #[must_use]
     pub fn signatures(&self) -> Option<&[RrsigRdata]> {
-        self.signatures.as_deref()
+        self.dnssec.signatures()
     }
 
     /// Computes the remaining time-to-live for this RRset relative to `now`.
@@ -145,22 +135,16 @@ impl CachedRRset {
     /// Returns [`CacheError`] if TTL recomputation fails.
     pub fn to_resource_records(&self, now: Instant) -> Result<Vec<ResourceRecord>, CacheError> {
         let ttl = self.remaining_ttl(now)?;
-        let name = self.owner.inner().clone();
-        let records = self
-            .rdata
-            .iter()
-            .map(|rd| ResourceRecord::new(name.clone(), self.rtype, self.rclass, ttl, rd.clone()))
-            .collect();
-        Ok(records)
+        Ok(self.rrset.to_resource_records(ttl))
     }
 
     /// Returns the estimated heap size consumed by this RRset.
     #[must_use]
     pub fn heap_size(&self) -> HeapBytes {
         let base = std::mem::size_of::<Self>();
-        let name_bytes = self.owner.inner().wire_len();
-        let rdata_bytes = self.rdata.len().saturating_mul(16);
-        let total = base.saturating_add(name_bytes).saturating_add(rdata_bytes);
+        let rrset_heap = self.rrset.heap_size().get();
+        let dnssec_heap = self.dnssec.heap_size().get();
+        let total = base.saturating_add(rrset_heap).saturating_add(dnssec_heap);
         HeapBytes::new(total)
     }
 }
@@ -334,5 +318,53 @@ impl PositiveEntry {
             }
             Self::Message(msg) => msg.to_response(key, now),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+    use styx_proto::Name;
+
+    use super::*;
+
+    #[test]
+    fn test_cached_rrset_and_forwarding_accessors() {
+        let name = CanonicalName::canonicalize(&Name::root());
+        let ip = RData::A(Ipv4Addr::new(1, 1, 1, 1));
+        let rrset = RRset::new(
+            name.clone(),
+            RecordType::A,
+            RecordClass::In,
+            vec![ip.clone()],
+        )
+        .expect("valid rrset");
+
+        let now = Instant::now();
+        let deadline = Deadline::from_ttl(now, Ttl::from_secs(300)).expect("valid deadline");
+        let cached = CachedRRset::new(rrset.clone(), Ttl::from_secs(300), deadline);
+
+        assert_eq!(cached.rrset(), &rrset);
+        assert_eq!(cached.owner(), &name);
+        assert_eq!(cached.rtype(), RecordType::A);
+        assert_eq!(cached.rclass(), RecordClass::In);
+        assert_eq!(cached.rdata(), &[ip]);
+        assert_eq!(cached.original_ttl(), Ttl::from_secs(300));
+        assert_eq!(cached.deadline(), deadline);
+        assert_eq!(cached.dnssec(), &DnssecMetadata::Indeterminate);
+        assert_eq!(cached.security(), SecurityStatus::Indeterminate);
+        assert_eq!(cached.signatures(), None);
+
+        let records = cached.to_resource_records(now).expect("records valid");
+        assert_eq!(records.len(), 1);
+
+        let secure_cached = CachedRRset::with_dnssec(
+            rrset,
+            Ttl::from_secs(300),
+            deadline,
+            DnssecMetadata::Secure { signatures: vec![] },
+        );
+        assert_eq!(secure_cached.security(), SecurityStatus::Secure);
+        assert!(secure_cached.dnssec().is_secure());
     }
 }
