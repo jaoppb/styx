@@ -205,18 +205,19 @@ class CacheKey {
     -CanonicalName qname
     -RecordType qtype
     -RecordClass qclass
-    +from_question(Question) Result~CacheKey, CacheError~
-    +qname() CanonicalName
+    +from_question(&Question) Result~CacheKey, CacheError~
+    +qname() &CanonicalName
     +qtype() RecordType
     +qclass() RecordClass
 }
 
 class CanonicalName {
     -Name inner
-    +canonicalize(Name) CanonicalName
-    +is_subdomain_of(CanonicalName) bool
+    +canonicalize(&Name) CanonicalName
+    +is_subdomain_of(&CanonicalName) bool
     +label_count() usize
-    +inner() Name
+    +inner() &Name
+    +into_inner() Name
 }
 
 class CacheEntry {
@@ -226,24 +227,28 @@ class CacheEntry {
     +deadline() Deadline
     +is_fresh(Instant) bool
     +heap_size() HeapBytes
+    +to_response(&CacheKey, Instant) Result~Message, CacheError~
 }
 
 class PositiveEntry {
     <<enumeration>>
     RRset(CachedRRset)
     Message(CachedMessage)
+    +deadline() Deadline
+    +heap_size() HeapBytes
+    +to_response(&CacheKey, Instant) Result~Message, CacheError~
 }
 
 class RRset {
     -CanonicalName owner
     -RecordType rtype
     -RecordClass rclass
-    -Vec~Rdata~ rdata
-    +new(CanonicalName, RecordType, RecordClass, Vec~Rdata~) Result~RRset, CacheError~
-    +owner() CanonicalName
+    -Vec~RData~ rdata
+    +new(CanonicalName, RecordType, RecordClass, Vec~RData~) Result~RRset, CacheError~
+    +owner() &CanonicalName
     +rtype() RecordType
     +rclass() RecordClass
-    +rdata() Vec~Rdata~
+    +rdata() &[RData]
     +to_resource_records(Ttl) Vec~ResourceRecord~
     +heap_size() HeapBytes
 }
@@ -255,16 +260,16 @@ class CachedRRset {
     -DnssecMetadata dnssec
     +new(RRset, Ttl, Deadline) CachedRRset
     +with_dnssec(RRset, Ttl, Deadline, DnssecMetadata) CachedRRset
-    +rrset() RRset
-    +owner() CanonicalName
+    +rrset() &RRset
+    +owner() &CanonicalName
     +rtype() RecordType
     +rclass() RecordClass
-    +rdata() Vec~Rdata~
+    +rdata() &[RData]
     +original_ttl() Ttl
     +deadline() Deadline
-    +dnssec() DnssecMetadata
+    +dnssec() &DnssecMetadata
     +security() SecurityStatus
-    +signatures() Option~Vec~Rrsig~~
+    +signatures() Option~&[RrsigRdata]~
     +remaining_ttl(Instant) Result~Ttl, CacheError~
     +to_resource_records(Instant) Result~Vec~ResourceRecord~, CacheError~
     +heap_size() HeapBytes
@@ -280,11 +285,11 @@ class CachedMessage {
     +new(ResponseCode, MessageFlags, Vec~CachedRRset~, Vec~CachedRRset~, Vec~CachedRRset~, Deadline) CachedMessage
     +rcode() ResponseCode
     +flags() MessageFlags
-    +answer() Vec~CachedRRset~
-    +authority() Vec~CachedRRset~
-    +additional() Vec~CachedRRset~
+    +answer() &[CachedRRset]
+    +authority() &[CachedRRset]
+    +additional() &[CachedRRset]
     +deadline() Deadline
-    +to_response(CacheKey, Instant) Result~Message, CacheError~
+    +to_response(&CacheKey, Instant) Result~Message, CacheError~
     +heap_size() HeapBytes
 }
 
@@ -295,11 +300,11 @@ class NegativeEntry {
     -DnssecMetadata dnssec
     +new(DenialKind, CachedRRset, Deadline, DnssecMetadata) NegativeEntry
     +kind() DenialKind
-    +soa() CachedRRset
+    +soa() &CachedRRset
     +deadline() Deadline
-    +dnssec() DnssecMetadata
+    +dnssec() &DnssecMetadata
     +security() SecurityStatus
-    +to_response(CacheKey, Instant) Result~Message, CacheError~
+    +to_response(&CacheKey, Instant) Result~Message, CacheError~
     +heap_size() HeapBytes
 }
 
@@ -311,10 +316,10 @@ class DnssecMetadata {
     Bogus
     +indeterminate() DnssecMetadata
     +insecure() DnssecMetadata
-    +secure(Vec~Rrsig~) DnssecMetadata
-    +bogus(Vec~Rrsig~) DnssecMetadata
+    +secure(Vec~RrsigRdata~) DnssecMetadata
+    +bogus(Vec~RrsigRdata~) DnssecMetadata
     +status() SecurityStatus
-    +signatures() Option~Vec~Rrsig~~
+    +signatures() Option~&[RrsigRdata]~
     +is_secure() bool
     +heap_size() HeapBytes
 }
@@ -338,6 +343,7 @@ class Deadline {
     +from_ttl(Instant, Ttl) Result~Deadline, CacheError~
     +remaining(Instant) Result~Ttl, CacheError~
     +has_expired(Instant) bool
+    +at() Instant
 }
 
 class TtlPolicy {
@@ -349,12 +355,14 @@ class TtlPolicy {
     +ceiling() Ttl
     +negative_ceiling() Ttl
     +clamp(Ttl) Ttl
-    +effective_negative_ttl(CachedRRset) Result~Ttl, CacheError~
+    +effective_negative_ttl(&CachedRRset) Result~Ttl, CacheError~
+    +effective_negative_ttl_raw(Ttl, u32) Ttl
 }
 
 class HeapBytes {
     -usize octets
     +new(usize) HeapBytes
+    +zero() HeapBytes
     +get() usize
     +checked_add(HeapBytes) Result~HeapBytes, CacheError~
     +saturating_sub(HeapBytes) HeapBytes
@@ -362,16 +370,18 @@ class HeapBytes {
 
 class Bailiwick {
     -CanonicalName zone
-    +of_response(Question, Message) Bailiwick
-    +permits(CanonicalName) bool
+    +new(CanonicalName) Bailiwick
+    +of_response(&Question, &Message) Bailiwick
+    +permits(&CanonicalName) bool
+    +zone() &CanonicalName
 }
 
 class Admission {
     -TtlPolicy ttl
     +new(TtlPolicy) Admission
-    +ttl() TtlPolicy
-    +evaluate(Bailiwick, Message, AnswerSource, Instant) AdmissionOutcome
-    -is_forged_source(AnswerSource) bool
+    +ttl() &TtlPolicy
+    +evaluate(&Bailiwick, &Message, AnswerSource, Instant) AdmissionOutcome
+    -check_source_eligibility(AnswerSource) Option~RejectReason~
 }
 
 class AdmissionOutcome {
@@ -422,8 +432,8 @@ class PurgedCount {
 
 class AnswerCache {
     <<interface>>
-    +lookup(CacheKey) Lookup
-    +admit(CacheKey, AdmissionOutcome) Result~AdmittedCount, CacheError~
+    +lookup(&CacheKey) Lookup
+    +admit(&CacheKey, AdmissionOutcome) Result~AdmittedCount, CacheError~
     +purge_all() PurgedCount
     +stats() CacheStats
 }
@@ -440,12 +450,19 @@ class ShardedAnswerCache~C~ {
     -Arc~C~ clock
     -CacheCapacity capacity
     -TtlPolicy ttl_policy
-    +shard_for(CacheKey) usize
+    -AtomicCacheCounters counters
+    +new(Arc~C~, CacheCapacity, TtlPolicy, usize) ShardedAnswerCache~C~
+    +with_defaults(Arc~C~) ShardedAnswerCache~C~
+    +shard_count() usize
+    +shard(usize) Option~&Shard~
+    +shard_index(&CacheKey) usize
+    +ttl_policy() &TtlPolicy
+    +capacity() &CacheCapacity
 }
 
 class Shard {
     -RwLock~ShardInner~ inner
-    +contains_key(CacheKey) bool
+    +contains_key(&CacheKey) bool
     +entry_count() usize
     +heap_bytes() HeapBytes
 }
@@ -466,7 +483,7 @@ class CacheCapacity {
 }
 
 class Eviction {
-    +evict(ShardInner, Instant, CacheCapacity) EvictionReport
+    +evict(mut ShardInner, Instant, CacheCapacity) EvictionReport
 }
 
 class EvictionReport {
@@ -486,6 +503,25 @@ class CacheStats {
     +HeapBytes bytes
 }
 
+class AtomicCacheCounters {
+    -AtomicU64 hits
+    -AtomicU64 misses
+    -AtomicU64 negative_hits
+    -AtomicU64 admitted
+    -AtomicU64 rejected_out_of_bailiwick
+    -AtomicU64 expired
+    -AtomicU64 evicted
+    +new() AtomicCacheCounters
+    +inc_hits()
+    +inc_misses()
+    +inc_negative_hits()
+    +inc_admitted(u64)
+    +inc_rejected_out_of_bailiwick(u64)
+    +inc_expired(u64)
+    +inc_evicted(u64)
+    +snapshot(usize, HeapBytes) CacheStats
+}
+
 class CacheError {
     <<enumeration>>
     TtlOverflow
@@ -494,11 +530,13 @@ class CacheError {
     MissingSoa
     ResponseAssembly
     ByteAccountingOverflow
+    InvalidTtlBounds
+    EmptyRRset
 }
 
 class Clock {
     <<interface>>
-    +now() Instant
+    +now_monotonic() Instant
 }
 
 CacheKey "1" --> "1" CanonicalName : qname
@@ -527,7 +565,8 @@ AnswerCache "1" --> "1" Lookup : returns
 ShardedAnswerCache "1" o-- "1..*" Shard : shards
 ShardedAnswerCache "1" --> "1" Clock : reads time from
 ShardedAnswerCache "1" --> "1" CacheCapacity : bounded by
-ShardedAnswerCache "1" --> "1" CacheStats : publishes
+ShardedAnswerCache "1" --> "1" AtomicCacheCounters : accumulates with
+AtomicCacheCounters "1" ..> "1" CacheStats : snapshots
 Shard "1" --> "1" ShardInner : guards
 ShardInner "1" o-- "0..*" CacheEntry : holds
 ShardInner "1" --> "1" HeapBytes : bytes
@@ -558,6 +597,9 @@ Eviction "1" --> "1" EvictionReport : reports
   `Indeterminate`/`None` in this phase. They exist now because Phase 6 hard-fails on bogus
   answers and would otherwise force either re-validation on every hit or a reshape of
   these types one phase later.
+- `AtomicCacheCounters` wraps the thread-safe `AtomicU64` counters used to track hits,
+  misses, negative hits, admissions, out-of-bailiwick rejections, expiries and evictions
+  across all shards, publishing atomic snapshots as `CacheStats` without locking.
 - `HeapBytes` wraps the byte-count arithmetic used for capacity accounting
   (`ShardInner::bytes`, `CacheCapacity::max_bytes`, `CacheStats::bytes`) behind a checked
   add and a saturating subtract, the same checked-and-saturating discipline `styx-proto`'s
@@ -748,19 +790,19 @@ styx-resolution/
         dnssec.rs          DnssecMetadata, SecurityStatus
         entry.rs           CacheEntry
         rrset.rs           RRset
-        positive_entry.rs  PositiveEntry, CachedRRset, CachedMessage
+        positive_entry.rs  PositiveEntry, CachedRRset, CachedMessage, MessageFlags
         negative_entry.rs  NegativeEntry, DenialKind
         ttl.rs             Deadline, TtlPolicy
         bytes.rs           HeapBytes
         bailiwick.rs       Bailiwick
         admission.rs       Admission, AdmissionOutcome, RejectedRecord,
                            RejectReason (AnswerSource imported from domain::answer)
-        port.rs            trait AnswerCache, Lookup
+        port.rs            trait AnswerCache, Lookup, AdmittedCount, PurgedCount
         capacity.rs        CacheCapacity
-        stats.rs           CacheStats
+        stats.rs           CacheStats, AtomicCacheCounters
         error.rs           CacheError (thiserror)
     application/
-      cache_stage.rs       the lookup → miss → resolve → admit flow
+      cache_stage.rs       the lookup → miss → resolve → admit flow, CacheStage
     infrastructure/
       cache/
         sharded.rs         ShardedAnswerCache, Shard, ShardInner
@@ -780,6 +822,10 @@ styx-resolution/
 6. `HeapBytes` (in `domain::cache::bytes`) is the one place byte-count arithmetic happens;
    `CacheEntry::heap_size`, `ShardInner::bytes`, `CacheCapacity::max_bytes` and
    `CacheStats::bytes` all carry it rather than a bare `usize`.
+7. `CacheStage` (in `application::cache_stage`) acts as the resolution pipeline's terminal
+   stage, implementing `TerminalHandler` for `Pipeline`.
+8. `AtomicCacheCounters` (in `domain::cache::stats`) tracks operations across shards with
+   relaxed atomic primitives, snapshotting into `CacheStats` without holding locks.
 
 ### Dependency direction
 
@@ -839,10 +885,15 @@ client query
 
 ### 1. Create `domain::cache::error` — `CacheError`
 
-1. **Definition**: a `thiserror` enum. Variants: `TtlOverflow`, `DeadlineInThePast`,
-   `UncacheableQuestion`, `MissingSoa`, `ResponseAssembly`, `ByteAccountingOverflow` (from
-   `HeapBytes::checked_add`, the one other manually accumulated counter in this
-   component), and `InvalidTtlBounds` (when configured `floor > ceiling`).
+1. **Definition**: a `thiserror` enum. Variants:
+   - `TtlOverflow` (`"TTL arithmetic overflowed"`)
+   - `DeadlineInThePast` (`"computed deadline is in the past"`)
+   - `UncacheableQuestion(styx_proto::RecordType)` (`"question has uncacheable record type: {0}"`)
+   - `MissingSoa` (`"denial response missing required SOA record"`)
+   - `ResponseAssembly(String)` (`"failed to assemble cached response: {0}"`)
+   - `ByteAccountingOverflow` (`"cache byte accounting overflowed"`)
+   - `InvalidTtlBounds { floor: u32, ceiling: u32 }` (`"TTL floor ({floor}s) exceeds ceiling ({ceiling}s)"`)
+   - `EmptyRRset` (`"RRset must contain at least one RDATA record"`)
 2. **Usage**: returned through `Result` from every fallible operation.
 3. **Constraints**: **no `CacheError` may ever fail a client query.** Every call site
    degrades to "treat it as a miss" or "do not admit this record", logs at `warn`, and
@@ -856,22 +907,23 @@ client query
 2. **`CanonicalName`**
    - Field (private): the underlying `styx-proto` name, stored with every label
      lowercased. Set only by `canonicalize`.
-   - `canonicalize(name) -> CanonicalName`: lowercase ASCII labels only (DNS name
+   - `canonicalize(name: &Name) -> CanonicalName`: lowercase ASCII labels only (DNS name
      comparison is case-insensitive; non-ASCII bytes are left untouched), normalise the
      root label so `example.com` and `example.com.` canonicalise identically.
-   - `is_subdomain_of(&self, other) -> bool`: true when `other` is the root, or when
-     `self`'s labels end with `other`'s labels, compared right-to-left. Returns true for
-     equality. Used by the bailiwick rule and nowhere else that matters.
+   - `is_subdomain_of(&self, other: &Self) -> bool`: true when `other` is the root, or
+     when `self`'s labels end with `other`'s labels, compared right-to-left. Returns true
+     for equality. Used by the bailiwick rule and nowhere else that matters.
    - `label_count(&self) -> usize`.
-   - `inner(&self) -> Name`: read accessor unwrapping the underlying `styx-proto` name,
-     used wherever an owner name is written back into an outgoing wire `Message`.
+   - `inner(&self) -> &Name`: read accessor borrowing the underlying `styx-proto` name.
+   - `into_inner(self) -> Name`: consumes self and unwraps the underlying `Name`, used
+     wherever an owner name is written back into an outgoing wire `Message`.
 3. **`CacheKey`**
    - Fields (private, set only by `from_question`): `qname: CanonicalName`,
      `qtype: RecordType`, `qclass: RecordClass`.
-   - `from_question(&Question) -> Result<CacheKey, CacheError>`: canonicalises the name;
-     returns `CacheError::UncacheableQuestion` for the meta-qtypes `ANY`, `AXFR`, `IXFR`,
-     `OPT`.
-   - `qname(&self) -> CanonicalName`, `qtype(&self) -> RecordType`,
+   - `from_question(question: &Question) -> Result<CacheKey, CacheError>`: canonicalises
+     the name; returns `CacheError::UncacheableQuestion(question.qtype)` for the
+     meta-qtypes `ANY`, `AXFR`, `IXFR`, `OPT`.
+   - `qname(&self) -> &CanonicalName`, `qtype(&self) -> RecordType`,
      `qclass(&self) -> RecordClass`: read accessors, used by `CachedMessage::to_response`
      and `NegativeEntry::to_response` to rebuild the outgoing `Question` section.
    - Derives `Eq`, `Hash`, `Clone`, `Debug`.
@@ -884,21 +936,26 @@ client query
 1. **Responsibility**: the single place in the component where TTL arithmetic happens.
 2. **`Deadline`**
    - Field (private): the absolute `Instant` at which the entry stops being fresh.
-   - `from_ttl(now, ttl) -> Result<Deadline, CacheError>`: checked addition; on overflow
-     returns `CacheError::TtlOverflow`.
-   - `remaining(&self, now) -> Result<Ttl, CacheError>`: checked subtraction; saturates at
-     zero rather than underflowing, and never panics near the expiry boundary.
-   - `has_expired(&self, now) -> bool`.
+   - `from_ttl(now: Instant, ttl: Ttl) -> Result<Deadline, CacheError>`: checked addition;
+     on overflow returns `CacheError::TtlOverflow`.
+   - `remaining(&self, now: Instant) -> Result<Ttl, CacheError>`: checked subtraction;
+     saturates at zero rather than underflowing, and never panics near the expiry boundary.
+   - `has_expired(&self, now: Instant) -> bool`.
+   - `at(&self) -> Instant`: read accessor returning the absolute expiration instant.
 3. **`TtlPolicy`**
    - Fields (private): `floor`, `ceiling`, `negative_ceiling`, all configurable.
+   - Default constants: `DEFAULT_TTL_FLOOR_SECS = 5`, `DEFAULT_TTL_CEILING_SECS = 86_400`,
+     `DEFAULT_NEGATIVE_TTL_CEILING_SECS = 300`, exposed through a `Default` implementation.
    - `new(floor: Ttl, ceiling: Ttl, negative_ceiling: Ttl) -> Result<Self, CacheError>`:
      validates `floor <= ceiling`; returns `CacheError::InvalidTtlBounds` on violation.
    - Accessors: `floor(&self) -> Ttl`, `ceiling(&self) -> Ttl`,
      `negative_ceiling(&self) -> Ttl`.
-   - `clamp(ttl) -> Ttl`.
-   - `effective_negative_ttl(soa) -> Result<Ttl, CacheError>`: the minimum of the SOA
-     record's own TTL and its `MINIMUM` field, per RFC 2308, then clamped by
-     `negative_ceiling`.
+   - `clamp(&self, ttl: Ttl) -> Ttl`.
+   - `effective_negative_ttl(&self, soa: &CachedRRset) -> Result<Ttl, CacheError>`: the
+     minimum of the SOA record's own TTL and its `MINIMUM` field, per RFC 2308, then
+     clamped by `negative_ceiling`.
+   - `effective_negative_ttl_raw(&self, soa_ttl: Ttl, soa_minimum: u32) -> Ttl`: helper
+     operating on unboxed SOA TTL and MINIMUM values.
 4. **Constraints**: **every** arithmetic operation here is checked —
    `arithmetic_side_effects = deny` applies workspace-wide and this module is where it
    bites. No operation in this module may panic for any input.
@@ -911,7 +968,8 @@ client query
    length.
 2. **`HeapBytes`**
    - Field (private): a `usize` count of estimated heap bytes.
-   - `new(usize) -> HeapBytes`.
+   - `new(octets: usize) -> HeapBytes`.
+   - `zero() -> HeapBytes`: returns zero bytes count.
    - `get(&self) -> usize`: read accessor.
    - `checked_add(&self, other: HeapBytes) -> Result<HeapBytes, CacheError>`: on overflow
      returns `CacheError::ByteAccountingOverflow` rather than wrapping to a huge value.
@@ -932,42 +990,58 @@ client query
    accumulate every entry-shaped type.
 2. **`dnssec.rs` and `entry.rs`**
    - **`SecurityStatus`**: `Indeterminate` / `Insecure` / `Secure` / `Bogus`.
-   - **`DnssecMetadata`**: enum (`Indeterminate`, `Insecure`, `Secure { signatures }`,
-     `Bogus { signatures }`) capturing cryptographic status and associated RRSIGs.
-     **In this phase every admitted entry is `Indeterminate`.** The type exists now
-     because Phase 6 — DNSSEC hard-fails on bogus answers, and bolting a verdict onto
-     these types one phase later would mean either re-validating on every cache hit or
-     reshaping the store.
-   - **`CacheEntry`**: the `Positive`/`Negative` enum, with `deadline()`,
-     `is_fresh(now)` and `heap_size() -> HeapBytes` for capacity accounting.
+   - **`DnssecMetadata`**: enum (`Indeterminate`, `Insecure`,
+     `Secure { signatures: Vec<RrsigRdata> }`, `Bogus { signatures: Vec<RrsigRdata> }`)
+     capturing cryptographic status and associated RRSIGs (`styx_proto::RrsigRdata`).
+     **In this phase every admitted entry is `Indeterminate`.** Accessors:
+     `status(&self) -> SecurityStatus`, `signatures(&self) -> Option<&[RrsigRdata]>`,
+     `is_secure(&self) -> bool`, `heap_size(&self) -> HeapBytes`.
+   - **`CacheEntry`**: the `Positive(PositiveEntry)` / `Negative(NegativeEntry)` enum, with
+     `deadline(&self) -> Deadline`, `is_fresh(&self, now: Instant) -> bool`,
+     `heap_size(&self) -> HeapBytes`, and
+     `to_response(&self, key: &CacheKey, now: Instant) -> Result<Message, CacheError>`
+     synthesizing an outgoing DNS wire `Message`.
 3. **`rrset.rs` and `positive_entry.rs`**
    - **`RRset`**: DNS Resource Record Set sharing canonical owner, type, class, and
-     deduplicated non-empty RDATA collection. Enforces `!rdata.is_empty()` returning
-     `Result<Self, CacheError::EmptyRRset>`. Converts to wire `ResourceRecord` items
-     via `to_resource_records(ttl)`.
+     deduplicated non-empty RDATA collection (`styx_proto::RData`). Enforces
+     `!rdata.is_empty()` returning `Result<Self, CacheError::EmptyRRset>`. Filters
+     duplicate RDATA preserving first-seen order. Accessors: `owner(&self) -> &CanonicalName`,
+     `rtype(&self) -> RecordType`, `rclass(&self) -> RecordClass`, `rdata(&self) -> &[RData]`.
+     Converts to wire `ResourceRecord` items via `to_resource_records(&self, ttl: Ttl) -> Vec<ResourceRecord>`.
+     `heap_size(&self) -> HeapBytes`.
    - **`CachedRRset`**: Caching envelope pairing an `RRset` with its `original_ttl`,
      `deadline`, and `dnssec` (`DnssecMetadata`) (all fields private). Constructed via
      `new(rrset, original_ttl, deadline)` or `with_dnssec(...)`, with read accessors
-     `rrset()`, `owner()`, `rtype()`, `rclass()`, `rdata()`, `original_ttl()`,
-     `deadline()`, `dnssec()`, `security()`, `signatures()`. `remaining_ttl(now)`
-     delegates to `Deadline::remaining`.
-   - **`CachedMessage`**: RCODE, flags, and the answer/authority/additional sections as
-     `CachedRRset` vectors, with the entry `Deadline` being the earliest deadline among
-     them (all fields private). Constructed via `new(...)` with read accessors
-     `rcode()`, `flags()`, `answer()`, `authority()`, `additional()`, `deadline()`.
-     `to_response(key, now)` rebuilds a `Message` with every TTL recomputed from `now`.
-     *This is the shape used where an answer does not reduce to one RRset of the
-     queried type — a CNAME chain, or a referral-shaped response arriving on a
-     forwarding path.*
-   - **`PositiveEntry`**: the `RRset`/`Message` enum wrapping the two shapes above.
+     `rrset(&self) -> &RRset`, `owner(&self) -> &CanonicalName`, `rtype(&self) -> RecordType`,
+     `rclass(&self) -> RecordClass`, `rdata(&self) -> &[RData]`, `original_ttl(&self) -> Ttl`,
+     `deadline(&self) -> Deadline`, `dnssec(&self) -> &DnssecMetadata`,
+     `security(&self) -> SecurityStatus`, `signatures(&self) -> Option<&[RrsigRdata]>`.
+     `remaining_ttl(&self, now: Instant) -> Result<Ttl, CacheError>` delegates to
+     `Deadline::remaining`. `to_resource_records(&self, now: Instant)` computes wire
+     records with remaining TTLs. `heap_size(&self) -> HeapBytes`.
+   - **`MessageFlags`**: Preserved header flags (`pub authoritative: bool`,
+     `pub authentic_data: bool`).
+   - **`CachedMessage`**: RCODE, flags (`MessageFlags`), and the answer/authority/additional
+     sections as `CachedRRset` vectors, with the entry `Deadline` being the earliest
+     deadline among them (all fields private). Constructed via `new(...)` with read
+     accessors `rcode(&self) -> ResponseCode`, `flags(&self) -> MessageFlags`,
+     `answer(&self) -> &[CachedRRset]`, `authority(&self) -> &[CachedRRset]`,
+     `additional(&self) -> &[CachedRRset]`, `deadline(&self) -> Deadline`.
+     `to_response(&self, key: &CacheKey, now: Instant) -> Result<Message, CacheError>`
+     rebuilds a `Message` with every TTL recomputed from `now`.
+   - **`PositiveEntry`**: the `RRset`/`Message` enum wrapping the two shapes above,
+     providing `deadline(&self) -> Deadline`, `heap_size(&self) -> HeapBytes`, and
+     `to_response(&self, key: &CacheKey, now: Instant) -> Result<Message, CacheError>`.
 4. **`negative_entry.rs`**
    - **`NegativeEntry`**: `DenialKind` (`NxDomain` or `NoData`), the SOA that justified
      and timed it, the `Deadline`, and `dnssec` (`DnssecMetadata`) (all fields
      private). Constructed via `new(kind, soa, deadline, dnssec)` with read accessors
-     `kind()`, `soa()`, `deadline()`, `dnssec()`, `security()`.
-     `to_response(key, now)` produces the correct RCODE for the kind — NXDOMAIN for
-     `NxDomain`, NOERROR with an empty answer section for `NoData` — with the SOA in
-     the authority section and its TTL recomputed.
+     `kind(&self) -> DenialKind`, `soa(&self) -> &CachedRRset`, `deadline(&self) -> Deadline`,
+     `dnssec(&self) -> &DnssecMetadata`, `security(&self) -> SecurityStatus`.
+     `to_response(&self, key: &CacheKey, now: Instant) -> Result<Message, CacheError>`
+     produces the correct RCODE for the kind — NXDOMAIN for `NxDomain`, NOERROR with an
+     empty answer section for `NoData` — with the SOA in the authority section and its
+     TTL recomputed.
    - **`DenialKind`**: `NxDomain` / `NoData`.
 5. **Constraints**: entries are immutable once admitted; a change means a fresh
    admission.
@@ -976,10 +1050,14 @@ client query
 
 1. **Responsibility**: the security boundary. Decide which zone a responder is entitled to
    teach the cache about, and whether a given owner name falls inside it.
-2. **`of_response(question, message) -> Bailiwick`**: derive the zone of authority from
-   the question and the response's authority section — the SOA owner when present,
-   otherwise the deepest NS owner at or above the qname, otherwise the qname itself.
-3. **`permits(&self, owner) -> bool`**: `owner.is_subdomain_of(&self.zone)`.
+2. **`Bailiwick` constructors and accessors**:
+   - `new(zone: CanonicalName) -> Self`: constructs a bailiwick for the given zone.
+   - `zone(&self) -> &CanonicalName`: read accessor for the authoritative zone.
+   - `of_response(question: &Question, message: &Message) -> Bailiwick`: derive the zone
+     of authority from the question and the response's authority section — the SOA owner
+     when present, otherwise the deepest NS owner at or above the qname, otherwise the
+     qname itself.
+3. **`permits(&self, owner: &CanonicalName) -> bool`**: `owner.is_subdomain_of(&self.zone)`.
 4. **Section rules**, applied by `Admission` and documented on this type:
    - **Answer**: the owner is the qname, or is reached from the qname by a CNAME/DNAME
      chain whose every link is itself permitted.
@@ -999,9 +1077,9 @@ client query
    - Refuse outright when `source` is `AnswerSource::LocalRecord` or
      `AnswerSource::Blocked` → every record rejected with
      `RejectReason::ForgedAnswer`. The test is the private helper
-     `is_forged_source(source: AnswerSource) -> bool`. It is private so that no caller
-     can run it *instead of* `evaluate`: the check lives on the only path into the
-     store.
+     `check_source_eligibility(&self, source: AnswerSource) -> Option<RejectReason>`.
+     It is private so that no caller can run it *instead of* `evaluate`: the check lives
+     on the only path into the store.
    - Refuse outright when `source` is `AnswerSource::CacheHit` or `AnswerSource::Error`
      → every record rejected with `RejectReason::InadmissibleSource`. Only `Upstream` and
      `Recursion` proceed. The match is exhaustive, with no wildcard arm, so a variant
@@ -1010,32 +1088,36 @@ client query
      the cache is global, so a cached forgery would be served to clients in groups where
      the block does not apply; and blocked replies carry a deliberately short TTL so
      unblocking takes effect quickly, which caching would defeat.
-   - Group records into RRsets by `(owner, type, class)`.
-   - Apply the per-section bailiwick rule; out-of-bailiwick RRsets go to `rejected` with
+   - Group records into RRsets by `(owner, type, class)` using `group_records` and
+     `merge_record_into_group`.
+   - Apply the per-section bailiwick rule via `admit_answers`, `admit_authorities`,
+     `admit_additionals`; out-of-bailiwick RRsets go to `rejected` with
      `RejectReason::OutOfBailiwick`. **Partial admission**: the in-bailiwick parts of a
      mixed-validity response are still admitted.
    - Reject TTL-zero RRsets with `RejectReason::ZeroTtl` — served once, never stored.
-   - Clamp surviving TTLs via `TtlPolicy` and compute each `Deadline` from `now`.
+   - Clamp surviving TTLs via `TtlPolicy` and compute each `Deadline` from `now` using
+     `to_cached_rrset`.
    - For a denial (NXDOMAIN, or NOERROR with an empty answer section), build a
-     `NegativeEntry` with the kind and the SOA-derived lifetime; with no SOA present,
-     reject with `RejectReason::NoSoaInDenial` and cache nothing.
+     `NegativeEntry` with the kind and the SOA-derived lifetime via `evaluate_denial`;
+     with no SOA present, reject with `RejectReason::NoSoaInDenial` and cache nothing.
    - Decide RRset-vs-message shape: an answer that reduces to one RRset of the queried
      type becomes a `CachedRRset`; anything else — a CNAME chain, a referral-shaped
      response — becomes a `CachedMessage`.
 3. **`AdmissionOutcome`**: the admitted entries and the rejected records with reasons. The
    rejection list is not decoration: it drives the `rejected_out_of_bailiwick` counter and
    is what the store-introspection tests assert against.
-4. **Constraints**: `Admission` is the **only** path into the store. The `AnswerCache`
+4. **`Admission` accessors**: `ttl(&self) -> &TtlPolicy`.
+5. **Constraints**: `Admission` is the **only** path into the store. The `AnswerCache`
    trait accepts an `AdmissionOutcome`, never a raw `Message`, so there is no way to
    insert unvetted data.
-5. **Shape constraint** *(amendment, 2026-09-24)*: `evaluate` is a thin composition of
-   named, guard-claused helpers — one each for forged-source refusal, per-section
-   bailiwick admission (answer, authority, additional), TTL-zero rejection, TTL clamping
-   plus deadline computation, negative-entry construction, and RRset-vs-message shape
-   selection — rather than one function holding every step inline. Each helper returns
-   early on its own reject reason instead of nesting the next step inside its success
-   branch. This is what keeps the security-critical path clear of both `excessive_nesting`
-   (threshold 4) and `too_many_lines` (threshold 60), per Phase 0 Approach §10.
+6. **Shape constraint** *(amendment, 2026-09-24)*: `evaluate` is a thin composition of
+   named, guard-claused helpers — `check_source_eligibility`, `reject_all_records`,
+   `evaluate_denial`, `evaluate_positive`, `admit_answers`, `admit_authorities`,
+   `admit_additionals`, and `to_cached_rrset` — rather than one function holding every
+   step inline. Each helper returns early on its own reject reason instead of nesting the
+   next step inside its success branch. This is what keeps the security-critical path clear
+   of both `excessive_nesting` (threshold 4) and `too_many_lines` (threshold 60), per
+   Phase 0 Approach §10.
 
 ### 8. Create `domain::cache::port`, `capacity`, `stats` — the `AnswerCache` trait
 
@@ -1043,28 +1125,36 @@ client query
    the pipeline and Phase 5's adapter both depend on a trait — split by concept into
    `port.rs` (the trait and its lookup result), `capacity.rs` (the bound it is checked
    against) and `stats.rs` (what it reports), rather than one file collecting all four.
-2. **`port.rs`** — trait `AnswerCache` and `Lookup`
-   - `lookup(&self, key: &CacheKey) -> Lookup` — `Hit(entry)` only when fresh against the
-     `Clock`; `Expired` when an entry was found but is stale (it is removed as a side
-     effect); `Miss` otherwise.
-   - `admit(&self, key: &CacheKey, outcome: AdmissionOutcome) -> Result<AdmittedCount, CacheError>`
-     — returns how many entries were stored wrapped in semantic `AdmittedCount`.
-   - `purge_all(&self) -> PurgedCount` — the seam the Phase 11 — Web UI "flush cache"
-     action will use, returning `PurgedCount`. Present now so it is not retrofitted
-     through a lock-free hot-path structure later.
-   - `stats(&self) -> CacheStats`.
+2. **`port.rs`** — trait `AnswerCache`, `Lookup`, `AdmittedCount`, `PurgedCount`
+   - `Lookup`: enum (`Hit(CacheEntry)`, `Miss`, `Expired`).
+   - `AdmittedCount(usize)` and `PurgedCount(usize)`: tuple newtypes providing `new(count: usize) -> Self`,
+     `count(self) -> usize`, `as_usize(self) -> usize`, and `Display`.
+   - `AnswerCache`: trait defining:
+     - `lookup(&self, key: &CacheKey) -> Lookup` — `Hit(entry)` only when fresh against the
+       `Clock`; `Expired` when an entry was found but is stale (it is removed as a side
+       effect); `Miss` otherwise.
+     - `admit(&self, key: &CacheKey, outcome: AdmissionOutcome) -> Result<AdmittedCount, CacheError>`
+       — returns how many entries were stored wrapped in semantic `AdmittedCount`.
+     - `purge_all(&self) -> PurgedCount` — the seam the Phase 11 — Web UI "flush cache"
+       action will use, returning `PurgedCount`. Present now so it is not retrofitted
+       through a lock-free hot-path structure later.
+     - `stats(&self) -> CacheStats`.
 3. **`capacity.rs`** — **`CacheCapacity`**: `max_entries: usize`, `max_bytes: HeapBytes`
    (both fields private), with accessors `max_entries(&self) -> usize` and
-   `max_bytes(&self) -> HeapBytes`, and `needs_eviction(entries: usize, bytes: HeapBytes) -> bool`.
-   `max_entries` stays a bare `usize` — it is only ever compared, never accumulated by
-   hand, so no arithmetic rule attaches to it; `max_bytes` shares `HeapBytes` with the
-   counter it bounds.
-4. **`stats.rs`** — **`CacheStats`**: `hits`, `misses`, `negative_hits`, `admitted`,
-   `rejected_out_of_bailiwick`, `expired`, `evicted` as plain `u64` counters — accumulated
-   by an atomic `fetch_add` over the life of the process, with no validated range or
-   meaningful overflow risk to guard — plus `entries: usize` and `bytes: HeapBytes`, the
-   latter sharing the same type as `ShardInner::bytes` so a byte count is never reported as
-   a bare integer at the one point it becomes externally visible.
+   `max_bytes(&self) -> HeapBytes`, and `needs_eviction(&self, entries: usize, bytes: HeapBytes) -> bool`.
+   Default constants: `DEFAULT_MAX_ENTRIES: usize = 10_000`, `DEFAULT_MAX_BYTES: usize = 20 * 1024 * 1024`
+   (20 MiB), exposed via `Default`. `max_entries` stays a bare `usize` — it is only ever
+   compared, never accumulated by hand, so no arithmetic rule attaches to it; `max_bytes`
+   shares `HeapBytes` with the counter it bounds.
+4. **`stats.rs`** — **`CacheStats`** and **`AtomicCacheCounters`**:
+   - `CacheStats`: `hits: u64`, `misses: u64`, `negative_hits: u64`, `admitted: u64`,
+     `rejected_out_of_bailiwick: u64`, `expired: u64`, `evicted: u64`, `entries: usize`,
+     `bytes: HeapBytes`.
+   - `AtomicCacheCounters`: holds atomic counters (`AtomicU64`) updated with relaxed
+     ordering: `inc_hits()`, `inc_misses()`, `inc_negative_hits()`, `inc_admitted(u64)`,
+     `inc_rejected_out_of_bailiwick(u64)`, `inc_expired(u64)`, `inc_evicted(u64)`.
+     `snapshot(&self, entries: usize, bytes: HeapBytes) -> CacheStats` creates point-in-time
+     reports without acquiring shard locks.
 5. **Constraints**: `AnswerCache` is `Send + Sync`, no `async` — the store is synchronous
    and no lock is held across an `await`. Consumers use static dispatch (`<A: AnswerCache>`,
    `impl AnswerCache`).
@@ -1073,24 +1163,31 @@ client query
 
 1. **Responsibility**: the concurrent, bounded, memory-only store.
 2. **`Shard` and `ShardInner`**: `Shard` encapsulates `RwLock<ShardInner>` with safe
-   introspection methods `contains_key(&self, &CacheKey) -> bool`,
+   introspection methods `contains_key(&self, key: &CacheKey) -> bool`,
    `entry_count(&self) -> usize`, and `heap_bytes(&self) -> HeapBytes` for tests and
    metrics without exposing lock guards. `ShardInner` is crate-private (`pub(crate)`)
-   holding `map`, `recency`, and `bytes`.
+   holding `map: HashMap<CacheKey, CacheEntry>`, `recency: VecDeque<CacheKey>`, and
+   `bytes: HeapBytes`.
 3. **Construction**: `new(clock: Arc<C>, capacity: CacheCapacity, ttl: TtlPolicy,
-   shard_count: usize)` where `C: Clock`. One instance per process, shared by `Arc`.
-4. **`shard_for(key)`**: hash the key, index into the shard vector. Uses checked indexing
-   — `indexing_slicing = deny`.
-5. **`lookup`**: read-lock the shard, look up, read `Clock::now()` once, check freshness;
-   on a stale entry upgrade to a write lock, remove it, count an expiry, return `Expired`.
-   Bump recency on a hit. Increment hit/miss/negative-hit counters.
+   shard_count: usize)` where `C: Clock`. `with_defaults(clock: Arc<C>)` constructs a
+   default instance with `DEFAULT_SHARDS = 32`.
+4. **Accessors and indexing**:
+   - `shard_count(&self) -> usize`.
+   - `shard(&self, index: usize) -> Option<&Shard>`.
+   - `shard_index(&self, key: &CacheKey) -> usize`: hash the key, checked modulo over shard
+     length. Uses checked indexing (`indexing_slicing = deny`).
+   - `ttl_policy(&self) -> &TtlPolicy`, `capacity(&self) -> &CacheCapacity`.
+5. **`lookup`**: read-lock the shard, look up, read `Clock::now_monotonic()` once, check
+   freshness; on a stale entry upgrade to write lock, remove it, count an expiry, return
+   `Expired`. Bump recency on a hit. Increment hit/miss/negative-hit counters via
+   `AtomicCacheCounters`.
 6. **`admit`**: write-lock the shard, insert the admitted entries, fold each entry's
    `heap_size()` into `ShardInner::bytes` via `HeapBytes::checked_add` — the resulting
    `CacheError::ByteAccountingOverflow`, like every `CacheError`, degrades to "not
    admitted" rather than failing the query — then call `Eviction::evict` if the capacity
    bound is exceeded.
-7. **`purge_all`**: clear every shard, return the count removed.
-8. **`stats`**: snapshot the atomic counters plus current entries and bytes.
+7. **`purge_all`**: clear every shard, return `PurgedCount` removed.
+8. **`stats`**: snapshot `AtomicCacheCounters` plus current total entries and bytes.
 9. **Instrumentation**: `tracing` spans on `lookup` and `admit`; a `warn`-level event
    whenever a record is rejected as out of bailiwick, because that is either a broken
    upstream or an attack and either way somebody should be able to see it.
@@ -1101,38 +1198,44 @@ client query
 ### 10. Create `infrastructure::cache::eviction` — `Eviction`
 
 1. **Responsibility**: keep the store inside its bound, doing bounded work per call.
-2. **`evict(inner, now, capacity) -> EvictionReport`**
-   - **First pass**: reclaim entries already expired against `now`. Free memory, no useful
-     data lost.
+2. **`evict(shard: &mut ShardInner, now: Instant, capacity: CacheCapacity) -> EvictionReport`**
+   - **First pass**: sweep and reclaim entries already expired against `now`. Free memory,
+     no useful data lost.
    - **Second pass**, only if still over the bound: evict least-recently-used *fresh*
      entries until the store is back under both the entry-count and byte bounds.
    - Each removal, in either pass, shrinks `ShardInner::bytes` via
      `HeapBytes::saturating_sub` — eviction only ever removes what was accounted for, so a
      saturating subtract is the right primitive and it never panics.
-   - Return counts of each, so the two are separately observable — **expiry and eviction
-     are different events and the exit criteria name them separately.**
+   - Return counts of each as `EvictionReport { expired_reclaimed: usize, evicted_fresh: usize }`,
+     so the two are separately observable — **expiry and eviction are different events and
+     the exit criteria name them separately.**
 3. **Constraints**: bounded work per invocation; no unbounded scan on the hot path.
 
 ### 11. Create `application::cache_stage` — the pipeline stage
 
 1. **Responsibility**: wire the cache into the fixed order
    `local records → filter → cache → upstream`.
-2. **Flow**
-   - Build the `CacheKey` from the question; on `UncacheableQuestion`, skip the cache
-     entirely in both directions and go straight to the pool.
-   - `lookup`. On `Hit`, assemble the response with recomputed TTLs and return, reporting
-     `AnswerSource::CacheHit` in the `ResolutionOutcome`.
-   - On `Miss` or `Expired`, resolve through the Phase 3 `Upstream` pool.
-   - Map the response's `kind` to its provenance — `UpstreamKind::Forwarder` →
-     `AnswerSource::Upstream`, `UpstreamKind::Recursor` → `AnswerSource::Recursion` —
-     with an exhaustive match. Derive the `Bailiwick` from the question and the response,
-     run `Admission::evaluate` with that source, `admit`, and report the same source in
-     the `ResolutionOutcome`.
-   - Return the response; group-policy filtering (Phase 8) is applied over it on the way
-     out.
-3. **Outcome emission**: report hit / miss / negative-hit into the query-log observer hook
+2. **Structure**: `CacheStage<A, S, U, C>` generic over `<A: AnswerCache, S: SelectionStrategy, U: Upstream + Clone + 'static, C: Clock>`,
+   holding `cache: Arc<A>`, `pool: Arc<UpstreamPool<S, U, C>>`, `admission: Admission`,
+   and `clock: Arc<C>`.
+   - `new(cache, pool, clock) -> Self`: constructs stage with default TTL admission policy.
+   - `with_admission(cache, pool, admission, clock) -> Self`: custom admission policy.
+   - `cache(&self) -> &Arc<A>`, `pool(&self) -> &Arc<UpstreamPool<S, U, C>>`.
+3. **Pipeline execution**: implements `TerminalHandler` with
+   `handle_terminal(&self, ctx: &RequestContext) -> Result<ResolutionResponse, PipelineError>`.
+   - Build `CacheKey` from `ctx.query.questions.first()`; on `CacheError::UncacheableQuestion`,
+     skip the cache entirely and resolve uncacheable response via `self.pool.resolve`.
+   - `lookup`. On `Lookup::Hit(entry)`, assemble response with recomputed remaining TTLs
+     via `entry.to_response`, set query ID, and return `ResolutionOutcome::Resolved` with
+     `ResolvedSource::CacheHit`.
+   - On `Lookup::Miss` or `Lookup::Expired`, resolve through `self.pool.resolve(question)`.
+   - Map upstream kind to `AnswerSource` (`Forwarder` → `Upstream`, `Recursor` → `Recursion`),
+     derive `Bailiwick::of_response`, evaluate admission via `self.admission.evaluate`,
+     `self.cache.admit(key, admission_outcome)`, set query ID, and return `ResolutionOutcome::Resolved`
+     with `ResolvedSource::Upstream` or `ResolvedSource::Recursion`.
+4. **Outcome emission**: report hit / miss / negative-hit into the query-log observer hook
    declared in Phase 2, so Phase 10's pipeline gets the data with no hot-path rewrite.
-4. **Constraints**: this stage never calls `LocalRecords` or `FilterPolicy` itself — they
+5. **Constraints**: this stage never calls `LocalRecords` or `FilterPolicy` itself — they
    run before it, by the fixed pipeline order, and that order is a correctness property.
 
 ### 12. Create the test suites
@@ -1222,7 +1325,8 @@ client query
     examples. Furthermore, `TtlPolicy`, `RRset`, `CachedRRset`, `CachedMessage`,
     `NegativeEntry`, and `CacheCapacity` enforce invariant preservation by keeping all fields
     private behind constructors and read accessors, eliminating multiple responsibilities
-    and `too_many_arguments` smells.
+    and `too_many_arguments` smells. `MessageFlags` encapsulates header flags, and
+    `AtomicCacheCounters` wraps atomics behind self-documenting update methods.
     `CacheStats`'s plain `u64` hit/miss/eviction counters stay bare integers deliberately:
     they carry no domain rule beyond straightforward counting, and wrapping them would be
     ceremony with no behaviour behind it.
@@ -1302,7 +1406,7 @@ And the phase scope, verbatim:
   Approach §10)*: `[[restrict-use]]` rules ban synchronous I/O in `domain`/`application`
   and `anyhow` in this library crate, backing Norms 3 and 6 mechanically rather than by
   convention alone — `CacheError` stays a `thiserror` enum end to end. `evaluate`
-  (Operation 6) is decomposed into guard-claused helpers so the bailiwick logic — the
+  (Operation 7) is decomposed into guard-claused helpers so the bailiwick logic — the
   component's security boundary — clears `excessive_nesting` and `too_many_lines` rather
   than accreting into one function. `HeapBytes`, `Deadline`, `CanonicalName`, `CacheKey`,
   `Bailiwick` and `ShardedAnswerCache` keep every field private behind their
