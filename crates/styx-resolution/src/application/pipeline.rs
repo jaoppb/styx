@@ -74,7 +74,7 @@ where
     ///
     /// # Errors
     /// Returns [`PipelineError`] mapped to DNS RCODEs on validation or resolution failure.
-    pub fn handle(&self, ctx: RequestContext) -> Result<Message, PipelineError> {
+    pub async fn handle(&self, ctx: RequestContext) -> Result<Message, PipelineError> {
         let question = match self.validate_input(&ctx.query) {
             Ok(q) => q.clone(),
             Err(err) => return self.handle_error(&ctx, err),
@@ -92,7 +92,7 @@ where
             return Ok(forged.into_response());
         }
 
-        self.run_terminal(&ctx, &question)
+        self.run_terminal(&ctx, &question).await
     }
 
     fn validate_input<'a>(&self, query: &'a Message) -> Result<&'a Question, PipelineError> {
@@ -142,16 +142,14 @@ where
         }
     }
 
-    fn run_terminal(
+    async fn run_terminal(
         &self,
         ctx: &RequestContext,
         question: &Question,
     ) -> Result<Message, PipelineError> {
-        match self.terminal.handle_terminal(ctx) {
-            Ok(message) => {
-                let outcome = ResolutionOutcome::Error {
-                    rcode: message.header.rcode,
-                };
+        match self.terminal.handle_terminal(ctx).await {
+            Ok(terminal_response) => {
+                let (message, outcome) = terminal_response.into_parts();
                 self.record_telemetry(ctx, question, &outcome);
                 Ok(message)
             }

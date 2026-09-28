@@ -72,7 +72,27 @@ where
         observer: Arc<O>,
         terminal: Arc<T>,
     ) -> Result<TestServer<L, F, O, TestClock, T>, HarnessError> {
-        let clock = Arc::new(TestClock::new());
+        Self::boot_with_terminal_and_clock(
+            local_records,
+            filter,
+            observer,
+            terminal,
+            Arc::new(TestClock::new()),
+        )
+        .await
+    }
+
+    /// Boots an ephemeral server with custom collaborators, a custom terminal, and a shared clock.
+    ///
+    /// # Errors
+    /// Returns [`HarnessError`] if binding fails.
+    pub async fn boot_with_terminal_and_clock<T: TerminalHandler + Send + Sync + 'static>(
+        local_records: Arc<L>,
+        filter: Arc<F>,
+        observer: Arc<O>,
+        terminal: Arc<T>,
+        clock: Arc<TestClock>,
+    ) -> Result<TestServer<L, F, O, TestClock, T>, HarnessError> {
         let pipeline =
             Pipeline::new(local_records, filter, observer, clock.clone()).with_terminal(terminal);
 

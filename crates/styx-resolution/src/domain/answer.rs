@@ -236,3 +236,36 @@ impl ForgedAnswer {
         self.message
     }
 }
+
+/// A completed DNS resolution response paired with its audit outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionResponse {
+    message: Message,
+    outcome: ResolutionOutcome,
+}
+
+impl ResolutionResponse {
+    /// Creates a new `ResolutionResponse`.
+    #[must_use]
+    pub const fn new(message: Message, outcome: ResolutionOutcome) -> Self {
+        Self { message, outcome }
+    }
+
+    /// Returns a reference to the wire message.
+    #[must_use]
+    pub const fn message(&self) -> &Message {
+        &self.message
+    }
+
+    /// Returns a reference to the resolution outcome.
+    #[must_use]
+    pub const fn outcome(&self) -> &ResolutionOutcome {
+        &self.outcome
+    }
+
+    /// Decomposes the response into its wire message and outcome.
+    #[must_use]
+    pub fn into_parts(self) -> (Message, ResolutionOutcome) {
+        (self.message, self.outcome)
+    }
+}

@@ -1,21 +1,23 @@
 //! Configurable terminal stage for the resolution pipeline.
 
+use std::future::Future;
+
 use styx_proto::{Message, ResponseCode};
 
+use crate::domain::answer::{ResolutionOutcome, ResolutionResponse};
 use crate::domain::error::PipelineError;
 use crate::domain::request::RequestContext;
 
-/// Trait for handling queries that reach the end of the Phase 2 pipeline.
-///
-/// In Phase 2, there is no upstream forwarding (Phase 3) or cache (Phase 4).
-/// This terminal provides the default response behavior (REFUSED) or
-/// test-injected responses.
+/// Trait for handling queries that reach the end of the resolution pipeline.
 pub trait TerminalHandler: Send + Sync + 'static {
-    /// Produces a DNS response for queries reaching the end of the pipeline.
+    /// Produces a DNS response and resolution outcome for queries reaching the end of the pipeline.
     ///
     /// # Errors
     /// Returns [`PipelineError`] if the query cannot be processed.
-    fn handle_terminal(&self, ctx: &RequestContext) -> Result<Message, PipelineError>;
+    fn handle_terminal(
+        &self,
+        ctx: &RequestContext,
+    ) -> impl Future<Output = Result<ResolutionResponse, PipelineError>> + Send;
 }
 
 /// Default terminal implementation returning REFUSED with echoed questions.
@@ -31,7 +33,10 @@ impl RefusedTerminal {
 }
 
 impl TerminalHandler for RefusedTerminal {
-    fn handle_terminal(&self, ctx: &RequestContext) -> Result<Message, PipelineError> {
+    async fn handle_terminal(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<ResolutionResponse, PipelineError> {
         let question = ctx
             .query
             .questions
@@ -50,6 +55,10 @@ impl TerminalHandler for RefusedTerminal {
             response.opt = Some(resp_opt);
         }
 
-        Ok(response)
+        let outcome = ResolutionOutcome::Error {
+            rcode: ResponseCode::REFUSED,
+        };
+
+        Ok(ResolutionResponse::new(response, outcome))
     }
 }

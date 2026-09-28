@@ -29,6 +29,10 @@ pub enum PipelineError {
     #[error("internal server error: {0}")]
     Internal(String),
 
+    /// Upstream pool resolution failure.
+    #[error("upstream resolution pool error: {0}")]
+    Pool(#[from] crate::domain::error::PoolError),
+
     /// The query cannot be resolved in the current phase (phase 2 stub terminal).
     #[error("query not resolvable")]
     NotResolvable,
@@ -44,7 +48,7 @@ impl PipelineError {
         match self {
             Self::MalformedQuery | Self::MultipleQuestions => ResponseCode::FORMERR,
             Self::UnsupportedOpcode(_) | Self::UnsupportedClass(_) => ResponseCode::NOTIMP,
-            Self::Internal(_) => ResponseCode::SERVFAIL,
+            Self::Internal(_) | Self::Pool(_) => ResponseCode::SERVFAIL,
             Self::NotResolvable => ResponseCode::REFUSED,
         }
     }

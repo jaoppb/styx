@@ -20,7 +20,7 @@ pub enum FailureClass {
 }
 
 /// Errors that can occur when resolving a query against an upstream.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum UpstreamError {
     /// Resolution timed out before the deadline.
     #[error("upstream query timed out")]
@@ -85,7 +85,7 @@ impl UpstreamError {
 }
 
 /// Errors returned by the upstream pool dispatcher.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum PoolError {
     /// All configured upstreams in the pool are currently down / unavailable.
     #[error("all upstreams in pool are unavailable")]

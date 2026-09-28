@@ -116,7 +116,7 @@ where
         let max_size = RequestContext::derive_max_response_size(Transport::Udp, &query);
         let ctx = RequestContext::new(query, client, Transport::Udp, max_size, received_at);
 
-        match self.pipeline.handle(ctx.clone()) {
+        match self.pipeline.handle(ctx.clone()).await {
             Ok(resp) => {
                 if let Err(err) = self.send_message(resp, &ctx, peer).await {
                     tracing::debug!(%peer, %err, "failed to send UDP response");

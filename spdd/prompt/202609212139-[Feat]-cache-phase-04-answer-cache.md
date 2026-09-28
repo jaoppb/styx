@@ -234,34 +234,89 @@ class PositiveEntry {
     Message(CachedMessage)
 }
 
+class RRset {
+    -CanonicalName owner
+    -RecordType rtype
+    -RecordClass rclass
+    -Vec~Rdata~ rdata
+    +new(CanonicalName, RecordType, RecordClass, Vec~Rdata~) Result~RRset, CacheError~
+    +owner() CanonicalName
+    +rtype() RecordType
+    +rclass() RecordClass
+    +rdata() Vec~Rdata~
+    +to_resource_records(Ttl) Vec~ResourceRecord~
+    +heap_size() HeapBytes
+}
+
 class CachedRRset {
-    +CanonicalName owner
-    +RecordType rtype
-    +RecordClass rclass
-    +Vec~Rdata~ rdata
-    +Ttl original_ttl
-    +Deadline deadline
-    +SecurityStatus security
-    +Option~Vec~Rrsig~~ signatures
+    -RRset rrset
+    -Ttl original_ttl
+    -Deadline deadline
+    -DnssecMetadata dnssec
+    +new(RRset, Ttl, Deadline) CachedRRset
+    +with_dnssec(RRset, Ttl, Deadline, DnssecMetadata) CachedRRset
+    +rrset() RRset
+    +owner() CanonicalName
+    +rtype() RecordType
+    +rclass() RecordClass
+    +rdata() Vec~Rdata~
+    +original_ttl() Ttl
+    +deadline() Deadline
+    +dnssec() DnssecMetadata
+    +security() SecurityStatus
+    +signatures() Option~Vec~Rrsig~~
     +remaining_ttl(Instant) Result~Ttl, CacheError~
+    +to_resource_records(Instant) Result~Vec~ResourceRecord~, CacheError~
+    +heap_size() HeapBytes
 }
 
 class CachedMessage {
-    +ResponseCode rcode
-    +MessageFlags flags
-    +Vec~CachedRRset~ answer
-    +Vec~CachedRRset~ authority
-    +Vec~CachedRRset~ additional
-    +Deadline deadline
+    -ResponseCode rcode
+    -MessageFlags flags
+    -Vec~CachedRRset~ answer
+    -Vec~CachedRRset~ authority
+    -Vec~CachedRRset~ additional
+    -Deadline deadline
+    +new(ResponseCode, MessageFlags, Vec~CachedRRset~, Vec~CachedRRset~, Vec~CachedRRset~, Deadline) CachedMessage
+    +rcode() ResponseCode
+    +flags() MessageFlags
+    +answer() Vec~CachedRRset~
+    +authority() Vec~CachedRRset~
+    +additional() Vec~CachedRRset~
+    +deadline() Deadline
     +to_response(CacheKey, Instant) Result~Message, CacheError~
+    +heap_size() HeapBytes
 }
 
 class NegativeEntry {
-    +DenialKind kind
-    +CachedRRset soa
-    +Deadline deadline
-    +SecurityStatus security
+    -DenialKind kind
+    -CachedRRset soa
+    -Deadline deadline
+    -DnssecMetadata dnssec
+    +new(DenialKind, CachedRRset, Deadline, DnssecMetadata) NegativeEntry
+    +kind() DenialKind
+    +soa() CachedRRset
+    +deadline() Deadline
+    +dnssec() DnssecMetadata
+    +security() SecurityStatus
     +to_response(CacheKey, Instant) Result~Message, CacheError~
+    +heap_size() HeapBytes
+}
+
+class DnssecMetadata {
+    <<enumeration>>
+    Indeterminate
+    Insecure
+    Secure
+    Bogus
+    +indeterminate() DnssecMetadata
+    +insecure() DnssecMetadata
+    +secure(Vec~Rrsig~) DnssecMetadata
+    +bogus(Vec~Rrsig~) DnssecMetadata
+    +status() SecurityStatus
+    +signatures() Option~Vec~Rrsig~~
+    +is_secure() bool
+    +heap_size() HeapBytes
 }
 
 class DenialKind {
@@ -286,9 +341,13 @@ class Deadline {
 }
 
 class TtlPolicy {
-    +Ttl floor
-    +Ttl ceiling
-    +Ttl negative_ceiling
+    -Ttl floor
+    -Ttl ceiling
+    -Ttl negative_ceiling
+    +new(Ttl, Ttl, Ttl) Result~TtlPolicy, CacheError~
+    +floor() Ttl
+    +ceiling() Ttl
+    +negative_ceiling() Ttl
     +clamp(Ttl) Ttl
     +effective_negative_ttl(CachedRRset) Result~Ttl, CacheError~
 }
@@ -308,7 +367,9 @@ class Bailiwick {
 }
 
 class Admission {
-    +TtlPolicy ttl
+    -TtlPolicy ttl
+    +new(TtlPolicy) Admission
+    +ttl() TtlPolicy
     +evaluate(Bailiwick, Message, AnswerSource, Instant) AdmissionOutcome
     -is_forged_source(AnswerSource) bool
 }
@@ -345,11 +406,25 @@ class AnswerSource {
     Error
 }
 
+class AdmittedCount {
+    -usize count
+    +new(usize) AdmittedCount
+    +count() usize
+    +as_usize() usize
+}
+
+class PurgedCount {
+    -usize count
+    +new(usize) PurgedCount
+    +count() usize
+    +as_usize() usize
+}
+
 class AnswerCache {
     <<interface>>
     +lookup(CacheKey) Lookup
-    +admit(CacheKey, AdmissionOutcome) Result~usize, CacheError~
-    +purge_all() usize
+    +admit(CacheKey, AdmissionOutcome) Result~AdmittedCount, CacheError~
+    +purge_all() PurgedCount
     +stats() CacheStats
 }
 
@@ -369,18 +444,24 @@ class ShardedAnswerCache~C~ {
 }
 
 class Shard {
-    +RwLock~ShardInner~ inner
+    -RwLock~ShardInner~ inner
+    +contains_key(CacheKey) bool
+    +entry_count() usize
+    +heap_bytes() HeapBytes
 }
 
 class ShardInner {
-    +HashMap~CacheKey, CacheEntry~ map
-    +VecDeque~CacheKey~ recency
-    +HeapBytes bytes
+    ~HashMap~CacheKey, CacheEntry~ map
+    ~VecDeque~CacheKey~ recency
+    ~HeapBytes bytes
 }
 
 class CacheCapacity {
-    +usize max_entries
-    +HeapBytes max_bytes
+    -usize max_entries
+    -HeapBytes max_bytes
+    +new(usize, HeapBytes) CacheCapacity
+    +max_entries() usize
+    +max_bytes() HeapBytes
     +needs_eviction(usize, HeapBytes) bool
 }
 
@@ -428,10 +509,13 @@ CacheEntry --> PositiveEntry : Positive
 CacheEntry --> NegativeEntry : Negative
 PositiveEntry --> CachedRRset : RRset
 PositiveEntry --> CachedMessage : Message
+CachedRRset "1" --> "1" RRset : rrset
+CachedRRset "1" --> "1" DnssecMetadata : dnssec
 CachedMessage "1" o-- "0..*" CachedRRset : sections
 NegativeEntry "1" --> "1" DenialKind : kind
 NegativeEntry "1" --> "1" CachedRRset : SOA
-CachedRRset "1" --> "1" SecurityStatus : verdict
+NegativeEntry "1" --> "1" DnssecMetadata : dnssec
+DnssecMetadata ..> SecurityStatus : status
 Admission "1" --> "1" TtlPolicy : clamps with
 Admission "1" ..> "1" Bailiwick : consults
 Admission "1" --> "1" AdmissionOutcome : produces
@@ -661,7 +745,9 @@ styx-resolution/
     domain/
       cache/
         key.rs             CacheKey, CanonicalName
-        entry.rs           CacheEntry, SecurityStatus
+        dnssec.rs          DnssecMetadata, SecurityStatus
+        entry.rs           CacheEntry
+        rrset.rs           RRset
         positive_entry.rs  PositiveEntry, CachedRRset, CachedMessage
         negative_entry.rs  NegativeEntry, DenialKind
         ttl.rs             Deadline, TtlPolicy
@@ -751,7 +837,19 @@ client query
 
 ## Operations
 
-### 1. Create `domain::cache::key` — `CanonicalName`, `CacheKey`
+### 1. Create `domain::cache::error` — `CacheError`
+
+1. **Definition**: a `thiserror` enum. Variants: `TtlOverflow`, `DeadlineInThePast`,
+   `UncacheableQuestion`, `MissingSoa`, `ResponseAssembly`, `ByteAccountingOverflow` (from
+   `HeapBytes::checked_add`, the one other manually accumulated counter in this
+   component), and `InvalidTtlBounds` (when configured `floor > ceiling`).
+2. **Usage**: returned through `Result` from every fallible operation.
+3. **Constraints**: **no `CacheError` may ever fail a client query.** Every call site
+   degrades to "treat it as a miss" or "do not admit this record", logs at `warn`, and
+   continues. The cache is an optimisation; it must not be able to break resolution. Error
+   text must not leak internal state into anything client-visible.
+
+### 2. Create `domain::cache::key` — `CanonicalName`, `CacheKey`
 
 1. **Responsibility**: turn a `Question` into the global cache key, and provide the
    suffix relation the bailiwick rule is expressed in.
@@ -781,7 +879,7 @@ client query
    question and only the question. No indexing that can be out of bounds; label comparison
    uses iterators, not offsets.
 
-### 2. Create `domain::cache::ttl` — `Deadline`, `TtlPolicy`
+### 3. Create `domain::cache::ttl` — `Deadline`, `TtlPolicy`
 
 1. **Responsibility**: the single place in the component where TTL arithmetic happens.
 2. **`Deadline`**
@@ -792,7 +890,11 @@ client query
      zero rather than underflowing, and never panics near the expiry boundary.
    - `has_expired(&self, now) -> bool`.
 3. **`TtlPolicy`**
-   - Fields: `floor`, `ceiling`, `negative_ceiling`, all configurable.
+   - Fields (private): `floor`, `ceiling`, `negative_ceiling`, all configurable.
+   - `new(floor: Ttl, ceiling: Ttl, negative_ceiling: Ttl) -> Result<Self, CacheError>`:
+     validates `floor <= ceiling`; returns `CacheError::InvalidTtlBounds` on violation.
+   - Accessors: `floor(&self) -> Ttl`, `ceiling(&self) -> Ttl`,
+     `negative_ceiling(&self) -> Ttl`.
    - `clamp(ttl) -> Ttl`.
    - `effective_negative_ttl(soa) -> Result<Ttl, CacheError>`: the minimum of the SOA
      record's own TTL and its `MINIMUM` field, per RFC 2308, then clamped by
@@ -801,7 +903,7 @@ client query
    `arithmetic_side_effects = deny` applies workspace-wide and this module is where it
    bites. No operation in this module may panic for any input.
 
-### 3. Create `domain::cache::bytes` — `HeapBytes`
+### 4. Create `domain::cache::bytes` — `HeapBytes`
 
 1. **Responsibility**: the single place manual byte-count arithmetic happens for capacity
    accounting — the same role `ttl.rs` plays for TTL arithmetic, for the one other counter
@@ -820,41 +922,57 @@ client query
    `CacheCapacity::max_bytes` and `CacheStats::bytes` all use this type; none of them holds
    a bare `usize` for a byte count.
 
-### 4. Create `domain::cache::entry`, `positive_entry`, `negative_entry` — the entry types
+### 5. Create `domain::cache::entry`, `positive_entry`, `negative_entry`, `rrset`, `dnssec` — entry types
 
 1. **Responsibility**: the three shapes a cached answer can take, plus their freshness,
    split by concept — the shared shape in `entry.rs`, the positive shapes in
-   `positive_entry.rs`, the negative shape in `negative_entry.rs` — the way `styx-proto`
-   splits `domain/rdata/basic.rs` from `domain/rdata/dnssec.rs` rather than letting one
-   file accumulate every entry-shaped type.
-2. **`entry.rs`**
-   - **`CacheEntry`**: the `Positive`/`Negative` enum, with `deadline()`, `is_fresh(now)`
-     and `heap_size() -> HeapBytes` for capacity accounting.
+   `positive_entry.rs`, the negative shape in `negative_entry.rs`, the record set in
+   `rrset.rs`, and the DNSSEC state in `dnssec.rs` — the way `styx-proto` splits
+   `domain/rdata/basic.rs` from `domain/rdata/dnssec.rs` rather than letting one file
+   accumulate every entry-shaped type.
+2. **`dnssec.rs` and `entry.rs`**
    - **`SecurityStatus`**: `Indeterminate` / `Insecure` / `Secure` / `Bogus`.
-     **In this phase every admitted entry is `Indeterminate` and `signatures` is `None`.**
-     The type exists now because Phase 6 — DNSSEC hard-fails on bogus answers, and bolting
-     a verdict onto these types one phase later would mean either re-validating on every
-     cache hit or reshaping the store.
-3. **`positive_entry.rs`**
-   - **`CachedRRset`**: owner, type, class, the RDATA set, the original TTL as received,
-     the computed `Deadline`, a `SecurityStatus`, and an optional signature list.
-     `remaining_ttl(now)` delegates to `Deadline::remaining`.
+   - **`DnssecMetadata`**: enum (`Indeterminate`, `Insecure`, `Secure { signatures }`,
+     `Bogus { signatures }`) capturing cryptographic status and associated RRSIGs.
+     **In this phase every admitted entry is `Indeterminate`.** The type exists now
+     because Phase 6 — DNSSEC hard-fails on bogus answers, and bolting a verdict onto
+     these types one phase later would mean either re-validating on every cache hit or
+     reshaping the store.
+   - **`CacheEntry`**: the `Positive`/`Negative` enum, with `deadline()`,
+     `is_fresh(now)` and `heap_size() -> HeapBytes` for capacity accounting.
+3. **`rrset.rs` and `positive_entry.rs`**
+   - **`RRset`**: DNS Resource Record Set sharing canonical owner, type, class, and
+     deduplicated non-empty RDATA collection. Enforces `!rdata.is_empty()` returning
+     `Result<Self, CacheError::EmptyRRset>`. Converts to wire `ResourceRecord` items
+     via `to_resource_records(ttl)`.
+   - **`CachedRRset`**: Caching envelope pairing an `RRset` with its `original_ttl`,
+     `deadline`, and `dnssec` (`DnssecMetadata`) (all fields private). Constructed via
+     `new(rrset, original_ttl, deadline)` or `with_dnssec(...)`, with read accessors
+     `rrset()`, `owner()`, `rtype()`, `rclass()`, `rdata()`, `original_ttl()`,
+     `deadline()`, `dnssec()`, `security()`, `signatures()`. `remaining_ttl(now)`
+     delegates to `Deadline::remaining`.
    - **`CachedMessage`**: RCODE, flags, and the answer/authority/additional sections as
      `CachedRRset` vectors, with the entry `Deadline` being the earliest deadline among
-     them. `to_response(key, now)` rebuilds a `Message` with every TTL recomputed from
-     `now`. *This is the shape used where an answer does not reduce to one RRset of the
-     queried type — a CNAME chain, or a referral-shaped response arriving on a forwarding
-     path.*
+     them (all fields private). Constructed via `new(...)` with read accessors
+     `rcode()`, `flags()`, `answer()`, `authority()`, `additional()`, `deadline()`.
+     `to_response(key, now)` rebuilds a `Message` with every TTL recomputed from `now`.
+     *This is the shape used where an answer does not reduce to one RRset of the
+     queried type — a CNAME chain, or a referral-shaped response arriving on a
+     forwarding path.*
    - **`PositiveEntry`**: the `RRset`/`Message` enum wrapping the two shapes above.
 4. **`negative_entry.rs`**
-   - **`NegativeEntry`**: `DenialKind` (`NxDomain` or `NoData`), the SOA that justified and
-     timed it, the `Deadline`, a `SecurityStatus`. `to_response(key, now)` produces the
-     correct RCODE for the kind — NXDOMAIN for `NxDomain`, NOERROR with an empty answer
-     section for `NoData` — with the SOA in the authority section and its TTL recomputed.
+   - **`NegativeEntry`**: `DenialKind` (`NxDomain` or `NoData`), the SOA that justified
+     and timed it, the `Deadline`, and `dnssec` (`DnssecMetadata`) (all fields
+     private). Constructed via `new(kind, soa, deadline, dnssec)` with read accessors
+     `kind()`, `soa()`, `deadline()`, `dnssec()`, `security()`.
+     `to_response(key, now)` produces the correct RCODE for the kind — NXDOMAIN for
+     `NxDomain`, NOERROR with an empty answer section for `NoData` — with the SOA in
+     the authority section and its TTL recomputed.
    - **`DenialKind`**: `NxDomain` / `NoData`.
-5. **Constraints**: entries are immutable once admitted; a change means a fresh admission.
+5. **Constraints**: entries are immutable once admitted; a change means a fresh
+   admission.
 
-### 5. Create `domain::cache::bailiwick` — `Bailiwick`
+### 6. Create `domain::cache::bailiwick` — `Bailiwick`
 
 1. **Responsibility**: the security boundary. Decide which zone a responder is entitled to
    teach the cache about, and whether a given owner name falls inside it.
@@ -873,7 +991,7 @@ client query
    the chain walk. Exhaustively unit-tested; this is the one predicate in the phase whose
    failure is a vulnerability rather than a bug.
 
-### 6. Create `domain::cache::admission` — `Admission`, `AdmissionOutcome`
+### 7. Create `domain::cache::admission` — `Admission`, `AdmissionOutcome`
 
 1. **Responsibility**: the complete answer to "may this be cached at all?", of which the
    bailiwick rule is one clause.
@@ -919,7 +1037,7 @@ client query
    branch. This is what keeps the security-critical path clear of both `excessive_nesting`
    (threshold 4) and `too_many_lines` (threshold 60), per Phase 0 Approach §10.
 
-### 7. Create `domain::cache::port`, `capacity`, `stats` — the `AnswerCache` trait
+### 8. Create `domain::cache::port`, `capacity`, `stats` — the `AnswerCache` trait
 
 1. **Responsibility**: the capability, stated independently of the storage mechanism, so
    the pipeline and Phase 5's adapter both depend on a trait — split by concept into
@@ -929,16 +1047,18 @@ client query
    - `lookup(&self, key: &CacheKey) -> Lookup` — `Hit(entry)` only when fresh against the
      `Clock`; `Expired` when an entry was found but is stale (it is removed as a side
      effect); `Miss` otherwise.
-   - `admit(&self, key: &CacheKey, outcome: AdmissionOutcome) -> Result<usize, CacheError>`
-     — returns how many entries were stored.
-   - `purge_all(&self) -> usize` — the seam the Phase 11 — Web UI "flush cache" action
-     will use. Present now so it is not retrofitted through a lock-free hot-path structure
-     later.
+   - `admit(&self, key: &CacheKey, outcome: AdmissionOutcome) -> Result<AdmittedCount, CacheError>`
+     — returns how many entries were stored wrapped in semantic `AdmittedCount`.
+   - `purge_all(&self) -> PurgedCount` — the seam the Phase 11 — Web UI "flush cache"
+     action will use, returning `PurgedCount`. Present now so it is not retrofitted
+     through a lock-free hot-path structure later.
    - `stats(&self) -> CacheStats`.
-3. **`capacity.rs`** — **`CacheCapacity`**: `max_entries: usize`, `max_bytes: HeapBytes`,
-   and `needs_eviction(entries: usize, bytes: HeapBytes) -> bool`. `max_entries` stays a
-   bare `usize` — it is only ever compared, never accumulated by hand, so no arithmetic
-   rule attaches to it; `max_bytes` shares `HeapBytes` with the counter it bounds.
+3. **`capacity.rs`** — **`CacheCapacity`**: `max_entries: usize`, `max_bytes: HeapBytes`
+   (both fields private), with accessors `max_entries(&self) -> usize` and
+   `max_bytes(&self) -> HeapBytes`, and `needs_eviction(entries: usize, bytes: HeapBytes) -> bool`.
+   `max_entries` stays a bare `usize` — it is only ever compared, never accumulated by
+   hand, so no arithmetic rule attaches to it; `max_bytes` shares `HeapBytes` with the
+   counter it bounds.
 4. **`stats.rs`** — **`CacheStats`**: `hits`, `misses`, `negative_hits`, `admitted`,
    `rejected_out_of_bailiwick`, `expired`, `evicted` as plain `u64` counters — accumulated
    by an atomic `fetch_add` over the life of the process, with no validated range or
@@ -949,31 +1069,36 @@ client query
    and no lock is held across an `await`. Consumers use static dispatch (`<A: AnswerCache>`,
    `impl AnswerCache`).
 
-### 8. Create `infrastructure::cache::sharded` — `ShardedAnswerCache`
+### 9. Create `infrastructure::cache::sharded` — `ShardedAnswerCache`
 
 1. **Responsibility**: the concurrent, bounded, memory-only store.
-2. **Construction**: `new(clock: Arc<C>, capacity: CacheCapacity, ttl: TtlPolicy,
+2. **`Shard` and `ShardInner`**: `Shard` encapsulates `RwLock<ShardInner>` with safe
+   introspection methods `contains_key(&self, &CacheKey) -> bool`,
+   `entry_count(&self) -> usize`, and `heap_bytes(&self) -> HeapBytes` for tests and
+   metrics without exposing lock guards. `ShardInner` is crate-private (`pub(crate)`)
+   holding `map`, `recency`, and `bytes`.
+3. **Construction**: `new(clock: Arc<C>, capacity: CacheCapacity, ttl: TtlPolicy,
    shard_count: usize)` where `C: Clock`. One instance per process, shared by `Arc`.
-3. **`shard_for(key)`**: hash the key, index into the shard vector. Uses checked indexing
+4. **`shard_for(key)`**: hash the key, index into the shard vector. Uses checked indexing
    — `indexing_slicing = deny`.
-4. **`lookup`**: read-lock the shard, look up, read `Clock::now()` once, check freshness;
+5. **`lookup`**: read-lock the shard, look up, read `Clock::now()` once, check freshness;
    on a stale entry upgrade to a write lock, remove it, count an expiry, return `Expired`.
    Bump recency on a hit. Increment hit/miss/negative-hit counters.
-5. **`admit`**: write-lock the shard, insert the admitted entries, fold each entry's
+6. **`admit`**: write-lock the shard, insert the admitted entries, fold each entry's
    `heap_size()` into `ShardInner::bytes` via `HeapBytes::checked_add` — the resulting
    `CacheError::ByteAccountingOverflow`, like every `CacheError`, degrades to "not
    admitted" rather than failing the query — then call `Eviction::evict` if the capacity
    bound is exceeded.
-6. **`purge_all`**: clear every shard, return the count removed.
-7. **`stats`**: snapshot the atomic counters plus current entries and bytes.
-8. **Instrumentation**: `tracing` spans on `lookup` and `admit`; a `warn`-level event
+7. **`purge_all`**: clear every shard, return the count removed.
+8. **`stats`**: snapshot the atomic counters plus current entries and bytes.
+9. **Instrumentation**: `tracing` spans on `lookup` and `admit`; a `warn`-level event
    whenever a record is rejected as out of bailiwick, because that is either a broken
    upstream or an attack and either way somebody should be able to see it.
-9. **Constraints**: no lock held across an `await`; no `unwrap`/`expect` on lock results
+10. **Constraints**: no lock held across an `await`; no `unwrap`/`expect` on lock results
    (poisoning is handled explicitly and degrades to a miss); no I/O of any kind —
    arch-lint's `no-sync-io` applies.
 
-### 9. Create `infrastructure::cache::eviction` — `Eviction`
+### 10. Create `infrastructure::cache::eviction` — `Eviction`
 
 1. **Responsibility**: keep the store inside its bound, doing bounded work per call.
 2. **`evict(inner, now, capacity) -> EvictionReport`**
@@ -987,18 +1112,6 @@ client query
    - Return counts of each, so the two are separately observable — **expiry and eviction
      are different events and the exit criteria name them separately.**
 3. **Constraints**: bounded work per invocation; no unbounded scan on the hot path.
-
-### 10. Create `domain::cache::error` — `CacheError`
-
-1. **Definition**: a `thiserror` enum. Variants: `TtlOverflow`, `DeadlineInThePast`,
-   `UncacheableQuestion`, `MissingSoa`, `ResponseAssembly`, `ByteAccountingOverflow` (from
-   `HeapBytes::checked_add`, the one other manually accumulated counter in this
-   component).
-2. **Usage**: returned through `Result` from every fallible operation.
-3. **Constraints**: **no `CacheError` may ever fail a client query.** Every call site
-   degrades to "treat it as a miss" or "do not admit this record", logs at `warn`, and
-   continues. The cache is an optimisation; it must not be able to break resolution. Error
-   text must not leak internal state into anything client-visible.
 
 ### 11. Create `application::cache_stage` — the pipeline stage
 
@@ -1099,17 +1212,20 @@ client query
     because that rationale is the part most likely to be lost.
 12. **Object Calisthenics** — this phase's code follows `AGENTS.md`, including its
     primitive-obsession/newtype test: a primitive is wrapped only when it carries a
-    validated range, a checked arithmetic operation, a non-trivial wire encoding or named
-    constants — **domain rules attached to the value, not the primitive-ness of its
-    type**. `HeapBytes` (checked-add byte accounting that reports
-    `CacheError::ByteAccountingOverflow` rather than wrapping, paired with a saturating
-    subtract that never underflows) is this phase's own worked example, alongside
-    `Deadline` (checked construction from a `Ttl`, saturating remaining-time arithmetic),
-    which already followed the same discipline before `AGENTS.md` wrote it down.
-    `CacheStats`'s plain `u64` hit/miss/eviction counters and `CacheCapacity::max_entries`
-    stay bare integers deliberately: neither carries a domain rule beyond straightforward
-    counting and comparison, and wrapping them would be ceremony with no behaviour behind
-    it.
+    validated range, a checked arithmetic operation, a non-trivial wire encoding, named
+    constants, or semantic self-documentation across public port boundaries — **domain rules
+    attached to the value, not the primitive-ness of its type**. `HeapBytes` (checked-add
+    byte accounting that reports `CacheError::ByteAccountingOverflow` rather than wrapping,
+    paired with a saturating subtract that never underflows), `Deadline` (checked construction
+    from a `Ttl`, saturating remaining-time arithmetic), `AdmittedCount` and `PurgedCount`
+    (semantic count newtypes on `AnswerCache::admit` and `purge_all`) are this phase's worked
+    examples. Furthermore, `TtlPolicy`, `RRset`, `CachedRRset`, `CachedMessage`,
+    `NegativeEntry`, and `CacheCapacity` enforce invariant preservation by keeping all fields
+    private behind constructors and read accessors, eliminating multiple responsibilities
+    and `too_many_arguments` smells.
+    `CacheStats`'s plain `u64` hit/miss/eviction counters stay bare integers deliberately:
+    they carry no domain rule beyond straightforward counting, and wrapping them would be
+    ceremony with no behaviour behind it.
 
 ---
 
