@@ -24,7 +24,9 @@ impl ResponseWriter {
     /// The Header and Questions sections are never dropped.
     #[must_use]
     pub fn truncate_if_needed(mut message: Message, max_size: MaxResponseSize) -> Message {
-        if Self::message_fits(&message, max_size) {
+        let budget = usize::from(max_size.as_u16());
+        let mut encoder = Encoder::new(budget);
+        if encoder.encode_message(&message).is_ok() {
             return message;
         }
 
@@ -32,14 +34,16 @@ impl ResponseWriter {
 
         if !message.additionals.is_empty() {
             message.additionals.clear();
-            if Self::message_fits(&message, max_size) {
+            let mut encoder = Encoder::new(budget);
+            if encoder.encode_message(&message).is_ok() {
                 return message;
             }
         }
 
         if !message.authorities.is_empty() {
             message.authorities.clear();
-            if Self::message_fits(&message, max_size) {
+            let mut encoder = Encoder::new(budget);
+            if encoder.encode_message(&message).is_ok() {
                 return message;
             }
         }
@@ -61,10 +65,15 @@ impl ResponseWriter {
     pub fn write(&self, message: Message, ctx: &RequestContext) -> Result<Vec<u8>, EncodeError> {
         match ctx.transport {
             Transport::Udp => {
-                let prepared = Self::truncate_if_needed(message, ctx.max_response_size);
-                let mut encoder = Encoder::new(usize::from(ctx.max_response_size.as_u16()));
-                encoder.encode_message(&prepared)?;
-                Ok(encoder.buf)
+                let budget = usize::from(ctx.max_response_size.as_u16());
+                let mut encoder = Encoder::new(budget);
+                match encoder.encode_message(&message) {
+                    Ok(()) => Ok(encoder.buf),
+                    Err(EncodeError::BudgetExceeded { .. }) => {
+                        Self::encode_truncated_udp(message, budget)
+                    }
+                    Err(err) => Err(err),
+                }
             }
             Transport::Tcp => {
                 let mut encoder = Encoder::new(MAX_TCP_MESSAGE_LEN);
@@ -74,11 +83,31 @@ impl ResponseWriter {
         }
     }
 
-    fn message_fits(message: &Message, max_size: MaxResponseSize) -> bool {
-        let mut encoder = Encoder::new(MAX_TCP_MESSAGE_LEN);
-        if encoder.encode_message(message).is_err() {
-            return false;
+    fn encode_truncated_udp(mut message: Message, budget: usize) -> Result<Vec<u8>, EncodeError> {
+        message.header.truncated = true;
+
+        if !message.additionals.is_empty() {
+            message.additionals.clear();
+            let mut encoder = Encoder::new(budget);
+            if encoder.encode_message(&message).is_ok() {
+                return Ok(encoder.buf);
+            }
         }
-        max_size.fits(encoder.buf.len())
+
+        if !message.authorities.is_empty() {
+            message.authorities.clear();
+            let mut encoder = Encoder::new(budget);
+            if encoder.encode_message(&message).is_ok() {
+                return Ok(encoder.buf);
+            }
+        }
+
+        if !message.answers.is_empty() {
+            message.answers.clear();
+        }
+
+        let mut encoder = Encoder::new(budget);
+        encoder.encode_message(&message)?;
+        Ok(encoder.buf)
     }
 }
