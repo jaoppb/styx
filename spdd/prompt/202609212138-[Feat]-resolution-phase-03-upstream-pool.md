@@ -477,14 +477,24 @@ PoolConfig ..> ConfigError : fails with
 
 The project rule is **one crate per feature, with `domain` / `application` /
 `infrastructure` as modules inside it**. Cargo enforces feature-to-feature isolation;
-arch-lint enforces layering *within* a crate. This phase adds to `styx-resolution`:
+arch-lint enforces layering *within* a crate. Shared resolution contracts live in
+`styx-core` (shared foundation), and `styx-resolution` consumes them directly:
 
 ```text
-styx-resolution/
+styx-core/ (shared foundation)
   src/
     domain/
+      clock.rs           # Clock trait
       upstream.rs        # Upstream trait, UpstreamId, UpstreamKind, UpstreamResponse
       error.rs           # UpstreamError (thiserror), FailureClass
+    infrastructure/
+      clock.rs           # SystemClock
+    test_util/
+      clock.rs           # TestClock (feature = "test-support")
+
+styx-resolution/ (feature crate)
+  src/
+    domain/
       health.rs          # HealthState, Outcome — the fold, split from the state machine
       circuit.rs         # CircuitState, CircuitConfig, FailureCount — the circuit breaker
       selection.rs       # SelectionStrategy trait, Selection, MemberView, StrategyName
@@ -492,6 +502,8 @@ styx-resolution/
       config.rs          # PoolConfig, UpstreamConfig, Timeouts, ConfigError
       weight.rs          # Weight — its own file: shared by config and the weighted strategy
       edns.rs            # EdnsBufferSize — its own file: shared by config and Do53Forwarder
+      error/
+        pool.rs          # PoolError (thiserror)
     application/
       pool.rs            # UpstreamPool: dispatch, outcome recording, snapshot
       strategies/        # OrderedFailover, RoundRobin, Weighted, RaceAll
@@ -511,20 +523,21 @@ different concept from the state machine it drives (`CircuitState`), and `Weight
 
 ### Trait / implementation relationships
 
-1. `Upstream` is a trait in `domain::upstream` defining the one resolution contract that
-   forwarders and recursors both satisfy.
-2. `Do53Forwarder` in `infrastructure::do53` implements `Upstream`.
+1. `Upstream` is a trait in `styx-core::domain::upstream` defining the one resolution
+   contract that forwarders and recursors both satisfy. `styx-resolution` does not
+   re-export `Upstream` or its associated types; all consumers import directly from
+   `styx_core`.
+2. `Do53Forwarder` in `infrastructure::do53` implements `styx_core::Upstream`.
 3. `SelectionStrategy` is a trait in `domain::selection`; `OrderedFailover`, `RoundRobin`,
    `Weighted` and `RaceAll` in `application::strategies` each implement it.
-4. `UpstreamError` is a `thiserror` enum implementing `std::error::Error`;
-   `require-thiserror` is an enforced lint.
+4. `UpstreamError` is a `thiserror` enum in `styx-core::domain::error`; `PoolError` is
+   defined in `domain::error::pool`. `require-thiserror` is an enforced lint.
 5. `HealthState` and `CircuitState` are plain `domain` types with no trait at all —
    **there is no `HealthCheck` trait, by decision.**
 6. **Phase 5's recursor** implements `Upstream` from *outside* this crate. Because
-   **feature crates never depend on each other**, `styx-recursion` does not depend on
-   `styx-resolution`: the binary crate `styx` holds the adapter that wraps the recursor in
-   `styx-resolution`'s port — the same wiring pattern by which `styx-resolution` declares
-   a `FilterPolicy` port and `styx` wires `styx-filtering` into it.
+   `Upstream` is defined in the shared foundation crate `styx-core`, `styx-recursion`
+   implements `styx_core::Upstream` directly without depending on `styx-resolution`,
+   cleanly preserving crate isolation without cross-feature coupling.
 
 ### Dependencies
 
@@ -584,10 +597,10 @@ different concept from the state machine it drives (`CircuitState`), and `Weight
 
 Ordered by dependency. Each task is independently completable and independently testable.
 
-### 1. Define the `Upstream` port — `domain::upstream`
+### 1. Define the `Upstream` port — `crates/styx-core` (`domain::upstream`)
 
 1. **Responsibility**: the single resolution contract satisfied by both forwarders and
-   recursors.
+   recursors, hosted in shared foundation (`styx-core`).
 2. **Types**:
    - `UpstreamId` — an opaque, cheap-to-clone identifier, stable across the process
      lifetime, derived from config order and name.
@@ -598,20 +611,23 @@ Ordered by dependency. Each task is independently completable and independently 
      Like `answered_by`, `kind` is stamped by the pool from the member that answered
      (Operation 6), never chosen by the adapter, so no implementation can mislabel its
      own answers.
-3. **Trait**: `Upstream` (async, statically dispatched via `UpstreamTransport` enum)
+3. **Trait**: `Upstream` (async, statically dispatched via generics / enums)
    - `fn id(&self) -> UpstreamId`
    - `fn kind(&self) -> UpstreamKind`
    - `async fn resolve(&self, query: &Question, deadline: Instant) -> Result<UpstreamResponse, UpstreamError>`
-4. **Constraints**:
+4. **Direct imports (no re-exports)**:
+   - `styx-resolution` contains no re-exports of `Upstream`, `UpstreamId`, `UpstreamKind`,
+     or `UpstreamResponse`. All call sites import directly from `styx_core`.
+5. **Constraints**:
    - **No fourth method.** No chain-material accessor, no diagnostics accessor, no descent
      hook. Adding one is the failure mode this design exists to prevent.
    - `deadline` is an `Instant` obtained from the injected clock by the caller, never
      computed from real time inside the implementation.
 
-### 2. Define `UpstreamError` and `FailureClass` — `domain::error`
+### 2. Define `UpstreamError` and `FailureClass` — `crates/styx-core` (`domain::error`)
 
 1. **Responsibility**: one classified error type for every way an upstream can fail to
-   produce an answer.
+   produce an answer, hosted in shared foundation (`styx-core`).
 2. **Variants** (`thiserror`): `Timeout`, `Transport(io kind)`, `Truncated` (TC=1 and the
    TCP retry also failed), `Malformed` (decode failed), `Mismatched` (ID or question
    mismatch), `Refused`, `ServerFailure`, `Shutdown`.
@@ -620,7 +636,11 @@ Ordered by dependency. Each task is independently completable and independently 
      `Refused`, and `ServerFailure` originating from the upstream itself.
    - `AnswerFault` for outcomes that are the upstream correctly reporting something about
      the *name*.
-4. **Constraints**: the classification table is asserted by an explicit unit test with one
+4. **Direct imports & PoolError**:
+   - `styx-resolution` imports `UpstreamError` and `FailureClass` directly from `styx_core`
+     without re-exporting.
+   - `PoolError` is defined in `crates/styx-resolution/src/domain/error/pool.rs`.
+5. **Constraints**: the classification table is asserted by an explicit unit test with one
    case per variant. Misclassifying `AnswerFault` as `UpstreamFault` empties a healthy
    pool on one bad domain.
 

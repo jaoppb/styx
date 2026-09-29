@@ -5,12 +5,12 @@
 
 use std::time::{Duration, Instant};
 
+use styx_core::UpstreamKind;
 use styx_proto::{Name, RecordType};
 
 use crate::domain::circuit::CircuitState;
 use crate::domain::health::HealthState;
 use crate::domain::selection::MemberView;
-use crate::domain::upstream::UpstreamKind;
 
 /// Configuration for periodic background probing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,8 +115,8 @@ mod tests {
     use super::*;
     use crate::domain::circuit::CircuitConfig;
     use crate::domain::health::Outcome;
-    use crate::domain::upstream::UpstreamId;
     use crate::domain::weight::Weight;
+    use styx_core::UpstreamId;
 
     fn make_view(available: bool) -> MemberView {
         MemberView {

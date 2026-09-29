@@ -29,9 +29,10 @@ this document revises.
   collections or true type erasure are strictly required.
 - **Feature crates never depend on each other.** A cross-feature need is a port in the
   consumer's `domain`, implemented by an adapter the `styx` binary wires in.
-  `styx-proto` is shared foundation and the sole exemption: every crate may depend on it,
-  and it depends on none of them. `styx-web` is presentation and may reach a feature's
-  `application` layer; it is not a peer of the feature crates.
+  `styx-proto` and `styx-core` are shared foundation and the exemptions: every crate may
+  depend on them, and they depend on no feature crate. `styx-proto` depends on nothing
+  workspace-internal; `styx-core` depends only on `styx-proto`. `styx-web` is presentation
+  and may reach a feature's `application` layer; it is not a peer of the feature crates.
 - **Errors are `thiserror` enums.** Every fallible operation returns `Result<T, E>` with a
   crate-owned error enum. No `Box<dyn Error>` on a public boundary, no stringly-typed
   errors. `anyhow` is reserved for the composition root (the `styx` binary's own startup
@@ -74,6 +75,11 @@ styx/
 │   │       ├── domain/         # Wire types: Header, Question, Name, Record, RData, EDNS
 │   │       ├── application/    # Cursor (bounds-checked buffer), Encoder, Decoder
 │   │       └── infrastructure/ # Transport-agnostic codec helpers
+│   ├── styx-core/              # Shared foundation: cross-resolution contracts and ports
+│   │   └── src/
+│   │       ├── domain/         # Clock, Upstream, UpstreamId, UpstreamResponse, errors
+│   │       ├── infrastructure/ # SystemClock
+│   │       └── test_util/      # TestClock (test-support feature)
 │   ├── styx-resolution/        # DNS resolution engine and upstream forwarding
 │   │   └── src/
 │   │       ├── domain/         # Domain logic, circuit breaker, health, ports/

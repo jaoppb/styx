@@ -124,9 +124,9 @@ leaving it unwritten is exactly how this resurfaces as a bug report six months l
    port (a trait) in the consumer's `domain`, implemented by an adapter in the binary.
    `styx-web` may depend on a feature's `application` layer, because it is presentation,
    not a peer.
-5. **`styx-proto` is shared foundation, not a feature crate.** Every crate parses through
-   the wire codec, so the isolation rule does not reach it. This is the one explicit
-   exception.
+5. **`styx-proto` and `styx-core` are shared foundation, not feature crates.** Every
+   crate parses through the wire codec (`styx-proto`) and shares resolution contracts
+   (`styx-core`), so the isolation rule does not reach them.
 6. **The pipeline order is fixed and is a correctness property, not a detail:** local
    records → filter → cache → upstream. Local records and blocked replies are both forged
    answers, so both clear AD, forge no signature, and never enter the answer cache. *Load-
@@ -798,8 +798,9 @@ suite goes red one morning for reasons unrelated to any change.
 `infrastructure` are **modules inside each crate**, enforced by arch-lint's syn engine via
 `[[scopes]]` path globs and `[[deny-scope-dep]]`.
 
-1. **`styx-proto`** *(exists, Phase 1)* — shared foundation, not a feature crate. The wire
-   codec. Unchanged by this phase; both new transports carry the messages it produces.
+1. **`styx-proto` and `styx-core`** *(shared foundation)* — `styx-proto` provides the
+   wire codec; `styx-core` provides `Clock` and shared resolution contracts. Both are
+   shared foundation and exempt from feature-to-feature isolation.
 2. **`styx-resolution`** *(exists, Phase 2; this phase extends it)* —
    - `domain::tls::config` — `TlsListenerConfig`, `ConnectionBudget`,
      `StreamMessageLimit`, `DohResourcePath`: the file-owned description of encrypted

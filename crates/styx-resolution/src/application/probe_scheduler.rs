@@ -7,15 +7,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use styx_core::{Clock, Upstream, UpstreamId};
 use styx_proto::{Question, RecordClass};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::application::pool::UpstreamPool;
-use crate::domain::clock::Clock;
 use crate::domain::health::Outcome;
 use crate::domain::selection::SelectionStrategy;
-use crate::domain::upstream::{Upstream, UpstreamId};
 
 /// Background task that executes periodic canary probes against due pool members.
 pub struct ProbeScheduler<S, U, C> {

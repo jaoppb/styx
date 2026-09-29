@@ -1277,7 +1277,8 @@ styx-web/
    dependency, and `infrastructure::adapters` implements each by delegating to the feature
    crate. This keeps every view model unit-testable against in-memory fakes without a
    database or a matcher.
-6. `Clock` is the Phase 2 trait, injected; `styx-web` defines no clock of its own.
+6. `Clock` is the trait from `styx-core`, injected; `styx-web` defines no clock of its
+   own.
 
 ### Dependencies
 
@@ -1294,8 +1295,8 @@ styx-web/
    `cargo tree --edges normal`.
 5. The `styx` binary depends on `styx-web` **optionally**, through the `web` feature, from
    a single `#[cfg(feature = "web")]` module.
-6. `styx-web` depends on `styx-proto` only if it must render record types; that is the one
-   permitted shared foundation crate.
+6. `styx-web` depends on shared foundation (`styx-proto` and `styx-core`) as permitted
+   foundation dependencies.
 
 ### Layered architecture
 

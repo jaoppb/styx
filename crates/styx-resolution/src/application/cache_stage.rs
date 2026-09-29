@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use styx_core::{Clock, Upstream, UpstreamKind};
+
 use crate::application::pool::UpstreamPool;
 use crate::application::terminal::TerminalHandler;
 use crate::domain::answer::{AnswerSource, ResolutionOutcome, ResolutionResponse, ResolvedSource};
@@ -12,11 +14,9 @@ use crate::domain::cache::error::CacheError;
 use crate::domain::cache::key::CacheKey;
 use crate::domain::cache::port::{AnswerCache, Lookup};
 use crate::domain::cache::ttl::TtlPolicy;
-use crate::domain::clock::Clock;
 use crate::domain::error::PipelineError;
 use crate::domain::request::RequestContext;
 use crate::domain::selection::SelectionStrategy;
-use crate::domain::upstream::{Upstream, UpstreamKind};
 
 /// Resolution terminal stage integrating the answer cache with the upstream pool.
 pub struct CacheStage<A, S, U, C> {

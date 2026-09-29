@@ -689,10 +689,10 @@ StyxFilterPolicy "1" --> "1" BlockedReplyBuilder : forges reply
 ### 1. Crate shape and the hard build-time / query-time seam
 
 Build `styx-filtering` as a self-contained feature crate with `domain`, `application` and
-`infrastructure` modules, depending on **no other feature crate** — only on `styx-proto`,
-the one permitted shared foundation. Its public surface is a matcher it owns plus a policy
-implementation that the `styx` binary adapts onto the resolution crate's `FilterPolicy`
-port.
+`infrastructure` modules, depending on **no other feature crate** — only on shared
+foundation (`styx-proto` and `styx-core`). Its public surface is a matcher it owns plus a
+policy implementation that the `styx` binary adapts onto the resolution crate's
+`FilterPolicy` port.
 
 Split the crate along a hard **build-time / query-time** seam, because the two halves have
 opposite constraints and fusing them is how the hot path acquires a lock:
@@ -1820,9 +1820,9 @@ immediately: it is never cached and never validated.
    architecture lint's scope rules and independently by a `cargo tree --edges normal`
    gate, because the lint reads source text while `cargo tree` reads the real link graph
    and they catch different mistakes.
-2. **Cross-crate** — `styx-filtering` names **no other feature crate**. `styx-proto` is
-   the one permitted shared foundation, because every crate parses through the wire codec.
-   The `FilterPolicy` port belongs to `styx-resolution`; the `styx` binary adapts.
+2. **Cross-crate** — `styx-filtering` names **no other feature crate**. `styx-proto` and
+   `styx-core` are the permitted shared foundation crates. The `FilterPolicy` port
+   belongs to `styx-resolution`; the `styx` binary adapts.
 3. **Hot-path purity** — every type reachable from `MatcherSnapshot::evaluate` lives in
    `domain` and can name no port, no `Clock` and nothing in `infrastructure`.
    **This is the structural form of "the hot path performs no I/O"**, and it is a lint
@@ -1832,7 +1832,8 @@ immediately: it is never cached and never validated.
    (`[[restrict-use]]`, Phase 0 Approach §10) in sync and async code alike — a plain,
    non-async `std::fs::read_to_string` in `application` fails the gate exactly like an
    `await`ed one.
-4. **Ports as traits** — `AdlistFetcher`, `RuleStore`, `IngestJournal` and `Clock` are
+4. **Ports as traits** — `AdlistFetcher`, `RuleStore`, `IngestJournal` (in `domain`) and
+   `Clock` (from `styx-core`) are
    traits in `domain::ports`, `Send + Sync`, consumed via generics (`<F, S, J, C>`) rather
    than dynamic dispatch. No `async` on the matcher side; no lock held across an `await`
    anywhere.
@@ -2040,9 +2041,9 @@ cover. They are additional obligations, not reinterpretations.
 
 ### 6. Technical constraints
 
-- `styx-filtering` depends on **no other feature crate**; `styx-proto` is the only
-  permitted shared foundation. The `FilterPolicy` port lives in `styx-resolution` and is
-  satisfied through an adapter in the `styx` binary.
+- `styx-filtering` depends on **no other feature crate**; `styx-proto` and `styx-core`
+  are the permitted shared foundation crates. The `FilterPolicy` port lives in
+  `styx-resolution` and is satisfied through an adapter in the `styx` binary.
 - `domain` / `application` / `infrastructure` module layering, enforced by the
   architecture lint and independently by a `cargo tree --edges normal` gate.
 - Everything reachable from `MatcherSnapshot::evaluate` is structurally incapable of

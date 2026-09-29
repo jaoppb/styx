@@ -118,7 +118,7 @@ class CargoWorkspace {
 }
 
 class SharedFoundationCrate {
-  <<crate: styx-proto>>
+  <<crates: styx-proto, styx-core>>
   +String name
   +depends_on_feature_crates false
   +depended_on_by_everyone true
@@ -400,11 +400,12 @@ convention; they do not reshape it.
   (`dyn`) is reserved for cases where heterogeneous runtime collections or true type
   erasure are strictly necessary.
 
-- **`styx-proto` is shared foundation, not a feature crate, and is the single explicit
-  exception.** Every crate parses through the wire codec, so the "feature crates never
-  depend on each other" rule does not reach it. The use-restrictions must be written so as
-  not to forbid it — a restriction phrased as "no crate may name another workspace crate"
-  breaks the entire build.
+- **`styx-proto` and `styx-core` are shared foundation, not feature crates.** Every crate
+  parses through the wire codec (`styx-proto`) and resolution engines share contracts via
+  `styx-core`, so the "feature crates never depend on each other" rule does not reach them.
+  The use-restrictions must be written so as not to forbid them — a restriction phrased as
+  "no crate may name another workspace crate" breaks the entire build. `styx-core` depends
+  unidirectionally on `styx-proto`.
 
 - **`styx-web` is presentation, not a peer**, and may depend on a feature's `application`
   layer. Written carelessly, the isolation restriction forbids exactly this and the rules
@@ -865,17 +866,21 @@ named `bool` fields.
    panics.
 5. The `styx` binary is the **composition root**: it constructs adapters and injects them
    into ports by value at startup. There is no runtime service locator and no reflection.
-6. `styx-proto` is depended upon by every crate and depends on none of them.
+6. `styx-proto` and `styx-core` are shared foundation crates: depended upon by every
+   crate, and depending on no feature crate. `styx-core` depends unidirectionally on
+   `styx-proto`.
 
 ### Dependency rules (what the gates enforce)
 
-1. `domain` may use `styx-proto` and third-party crates; it may not use `application`,
-   `infrastructure`, or any sibling feature crate.
-2. `application` may use `domain` and `styx-proto`; it may not use `infrastructure`.
-3. `infrastructure` may use `domain`, `application` and `styx-proto`.
+1. `domain` may use `styx-proto`, `styx-core` and third-party crates; it may not use
+   `application`, `infrastructure`, or any sibling feature crate.
+2. `application` may use `domain`, `styx-proto`, and `styx-core`; it may not use
+   `infrastructure`.
+3. `infrastructure` may use `domain`, `application`, `styx-proto`, and `styx-core`.
 4. No feature crate may name another feature crate, in any layer.
-5. `styx-proto` is exempt from rule 4 as a *target* — everyone may name it — and is bound
-   by it as a *source*: it names no feature crate.
+5. `styx-proto` and `styx-core` are exempt from rule 4 as a *target* — everyone may name
+   them — and are bound by it as a *source*: they name no feature crate. `styx-core`
+   depends unidirectionally on `styx-proto`.
 6. `styx-web` may name a feature crate's `application` layer. It is presentation, not a
    peer.
 7. `styx` (the binary) may name every feature crate. It is the only crate that may.
@@ -900,7 +905,8 @@ styx/
 │   └── src/                    # main.rs dispatches; deps.rs, hickory.rs, module_size.rs
 ├── docs/adr/                   # the three ADRs
 ├── crates/
-│   ├── styx-proto/             # shared foundation
+│   ├── styx-proto/             # shared foundation: wire codec
+│   ├── styx-core/              # shared foundation: cross-resolution contracts and ports
 │   ├── styx-<feature>/         # src/domain, src/application, src/infrastructure
 │   └── styx/                   # composition root, `web` feature
 └── gate-selftest/              # deliberate violations, kept out of the normal gate run
@@ -950,7 +956,7 @@ route to the existing one — the exact duplication `mise.toml` exists to avoid.
 
 | Class | Members | Rule |
 |---|---|---|
-| Shared foundation | `styx-proto` | Everyone may name it; it names no one. |
+| Shared foundation | `styx-proto`, `styx-core` | Everyone may name them; they name no feature crate. `styx-core` depends unidirectionally on `styx-proto`. |
 | Feature crate | `styx-resolution`, `styx-filtering` | May not name another feature crate. |
 | Presentation | `styx-web` (from Phase 11) | May name a feature's `application`. Not a peer. |
 | Composition root | `styx` | May name every feature crate. The only one that may. |
@@ -1007,9 +1013,10 @@ Tasks are ordered by dependency. Each is independently verifiable.
    - `[workspace.dependencies]` so versions are declared once.
    - `rust-version` matching the pinned toolchain.
 3. **Members to create** — the minimum that makes every rule exercisable:
-   - `crates/styx-proto` — shared foundation. Empty `lib.rs` plus a doc comment recording
-     that it is foundation and not a feature, and that it is the sole exemption from
-     feature isolation.
+   - `crates/styx-proto` — shared foundation (wire codec). Empty `lib.rs` plus a doc
+     comment recording that it is foundation and not a feature.
+   - `crates/styx-core` — shared foundation (cross-resolution contracts and ports). Empty
+     skeleton recording its foundation status, depending unidirectionally on `styx-proto`.
    - `crates/styx-resolution` — a feature-crate skeleton with `src/domain/mod.rs`,
      `src/application/mod.rs`, `src/infrastructure/mod.rs`, each empty but present. Chosen
      because it is the first feature crate the later phases fill and because it is the
@@ -1049,8 +1056,9 @@ Tasks are ordered by dependency. Each is independently verifiable.
    - **`[[scopes]]`** — one per feature crate × layer, keyed by the `paths` glob list (the
      field is `paths`, not `paths_glob`): `styx-resolution-domain` →
      `crates/styx-resolution/src/domain/**`, and likewise for `application` and
-     `infrastructure`; the same triple for `styx-filtering`; a scope for `styx-proto`; a
-     scope for the `styx` binary. Scope names are validated `[a-z0-9-]`, so the separator
+     `infrastructure`; the same triple for `styx-filtering`; scopes for shared foundation
+     `styx-proto` and `styx-core` (and their layers); a scope for the `styx` binary. Scope
+     names are validated `[a-z0-9-]`, so the separator
      is a hyphen and never `::`.
      **Each layer scope additionally carries the root-relative glob `src/<layer>/**`**,
      for the reason recorded in Approach §2: `[[deny-scope-dep]]` resolves `crate::a::b`
@@ -1061,8 +1069,10 @@ Tasks are ordered by dependency. Each is independently verifiable.
      invariant in prose, so the failure message teaches rather than merely rejects.
    - **`[[restrict-use]]`** — encode Structure rules 4–7, one rule per feature crate
      naming the *other* feature crates in `deny`. Each rule requires a `name` and a
-     `message`; exceptions are spelled `except`, not `allow`. `styx-proto` is exempt by
-     never appearing in any `deny` list, so everyone may name it. `styx-web` and the
+     `message`; exceptions are spelled `except`, not `allow`. `styx-proto` and `styx-core`
+     are exempt by never appearing in any feature crate's `deny` list, so everyone may name
+     them. `styx-core` is forbidden from naming any feature crate; `styx-proto` is forbidden
+     from naming `styx-core` or feature crates. `styx-web` and the
      `styx` binary are exempt **by construction**: the restriction's `scope` covers only
      feature-crate sources, so a crate that is not a feature crate is unrestricted without
      needing an `except` entry.
@@ -1072,10 +1082,11 @@ Tasks are ordered by dependency. Each is independently verifiable.
      for `styx-filtering`), each scoped to that layer's scope and denying the exact list in
      Approach §10. The `message` states the invariant: the hot path touches no I/O, so I/O
      lives in `infrastructure` behind a port declared in `domain`. `infrastructure` gets no
-     such rule. That is where adapters perform I/O. A fifth rule, `no-sync-io-proto`,
-     applies the same list to the whole `styx-proto` scope.
+     such rule. That is where adapters perform I/O. Additional rules apply to shared
+     foundation: `no-sync-io-proto` for `styx-proto` and `no-sync-io-core-domain` for
+     `styx-core-domain`.
    - **`[[restrict-use]]` for `anyhow`** *(amendment, 2026-09-24)* — one rule per library
-     crate (three in phase 0: `no-anyhow-proto`, `no-anyhow-resolution`,
+     crate (`no-anyhow-proto`, `no-anyhow-core`, `no-anyhow-resolution`,
      `no-anyhow-filtering`), each scoped to the whole crate and denying `anyhow` and
      everything under it. The `message` points at Norm 3: return a `thiserror` enum owned
      by the crate. No rule is scoped to the `styx` binary or `xtask`, which is the whole
@@ -1113,8 +1124,8 @@ Tasks are ordered by dependency. Each is independently verifiable.
    - Build the set of workspace member crates and classify each as feature crate, shared
      foundation, presentation, or composition root.
    - **Violation**: a normal edge from one feature crate to another feature crate.
-   - **Not a violation**: any edge into `styx-proto`; an edge from `styx-web` into a
-     feature crate; any edge out of the `styx` binary; any dev edge.
+   - **Not a violation**: any edge into `styx-proto` or `styx-core`; an edge from `styx-web`
+     into a feature crate; any edge out of the `styx` binary; any dev edge.
    - Exit non-zero on the first violation, printing the offending edge and naming the
      invariant it breaks.
 4. **Constraint**: the check must produce a **verdict**, not a report. Informational
@@ -1726,10 +1737,11 @@ the counterpart to, and before the `justfile` that invokes it.*
 - The fixtures are kept out of the normal arch-lint run by `analyzer.include`, never by
   `analyzer.exclude`: the latter substring-matches absolute paths and would hide the
   fixtures from the self-test too, turning every fixture green.
-- `domain` depends outward on nothing but `styx-proto` and third-party crates.
+- `domain` depends outward on nothing but `styx-proto`, `styx-core` and third-party crates.
 - No feature crate names another feature crate. Cross-feature needs are a port in the
   consumer's `domain` and an adapter in the binary.
-- `styx-proto` is exempt as a dependency *target* only, and is the sole exemption.
+- `styx-proto` and `styx-core` are exempt as dependency *targets* from feature isolation.
+  `styx-core` depends unidirectionally on `styx-proto`.
 - `styx-web` may reach a feature's `application` layer; it is presentation, not a peer.
 - The `styx` binary is the only crate that may name every feature crate.
 - Two independent layering gates are in place and both are wired into `gate`. Removing

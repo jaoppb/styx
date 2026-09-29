@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
+use styx_core::Clock;
 use styx_proto::{Message, Opcode, Question, RecordClass, ResponseCode, Ttl};
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::domain::answer::{ForgedAnswer, ForgedSource, ResolutionOutcome};
-use crate::domain::clock::Clock;
 use crate::domain::error::PipelineError;
 use crate::domain::ports::filter::{FilterPolicy, FilterVerdict};
 use crate::domain::ports::local::LocalRecords;

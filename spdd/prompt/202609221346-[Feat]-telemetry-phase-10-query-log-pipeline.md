@@ -991,7 +991,7 @@ styx-telemetry/
    background tasks (consumer, flusher, sweeper, and the retention timer).
 5. **`styx-telemetry` names no other feature crate.** The filtering verdict and the client
    identity arrive as plain domain values on `QueryEvent`, constructed by an adapter in
-   the binary. The wire-codec crate is the one permitted shared foundation.
+   the binary. The shared foundation crates (`styx-proto` and `styx-core`) are permitted.
 6. **`styx-web` (the next phase) may depend on this crate's `application` layer**, because
    the web crate is presentation rather than a peer feature. It consumes `HistoryService`,
    `PurgeService` and the live ring; it does not reach into `infrastructure`.
@@ -999,7 +999,7 @@ styx-telemetry/
    them a stated convention: three `[[scopes]]` entries (`domain`, `application`,
    `infrastructure`) and the `[[deny-scope-dep]]` layering rules that go with them; one
    `[[restrict-use]]` rule forbidding `styx_telemetry` from naming any other feature crate
-   (`styx_proto` excepted); two `[[restrict-use]]` rules,
+   (`styx_proto` and `styx_core` excepted); two `[[restrict-use]]` rules,
    `no-sync-io-telemetry-domain` and `no-sync-io-telemetry-application`, denying the exact
    synchronous-I/O list Phase 0 Approach §10 fixes, in sync and async code alike; and one
    `[[restrict-use]]` rule, `no-anyhow-telemetry`, denying `anyhow` crate-wide, because
@@ -1663,8 +1663,8 @@ HistoryService   RollupStore (always) + RawRowStore (maybe) → HistoryView + De
    graph — and catch different mistakes.
 2. **Cross-crate** — `styx-telemetry` names no other feature crate. Cross-feature needs
    are ports in this crate's `domain`, implemented by adapters in the `styx` binary. The
-   wire-codec crate is the one permitted shared foundation. `styx-web` may depend on this
-   crate's `application` layer, because it is presentation and not a peer.
+   shared foundation crates (`styx-proto` and `styx-core`) are permitted. `styx-web` may
+   depend on this crate's `application` layer, because it is presentation and not a peer.
 3. **The hot path** — `QueryLogPipeline::on_query` performs no I/O, no `await`, no
    blocking send, no database read and no allocation beyond what the caller already built.
    Any change to that function is a change to the resolution path's latency profile and is

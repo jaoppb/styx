@@ -15,9 +15,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use styx_core::SystemClock;
 use styx_resolution::{
     AllowAllFilter, DiscardObserver, MaxResponseSize, NoLocalRecords, Pipeline, Server,
-    ServerConfig, SystemClock,
+    ServerConfig,
 };
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;

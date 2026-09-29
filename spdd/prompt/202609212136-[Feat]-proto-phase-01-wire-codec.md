@@ -503,7 +503,7 @@ not own would be reasoning about someone else's interpretation of the wire at ex
 points where interpretation is security-relevant. This is not negotiable and not
 revisitable inside this phase.
 
-### 2. `styx-proto` is shared foundation, and this is the *one* exception to crate isolation
+### 2. `styx-proto` is shared foundation, exempt from feature isolation
 
 **The rule it is exempt from**: *feature crates never depend on each other. Cross-feature
 needs are expressed as a port in the consumer's `domain`, implemented by an adapter in the
@@ -511,10 +511,10 @@ binary — e.g. `styx-resolution` declares a `FilterPolicy` port and `styx` wire
 `styx-filtering` into it. `styx-web` may depend on a feature's `application` layer,
 because it is presentation, not a peer.*
 
-**The exemption, in full**: *`styx-proto` is shared foundation, not a feature crate. Every
-crate parses through the wire codec, so the "feature crates never depend on each other"
-rule does not reach it. This is the one explicit exception, and `[[restrict-use]]` must be
-written so as not to forbid it.*
+**The exemption, in full**: *`styx-proto` (and `styx-core`) are shared foundation, not
+feature crates. Every crate parses through the wire codec (`styx-proto`), and resolution
+engines share contracts via `styx-core`. The "feature crates never depend on each other"
+rule does not reach them. `[[restrict-use]]` must be written so as not to forbid them.*
 
 **Why the exemption is correct rather than convenient**: the isolation rule exists to stop
 *features* coupling to each other's business logic. A wire codec is not a feature — it is
@@ -523,7 +523,8 @@ consumer's `domain` would produce N structurally identical ports and N conversio
 same bytes, with no isolation gained and a great deal of ceremony added.
 
 **The exemption runs one way only.** Every crate may depend on `styx-proto`;
-`styx-proto` depends on no feature crate, or the dependency graph acquires a cycle.
+`styx-proto` is the leaf shared foundation crate and depends on no workspace crate.
+`styx-core` depends unidirectionally on `styx-proto`.
 
 ### 3. `hickory-proto` is the test oracle, `[dev-dependencies]` only
 
@@ -1174,10 +1175,10 @@ below — but they are non-negotiable.
 ### 3. Architectural constraints
 
 - **`styx-proto` may be depended on by every crate and depends on no feature crate.** The
-  governing rule: *"`styx-proto` is shared foundation, not a feature crate. Every crate
-  parses through the wire codec, so the 'feature crates never depend on each other' rule
-  does not reach it. This is the one explicit exception, and `[[restrict-use]]` must be
-  written so as not to forbid it."*
+  governing rule: *"`styx-proto` (and `styx-core`) are shared foundation, not feature
+  crates. Every crate parses through the wire codec, so the 'feature crates never depend
+  on each other' rule does not reach them. `[[restrict-use]]` must be written so as not to
+  forbid them."* `styx-proto` depends on no workspace crates.
 - The rule it is exempt from, in full: *"Feature crates never depend on each other.
   Cross-feature needs are expressed as a port in the consumer's `domain`, implemented by
   an adapter in the binary — e.g. `styx-resolution` declares a `FilterPolicy` port and

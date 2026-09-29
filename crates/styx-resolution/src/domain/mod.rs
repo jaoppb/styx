@@ -1,6 +1,6 @@
 //! Domain layer: ports (traits) and the error enums they return.
 //!
-//! Depends outward on nothing but `styx-proto` and third-party crates. It may
+//! Depends outward on nothing but `styx-proto`, `styx-core`, and third-party crates. It may
 //! not use `crate::application`, `crate::infrastructure`, or any sibling
 //! feature crate.
 //!
@@ -13,7 +13,6 @@
 pub mod answer;
 pub mod cache;
 pub mod circuit;
-pub mod clock;
 pub mod config;
 pub mod edns;
 pub mod error;
@@ -22,7 +21,6 @@ pub mod ports;
 pub mod probe;
 pub mod request;
 pub mod selection;
-pub mod upstream;
 pub mod weight;
 
 pub use answer::{AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolvedSource};
@@ -33,16 +31,12 @@ pub use cache::{
     RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
 };
 pub use circuit::{CircuitConfig, CircuitState, FailureCount};
-pub use clock::Clock;
 pub use config::{PoolConfig, Timeouts, UpstreamConfig};
 pub use edns::EdnsBufferSize;
-pub use error::{
-    ConfigError, FailureClass, ListenerError, PipelineError, PoolError, ServerError, UpstreamError,
-};
+pub use error::{ConfigError, ListenerError, PipelineError, PoolError, ServerError};
 pub use health::{HealthState, Outcome};
 pub use ports::{FilterPolicy, FilterVerdict, LocalRecords, QueryDetail, QueryObserver};
 pub use probe::{CanaryConfig, ProbeConfig, ProbePolicy};
 pub use request::{ClientId, MaxResponseSize, RequestContext, Transport};
 pub use selection::{MemberView, Selection, SelectionStrategy, StrategyName};
-pub use upstream::{Upstream, UpstreamId, UpstreamKind, UpstreamResponse};
 pub use weight::Weight;

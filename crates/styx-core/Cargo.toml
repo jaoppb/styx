@@ -1,0 +1,18 @@
+[package]
+name = "styx-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "styx shared foundation: cross-resolution contracts and ports."
+
+[features]
+test-support = []
+
+[dependencies]
+styx-proto = { path = "../styx-proto" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

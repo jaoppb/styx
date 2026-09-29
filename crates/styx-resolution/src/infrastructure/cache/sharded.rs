@@ -4,6 +4,8 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, RwLock};
 
+use styx_core::Clock;
+
 use crate::domain::cache::admission::{AdmissionOutcome, RejectReason};
 use crate::domain::cache::bytes::HeapBytes;
 use crate::domain::cache::capacity::CacheCapacity;
@@ -13,7 +15,6 @@ use crate::domain::cache::key::CacheKey;
 use crate::domain::cache::port::{AdmittedCount, AnswerCache, Lookup, PurgedCount};
 use crate::domain::cache::stats::{AtomicCacheCounters, CacheStats};
 use crate::domain::cache::ttl::TtlPolicy;
-use crate::domain::clock::Clock;
 use crate::infrastructure::cache::eviction::Eviction;
 
 /// Default number of concurrent shards (32).

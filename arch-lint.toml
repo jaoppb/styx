@@ -119,6 +119,18 @@ name = "styx-proto-infrastructure"
 paths = ["crates/styx-proto/src/infrastructure/**", "src/infrastructure/**"]
 
 [[scopes]]
+name = "styx-core"
+paths = ["crates/styx-core/src/**"]
+
+[[scopes]]
+name = "styx-core-domain"
+paths = ["crates/styx-core/src/domain/**", "src/domain/**"]
+
+[[scopes]]
+name = "styx-core-infrastructure"
+paths = ["crates/styx-core/src/infrastructure/**", "src/infrastructure/**"]
+
+[[scopes]]
 name = "styx-resolution"
 paths = ["crates/styx-resolution/src/**"]
 
@@ -197,6 +209,12 @@ from = "styx-proto-application"
 to = ["styx-proto-infrastructure"]
 message = "application orchestrates over the ports declared in domain; it must not know which adapter implements them"
 
+[[deny-scope-dep]]
+name = "core-domain-outward"
+from = "styx-core-domain"
+to = ["styx-core-infrastructure"]
+message = "domain is the innermost layer: it declares ports and owns error types, and depends outward on nothing but styx-proto and third-party crates. Move the type into domain, or invert the call behind a port that infrastructure implements"
+
 # ===========================================================================
 # Feature isolation — Structure rules 4-7.
 #
@@ -232,6 +250,18 @@ name = "proto-names-no-feature"
 scope = "styx-proto"
 deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**"]
 message = "styx-proto is shared foundation: it is exempt from feature isolation as a dependency target, not as a source. Every crate parses through the wire codec, so the codec must depend on none of them"
+
+[[restrict-use]]
+name = "proto-names-no-core"
+scope = "styx-proto"
+deny = ["styx_core", "styx_core::**"]
+message = "styx-proto is the wire codec and bottom-most shared foundation crate; styx-core depends on styx-proto, never the reverse"
+
+[[restrict-use]]
+name = "core-names-no-feature"
+scope = "styx-core"
+deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**"]
+message = "styx-core is shared foundation: it is exempt from feature isolation as a dependency target, not as a source. Core contracts and ports must depend on no feature crate"
 
 # ===========================================================================
 # Synchronous I/O by layer (amendment, 2026-09-24).
@@ -369,6 +399,28 @@ deny = [
 ]
 message = "styx-proto is a pure codec with no infrastructure layer of its own. A guarantee of \"no I/O in this crate\" with nothing behind it is exactly the kind of rule this amendment exists to close"
 
+[[restrict-use]]
+name = "no-sync-io-core-domain"
+scope = "styx-core-domain"
+deny = [
+    "std::fs",
+    "std::fs::**",
+    "std::net::TcpStream",
+    "std::net::TcpListener",
+    "std::net::UdpSocket",
+    "std::net::ToSocketAddrs",
+    "std::io::Read",
+    "std::io::Write",
+    "std::io::BufRead",
+    "std::io::Seek",
+    "std::io::prelude",
+    "std::io::prelude::**",
+    "std::io::stdin",
+    "std::io::stdout",
+    "std::io::stderr",
+]
+message = "the hot path touches no I/O: domain declarations must not do synchronous I/O"
+
 # ===========================================================================
 # `anyhow` by crate (amendment, 2026-09-24).
 #
@@ -383,6 +435,12 @@ message = "styx-proto is a pure codec with no infrastructure layer of its own. A
 [[restrict-use]]
 name = "no-anyhow-proto"
 scope = "styx-proto"
+deny = ["anyhow", "anyhow::**"]
+message = "library crates return a crate-owned thiserror enum, never anyhow (Norm 3). anyhow is reserved for the styx binary's own startup errors and for xtask, which reports a verdict to a human rather than exposing a library boundary"
+
+[[restrict-use]]
+name = "no-anyhow-core"
+scope = "styx-core"
 deny = ["anyhow", "anyhow::**"]
 message = "library crates return a crate-owned thiserror enum, never anyhow (Norm 3). anyhow is reserved for the styx binary's own startup errors and for xtask, which reports a verdict to a human rather than exposing a library boundary"
 

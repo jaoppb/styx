@@ -25,10 +25,10 @@ divergent telemetry hooks, and fragmented health and failover orchestration.
 
 ## Decision
 
-**Define a single unified `Upstream` trait port in `domain/ports/` that abstracts
+**Define a single unified `Upstream` trait port in `styx-core` that abstracts
 both forwarding and recursive resolution backends.**
 
-- **Port definition**: `styx_resolution::domain::ports::Upstream` specifies:
+- **Port definition**: `styx_core::domain::upstream::Upstream` specifies:
   - `fn id(&self) -> &UpstreamId`: identifies the upstream instance for metrics,
     logging, and health state mapping.
   - `fn kind(&self) -> UpstreamKind`: distinguishes `UpstreamKind::Forwarder`

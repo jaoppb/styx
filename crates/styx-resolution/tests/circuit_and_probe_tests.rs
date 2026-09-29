@@ -6,10 +6,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use harness::{CommandableUpstream, TestClock, UpstreamBehavior};
+use styx_core::{FailureClass, UpstreamId};
 use styx_proto::{Name, Question, RecordClass, RecordType};
 use styx_resolution::{
     CanaryConfig, CircuitConfig, CircuitState, Do53Forwarder, EdnsBufferSize, OrderedFailover,
-    PoolError, PoolMember, ProbeConfig, ProbePolicy, ProbeScheduler, UpstreamId, UpstreamPool,
+    PoolError, PoolMember, ProbeConfig, ProbePolicy, ProbeScheduler, UpstreamPool,
 };
 
 use tokio_util::sync::CancellationToken;
@@ -228,7 +229,7 @@ async fn test_answer_fault_does_not_open_circuit() {
         pool.record(
             &UpstreamId::new("up"),
             styx_resolution::Outcome::Failure {
-                class: styx_resolution::FailureClass::AnswerFault,
+                class: FailureClass::AnswerFault,
                 was_probe: false,
             },
         );

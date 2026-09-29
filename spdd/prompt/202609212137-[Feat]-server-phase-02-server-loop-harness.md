@@ -574,37 +574,44 @@ concerns, not a zone-file server.
 1. **`styx-proto`** *(exists from phase 1)* — shared foundation, not a feature crate. The
    wire codec. Every crate may depend on it; `[[restrict-use]]` must be written so as not
    to forbid this.
-2. **`styx-resolution`** *(this phase creates it)* —
+2. **`styx-core`** *(shared foundation)* — cross-resolution contracts and ports. Defines the
+   injectable `Clock` trait in `domain::clock`, `SystemClock` in `infrastructure::clock`,
+   and `TestClock` in `test_util::clock` (under feature `test-support`). Depends
+   unidirectionally on `styx-proto`.
+3. **`styx-resolution`** *(this phase creates it)* —
    - `domain` — `RequestContext`, `ClientId`, `Transport`, `MaxResponseSize`,
      `ResolutionOutcome`, `ForgedSource`, `ResolvedSource`, `AnswerSource`,
-     `ForgedAnswer`, the `Clock` trait, the `FilterPolicy` trait, the `FilterVerdict`
-     enum, the `LocalRecords` trait, the `QueryObserver` trait, `QueryDetail`, and the
-     `thiserror` error enums — the latter split by concept into `error::pipeline`,
-     `error::listener`, `error::server` and `error::config` rather than one flat `error`
-     module accumulating every concern (`HarnessError` lives with the harness instead;
-     see item 4). **No I/O, no `unwrap`, no dependency on `application` or
-     `infrastructure`.**
+     `ForgedAnswer`, the `FilterPolicy` trait, the `FilterVerdict` enum, the
+     `LocalRecords` trait, the `QueryObserver` trait, `QueryDetail`, and the `thiserror`
+     error enums — the latter split by concept into `error::pipeline`, `error::listener`,
+     `error::server` and `error::config` rather than one flat `error` module accumulating
+     every concern (`HarnessError` lives with the harness instead; see item 5). Imports
+     `Clock` directly from `styx_core` without re-exporting. **No I/O, no `unwrap`, no
+     dependency on `application` or `infrastructure`.**
    - `application` — `Pipeline`, which orchestrates the fixed stage order and holds the
      compile-time generic collaborator handles (`Arc<L>`, `Arc<F>`, `Arc<O>`, `Arc<C>`,
-     `Arc<T>`). Depends on `domain` only.
-   - `infrastructure` — `UdpListener`, `TcpListener`, `Server`, `ResponseWriter`,
-     `SystemClock`, and the no-op port implementations `AllowAllFilter`, `NoLocalRecords`,
-     `DiscardObserver`. Generic over collaborator ports. Depends on `domain` and
-     `application`.
-3. **`styx`** *(the binary)* — reads `ServerConfig` from TOML, constructs `SystemClock`,
-   selects the port implementations, builds the `Pipeline`, binds the `Server`, and
-   supervises the listener tasks. **This is the only place that knows both a port and its
-   implementation.** In later phases it is where `styx-filtering`, `styx-storage` and the
-   query-log pipeline get wired in.
-4. **`styx-resolution/tests/`** *(harness, dev-only)* — `TestServer`, `TestClock`,
-   `FakeNameServer`, `FakeRole`, `ZoneScript`, `DnsClient`, and `HarnessError`. Kept out of
-   `domain::error` because `domain` ships in the production binary and `HarnessError`
-   never does. **The only place `hickory-proto` may appear**, and only under
-   `[dev-dependencies]`.
+     `Arc<T>`). Depends on `domain` and `styx-core`.
+   - `infrastructure` — `UdpListener`, `TcpListener`, `Server`, `ResponseWriter`, and the
+     no-op port implementations `AllowAllFilter`, `NoLocalRecords`, `DiscardObserver`.
+     Generic over collaborator ports. Depends on `domain`, `application`, and `styx-core`.
+4. **`styx`** *(the binary)* — reads `ServerConfig` from TOML, constructs `SystemClock`
+   directly from `styx_core`, selects the port implementations, builds the `Pipeline`,
+   binds the `Server`, and supervises the listener tasks. **This is the only place that
+   knows both a port and its implementation.** In later phases it is where `styx-filtering`,
+   `styx-storage` and the query-log pipeline get wired in.
+5. **`styx-resolution/tests/`** *(harness, dev-only)* — `TestServer`, `FakeNameServer`,
+   `FakeRole`, `ZoneScript`, `DnsClient`, and `HarnessError`. Consumes `TestClock` from
+   `styx_core::test_util::TestClock` via `[dev-dependencies]` with feature
+   `test-support`. Kept out of `domain::error` because `domain` ships in the production
+   binary and `HarnessError` never does. **The only place `hickory-proto` may appear**, and
+   only under `[dev-dependencies]`.
 
 ### Trait (port) implementations
 
-1. `Clock` is implemented by `SystemClock` (production) and `TestClock` (harness).
+1. `Clock` is declared in `styx-core::domain::clock` and implemented by `SystemClock`
+   (production, in `styx-core::infrastructure::clock`) and `TestClock`
+   (`styx-core::test_util::clock` under feature `test-support`). `styx-resolution`
+   imports directly from `styx_core` without re-exporting.
 2. `FilterPolicy` is implemented by `AllowAllFilter` (no-op, this phase) and by the
    `styx-filtering` adapter in the `styx` binary (**phase 8**).
 3. `LocalRecords` is implemented by `NoLocalRecords` (no-op, this phase) and by the
@@ -669,19 +676,23 @@ concerns, not a zone-file server.
    phase 0's `arch-lint.toml`. This operation adds no new arch-lint entries, only the
    `domain` and `application` code those rules govern.
 
-### 2. Define the `Clock` port and its two implementations — `styx-resolution::domain::clock`
+### 2. Define the `Clock` port and implementations — `crates/styx-core`
 
-1. **Trait `Clock`**: `Send + Sync + 'static`.
-   - `now_utc() -> SystemTime` — wall-clock. Used for RRSIG inception/expiration
-     comparison (phase 6) and rollup bucket boundaries (phase 10).
-   - `now_monotonic() -> Instant` — monotonic. Used for SRTT decay, circuit-breaker
-     timing, idle-window probes (phase 3), TTL expiry (phase 4) and query timeouts.
-2. **`SystemClock`** (`infrastructure`): the only place in shipping code that calls the
-   OS clock directly.
-3. **`TestClock`** (harness): holds both a wall-clock offset and a monotonic offset behind
-   a shared lock; `advance(Duration)` moves **both**; `set_utc(SystemTime)` moves only
-   wall-clock, so signature-validity windows can be tested independently of elapsed time.
-4. **Constraints**: no component outside `SystemClock` may call `SystemTime::now()` or
+1. **Trait `Clock`** (`styx-core::domain::clock`): `Send + Sync + 'static`.
+    - `now_utc() -> SystemTime` — wall-clock. Used for RRSIG inception/expiration
+      comparison (phase 6) and rollup bucket boundaries (phase 10).
+    - `now_monotonic() -> Instant` — monotonic. Used for SRTT decay, circuit-breaker
+      timing, idle-window probes (phase 3), TTL expiry (phase 4) and query timeouts.
+2. **`SystemClock`** (`styx-core::infrastructure::clock`): the only place in shipping code
+   that calls the OS clock directly.
+3. **`TestClock`** (`styx-core::test_util::clock`, feature `test-support`): holds both a
+   wall-clock offset and a monotonic offset behind a shared lock; `advance(Duration)`
+   moves **both**; `set_utc(SystemTime)` moves only wall-clock, so signature-validity
+   windows can be tested independently of elapsed time.
+4. **Direct imports (no re-exports)**: `styx-resolution` imports `Clock` directly from
+   `styx_core` without re-exporting. The `styx` binary imports `SystemClock` directly from
+   `styx_core`.
+5. **Constraints**: no component outside `SystemClock` may call `SystemTime::now()` or
    `Instant::now()`. Add this as a grep-able check or an arch-lint restriction. Every
    constructor that needs time takes `Arc<dyn Clock>`.
 

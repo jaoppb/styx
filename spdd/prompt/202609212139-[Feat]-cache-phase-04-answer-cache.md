@@ -120,8 +120,9 @@ or build dependency path.
 it.** Cargo enforces feature-to-feature isolation; arch-lint enforces layering within a
 crate. **Feature crates never depend on each other** — cross-feature needs are expressed
 as a trait (port) in the consumer's `domain`, implemented by an adapter in the `styx`
-binary. `styx-proto` is the single explicit exception: it is shared foundation, not a
-feature, because every crate parses through the wire codec.
+binary. `styx-proto` and `styx-core` are shared foundation, not features: `styx-proto`
+provides the wire codec and `styx-core` provides shared resolution contracts (`Clock`,
+`Upstream`).
 
 **Lint policy**: 15 denied clippy lints workspace-wide, including
 `indexing_slicing = deny` and `arithmetic_side_effects = deny` — **every label offset and
@@ -815,8 +816,8 @@ styx-resolution/
    `admit`, `purge_all`, `stats`. Consumers prefer static dispatch via generics
    (`<A: AnswerCache>`, `impl AnswerCache`).
 2. `ShardedAnswerCache` (in `infrastructure::cache::sharded`) implements `AnswerCache`.
-3. `Clock` (from Phase 2) is consumed generically as `Arc<C>` where `C: Clock`; nothing in
-   this component reads the system clock.
+3. `Clock` (defined in `styx-core`, shared foundation) is consumed directly as `Arc<C>`
+   where `C: Clock`; nothing in this component reads the system clock.
 4. `CacheError` implements `std::error::Error` via `thiserror::Error`.
 5. `CanonicalName` wraps `styx_proto`'s name type; it does not replace it.
 6. `HeapBytes` (in `domain::cache::bytes`) is the one place byte-count arithmetic happens;
@@ -1281,9 +1282,9 @@ client query
    arch-lint's `[[scopes]]` / `[[deny-scope-dep]]` on a syn-engine config, and
    independently by a `cargo tree --edges normal` gate, because arch-lint reads source
    text while `cargo tree` reads the real link graph and they catch different mistakes.
-2. **Cross-crate** — `styx-resolution` names no other feature crate. `styx-proto` is the
-   one permitted shared foundation. A future consumer in another feature crate declares
-   its own port and the `styx` binary adapts.
+2. **Cross-crate** — `styx-resolution` names no other feature crate. `styx-proto` and
+   `styx-core` are the permitted shared foundation crates. A future consumer in another
+   feature crate declares its own port and the `styx` binary adapts.
 3. **Error handling** — `thiserror` enums, `Result<T, CacheError>`, never a bare `String`
    error. No `unwrap`, no `expect`, no `panic!`, no unchecked indexing in non-test code
    (`no-unwrap-expect` with `allow_in_tests = true`, `indexing_slicing = deny`). A cache

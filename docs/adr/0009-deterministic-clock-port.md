@@ -35,15 +35,15 @@ timeouts, and rate tracking.
 **Abstract all time access behind an injectable `Clock` port in `domain`, separating
 monotonic instant from wall-clock time, backed by a deterministic test double.**
 
-- **Port definition**: `styx_resolution::domain::ports::Clock` declares:
+- **Port definition**: `styx_core::domain::clock::Clock` declares:
   - `fn now_monotonic(&self) -> Instant`: returns a monotonically increasing
     time point for measuring durations, timeouts, and state transitions.
   - `fn now_utc(&self) -> SystemTime`: returns UTC wall-clock time for
     timestamp recording, log telemetry, and DNSSEC signature validity checks.
-- **Production adapter**: `styx_resolution::infrastructure::SystemClock` implements
+- **Production adapter**: `styx_core::infrastructure::SystemClock` implements
   `Clock` using the standard library's real system clocks.
-- **Test double**: `TestClock` in `tests/harness/clock.rs` provides deterministic,
-  programmatic time control with `advance(Duration)` and `set_utc(SystemTime)`.
+- **Test double**: `TestClock` in `styx_core::test_util::clock` (under feature `test-support`)
+  provides deterministic, programmatic time control with `advance(Duration)` and `set_utc(SystemTime)`.
   Tests step time forward instantaneously without sleeping or calling
   `tokio::time::sleep`.
 - **Static dispatch**: Pipeline and pool components accept time via generic

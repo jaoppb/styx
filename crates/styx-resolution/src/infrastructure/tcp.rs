@@ -10,9 +10,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 
+use styx_core::Clock;
+
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::application::Pipeline;
-use crate::domain::clock::Clock;
 use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;

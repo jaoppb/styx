@@ -762,8 +762,8 @@ and reachable through the soak and beyond.
 |---|-------|----------------------------------|
 | 0 | Foundation and gates | Workspace shape, syn-engine `arch-lint.toml`, `cargo tree` layering gate, 15 denied clippy lints incl. the panic lint, lefthook, GitHub Actions workflow (whose release job this phase extends), `just gate`, the `--no-default-features` headless build |
 | 1 | Wire codec | `styx-proto` — the smoke check encodes/decodes its probe query through it |
-| 2 | Server loop and test harness | UDP/TCP listener tasks to supervise, the in-process fake root/TLD/auth servers, the injectable `Clock`, the socket-level test harness |
-| 3 | `Upstream` port, forwarding, pool | The health-probe worker task (degradable tier); the fake upstream the smoke check points at |
+| 2 | Server loop and test harness | UDP/TCP listener tasks to supervise, the in-process fake root/TLD/auth servers, the injectable `Clock` (from `styx-core`), the socket-level test harness |
+| 3 | `Upstream` port, forwarding, pool | `Upstream` resolution port (from `styx-core`); the health-probe worker task (degradable tier); the fake upstream the smoke check points at |
 | 4 | Answer cache | In-`Arc` state that must survive a task restart; cold-start cost that the cutover plan must avoid |
 | 5 | Recursion | Descent latency that bounds the shutdown drain deadline |
 | 6 | DNSSEC | The pinned `TrustAnchorSource`; the differential gate's AD-bit diff |

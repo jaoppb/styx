@@ -6,12 +6,13 @@ use std::time::Duration;
 use serde::Deserialize;
 use styx_proto::{Name, RecordType};
 
+use styx_core::UpstreamKind;
+
 use crate::domain::circuit::CircuitConfig;
 use crate::domain::edns::EdnsBufferSize;
 use crate::domain::error::ConfigError;
 use crate::domain::probe::{CanaryConfig, ProbeConfig};
 use crate::domain::selection::StrategyName;
-use crate::domain::upstream::UpstreamKind;
 use crate::domain::weight::Weight;
 
 /// Timeout budgets for an upstream provider.

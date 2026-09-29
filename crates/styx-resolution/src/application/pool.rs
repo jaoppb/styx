@@ -2,16 +2,15 @@
 
 use std::sync::{Arc, RwLock};
 
+use styx_core::{Clock, Upstream, UpstreamId, UpstreamResponse};
 use styx_proto::Question;
 use tokio::task::JoinSet;
 
 use crate::domain::circuit::CircuitConfig;
-use crate::domain::clock::Clock;
 use crate::domain::error::PoolError;
 use crate::domain::health::{HealthState, Outcome};
 use crate::domain::probe::{CanaryConfig, ProbePolicy};
 use crate::domain::selection::{MemberView, Selection, SelectionStrategy};
-use crate::domain::upstream::{Upstream, UpstreamId, UpstreamResponse};
 use crate::domain::weight::Weight;
 
 /// A single upstream member managed within a pool.

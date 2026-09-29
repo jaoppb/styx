@@ -5,8 +5,9 @@
 
 use std::time::{Duration, Instant};
 
+use styx_core::FailureClass;
+
 use crate::domain::circuit::{CircuitConfig, CircuitState, FailureCount};
-use crate::domain::error::FailureClass;
 
 /// The recorded result of a single resolution attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
