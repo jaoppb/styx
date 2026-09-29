@@ -6,9 +6,9 @@
 //! injects it. There is no service locator and no reflection — collaborators
 //! are passed to constructors by value at startup.
 //!
-//! Phase 0 delivers the crate, its `web` feature and the tracing convention.
-//! DNS listeners, the resolver and the Leptos SSR handler are wired in from
-//! phase 2 onward.
+//! Wires DNS listeners (UDP/TCP), server configuration, the resolution
+//! pipeline, and graceful shutdown. The Leptos SSR handler is wired in
+//! Phase 11.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

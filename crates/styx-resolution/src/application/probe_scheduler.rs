@@ -11,8 +11,9 @@ use styx_core::{Clock, Upstream, UpstreamId};
 use styx_proto::{Question, RecordClass};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
-use crate::application::pool::UpstreamPool;
+use crate::application::pool::{record_span_outcome, UpstreamPool};
 use crate::domain::health::Outcome;
 use crate::domain::selection::SelectionStrategy;
 
@@ -89,6 +90,14 @@ where
             return;
         };
 
+        let span = tracing::info_span!(
+            "upstream_probe",
+            member_id = %id,
+            strategy = "probe",
+            outcome = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty,
+        );
+
         let question = Question::new(
             member.canary.qname.clone(),
             member.canary.qtype,
@@ -97,21 +106,32 @@ where
         let start = clock.now_monotonic();
         let deadline = start.checked_add(member.canary.timeout).unwrap_or(start);
 
-        let outcome = match member.upstream.resolve(&question, deadline).await {
+        let res = member
+            .upstream
+            .resolve(&question, deadline)
+            .instrument(span.clone())
+            .await;
+        let elapsed = clock
+            .now_monotonic()
+            .checked_duration_since(start)
+            .unwrap_or_default();
+
+        let outcome = match res {
             Ok(_) => {
-                let elapsed = clock
-                    .now_monotonic()
-                    .checked_duration_since(start)
-                    .unwrap_or_default();
+                record_span_outcome(&span, elapsed, None);
                 Outcome::Success {
                     latency: elapsed,
                     was_probe: true,
                 }
             }
-            Err(err) => Outcome::Failure {
-                class: err.classify(),
-                was_probe: true,
-            },
+            Err(err) => {
+                let class = err.classify();
+                record_span_outcome(&span, elapsed, Some(class));
+                Outcome::Failure {
+                    class,
+                    was_probe: true,
+                }
+            }
         };
 
         pool.record(id, outcome);

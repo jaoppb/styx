@@ -37,7 +37,7 @@ fmt-check:
     @echo "── fmt ────────────────────────────────────────────────────────────"
     cargo fmt --all -- --check
 
-# 2. The fifteen denied lints, workspace-wide, every target, every feature.
+# 2. Markdown linting.
 [doc("Lint every markdown file in the repository.")]
 md: _rumdl-version
     @echo "── markdown ───────────────────────────────────────────────────────"
@@ -77,12 +77,13 @@ _rumdl-version:
         exit 1
     fi
 
-[doc("Clippy's fifteen denied lints, workspace-wide.")]
+# 3. The twenty-one denied lints, workspace-wide, every target, every feature.
+[doc("Clippy's twenty-one denied lints, workspace-wide.")]
 lint:
     @echo "── clippy ─────────────────────────────────────────────────────────"
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-# 3. arch-lint: scopes, layer denials, use-restrictions and the rule set.
+# 4. arch-lint: scopes, layer denials, use-restrictions and the rule set.
 #
 # The version check is not ceremony. arch-lint selects between two engines by
 # the presence of a [[layers]] block, and the tree-sitter engine analyses zero
@@ -112,7 +113,7 @@ _arch-version:
         exit 1
     fi
 
-# 4. The link-graph layering gate — reads what the build links, not the source
+# 5. The link-graph layering gate — reads what the build links, not the source
 #    text. Deliberately overlaps with arch-lint: a tool that fails open must be
 #    caught by a neighbour. Removing either gate is a regression.
 [doc("Link-graph layering gate (independent of arch-lint).")]
@@ -120,20 +121,20 @@ deps:
     @echo "── link-graph layering ────────────────────────────────────────────"
     cargo run --quiet --package xtask -- deps
 
-# 5. Containment: the test oracle stays out of the shipping binary.
+# 6. Containment: the test oracle stays out of the shipping binary.
 [doc("Keep the DNS test oracle out of the shipping binary.")]
 hickory-dev-only:
     @echo "── hickory containment ────────────────────────────────────────────"
     cargo run --quiet --package xtask -- hickory-dev-only
 
-# 6. Module size: no .rs file past 400 counted lines. No per-file exemption —
+# 7. Module size: no .rs file past 400 counted lines. No per-file exemption —
 #    the remedy for a failing file is to split it, never to raise the cap.
 [doc("Cap every .rs file at 400 counted lines (xtask module-size).")]
 module-size:
     @echo "── module size ────────────────────────────────────────────────────"
     cargo run --quiet --package xtask -- module-size
 
-# 7. Tests. Socket-level by default from phase 2: real UDP/TCP against an
+# 8. Tests. Socket-level by default from phase 2: real UDP/TCP against an
 #    ephemeral-port server with in-process fakes and an injectable Clock. In
 #    phase 0 there is nothing to run, but the target is already wired.
 [doc("The test suite (socket-level by default from phase 2).")]
@@ -141,7 +142,7 @@ test:
     @echo "── tests ──────────────────────────────────────────────────────────"
     cargo test --workspace --all-features
 
-# 8. The headless build: styx without the web UI.
+# 9. The headless build: styx without the web UI.
 #
 #    Passes near-vacuously until phase 11, when the `web` feature actually
 #    gates code. It is wired now because its cost is lowest now and rises with

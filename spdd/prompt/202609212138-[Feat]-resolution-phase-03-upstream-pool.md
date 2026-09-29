@@ -754,21 +754,25 @@ Ordered by dependency. Each task is independently completable and independently 
      a short dispatcher, not the place the per-strategy logic lives: read `now` from the
      clock, build `Vec<MemberView>`, call `strategy.select(&views, now)`, then a guard
      clause per `Selection` variant hands off to a named helper.
-     - `NoneAvailable` → return `PoolError::AllUpstreamsDown` immediately. Never hang,
-       never panic.
+     - `NoneAvailable` → emit `tracing::warn!("all upstreams down in pool")`, return
+       `PoolError::AllUpstreamsDown` immediately. Never hang, never panic.
      - `Sequential(ids)` → `async fn try_sequential(&self, ids: &[UpstreamId], query: &Question) -> Result<UpstreamResponse, PoolError>`
-       tries each id in order with a per-attempt deadline, records each attempt's
-       outcome, returns the first success, and returns `PoolError::Exhausted` carrying
-       the last error if every id fails.
+       opens `upstream_dispatch` span carrying member id and strategy, tries each id in
+       order with a per-attempt deadline, records elapsed time and outcome on the span via
+       `record_span_outcome`, records each attempt's outcome on the pool, returns the first
+       success, and returns `PoolError::Exhausted` carrying the last error if every id fails.
      - `Fanout(ids)` → `async fn try_fanout(&self, ids: &[UpstreamId], query: &Question) -> Result<UpstreamResponse, PoolError>`
-       dispatches concurrently, takes the first usable response, records outcomes for
-       **every** branch that completed, cancels the remainder, and sets `raced_count` on
-       the response.
+       spawns concurrent tasks with `upstream_dispatch` span carrying member id and strategy,
+       delegating result collection to `collect_fanout_results`, which takes the first usable
+       response, records span and pool outcomes for **every** branch that completed, cancels
+       the remainder, and sets `raced_count` on the response.
      - Both helpers stamp `answered_by`, `kind` (from the answering member's `kind()`)
        and `elapsed`; `resolve` itself stamps none of them.
-   - `fn record(&self, id: UpstreamId, outcome: Outcome)` — look up the member, take its
-     health lock, call `observe` with the clock's `now` and the circuit config. The
-     **only** mutation path for health, shared by real traffic and probes alike.
+   - `fn record(&self, id: &UpstreamId, outcome: Outcome)` — look up the member, take its
+     health lock, call `observe` with the clock's `now` and the circuit config, emitting
+     `tracing::warn!` on circuit breaker transitions (`upstream circuit opened`,
+     `upstream circuit closed`). The **only** mutation path for health, shared by real
+     traffic and probes alike.
    - `fn snapshot(&self) -> Vec<MemberView>` — read-only projection for the probe
      scheduler and, later, the UI.
    - `fn due_for_probe(&self) -> Vec<UpstreamId>` — apply `ProbePolicy` to each member.
@@ -814,8 +818,11 @@ Ordered by dependency. Each task is independently completable and independently 
    - `async fn run(self, shutdown: ShutdownSignal)` — loop: sleep one tick on the injected
      clock, call `pool.due_for_probe()`, spawn a bounded set of `probe_once` calls, repeat
      until shutdown.
-   - `async fn probe_once(&self, id: UpstreamId)` — resolve that member's canary through
+   - `async fn probe_once(&self, id: &UpstreamId)` — resolve that member's canary through
      `Upstream::resolve`, then `pool.record(id, outcome_with_was_probe_true)`.
+   - `async fn execute_probe(pool, clock, id)` — opens `upstream_probe` span carrying
+     member id and `strategy = "probe"`, instruments `resolve`, records elapsed time and
+     outcome on the span via `record_span_outcome`, and records outcome on the pool.
 3. **Constraints**:
    - Concurrency is bounded; a slow recursor descent must not let probes pile up.
    - A probe already in flight for a member is not duplicated.
