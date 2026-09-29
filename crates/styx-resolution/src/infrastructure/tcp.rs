@@ -22,7 +22,7 @@ use crate::domain::request::{ClientId, MaxResponseSize, RequestContext, Transpor
 use crate::infrastructure::response::ResponseWriter;
 
 /// Default idle timeout for idle TCP client connections (5 seconds).
-const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+pub const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// TCP DNS listener handling framed stream connections and multiple queries.
 pub struct TcpListener<L, F, O, C, T = RefusedTerminal> {

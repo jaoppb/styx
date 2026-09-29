@@ -66,3 +66,98 @@ pub trait SelectionStrategy: Send + Sync {
     /// Chooses one or more candidate upstreams to answer a query.
     fn select(&self, candidates: &[MemberView], now: Instant) -> Selection;
 }
+
+/// Rotates candidate upstream views starting at offset `start` (wrapping around).
+///
+/// Returns an ordered list of [`UpstreamId`]s beginning from `start` (modulo `available.len()`)
+/// through the end of `available`, followed by the elements preceding `start`.
+#[must_use]
+pub fn rotate(available: &[&MemberView], start: usize) -> Vec<UpstreamId> {
+    let total = available.len();
+    if total == 0 {
+        return Vec::new();
+    }
+    let start = start.checked_rem(total).unwrap_or(0);
+    let mut rotated = Vec::with_capacity(total);
+    if let Some(slice_end) = available.get(start..) {
+        for m in slice_end {
+            rotated.push(m.id.clone());
+        }
+    }
+    if let Some(slice_start) = available.get(..start) {
+        for m in slice_start {
+            rotated.push(m.id.clone());
+        }
+    }
+    rotated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_member(id: &str) -> MemberView {
+        MemberView {
+            id: UpstreamId::new(id),
+            kind: UpstreamKind::Forwarder,
+            weight: Weight::new(1),
+            srtt: None,
+            circuit: CircuitState::Closed,
+            available: true,
+        }
+    }
+
+    #[test]
+    fn test_rotate_empty() {
+        let rotated = rotate(&[], 0);
+        assert!(rotated.is_empty());
+    }
+
+    #[test]
+    fn test_rotate_wraps_and_orders() {
+        let m1 = test_member("u1");
+        let m2 = test_member("u2");
+        let m3 = test_member("u3");
+        let available = [&m1, &m2, &m3];
+
+        let r0 = rotate(&available, 0);
+        assert_eq!(
+            r0,
+            vec![
+                UpstreamId::new("u1"),
+                UpstreamId::new("u2"),
+                UpstreamId::new("u3")
+            ]
+        );
+
+        let r1 = rotate(&available, 1);
+        assert_eq!(
+            r1,
+            vec![
+                UpstreamId::new("u2"),
+                UpstreamId::new("u3"),
+                UpstreamId::new("u1")
+            ]
+        );
+
+        let r2 = rotate(&available, 2);
+        assert_eq!(
+            r2,
+            vec![
+                UpstreamId::new("u3"),
+                UpstreamId::new("u1"),
+                UpstreamId::new("u2")
+            ]
+        );
+
+        let r3 = rotate(&available, 4);
+        assert_eq!(
+            r3,
+            vec![
+                UpstreamId::new("u2"),
+                UpstreamId::new("u3"),
+                UpstreamId::new("u1")
+            ]
+        );
+    }
+}

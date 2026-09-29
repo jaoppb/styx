@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
-use crate::domain::selection::{MemberView, Selection, SelectionStrategy, StrategyName};
+use crate::domain::selection::{rotate, MemberView, Selection, SelectionStrategy, StrategyName};
 use crate::domain::weight::Weight;
 
 /// Selects candidate upstreams weighted by their configured relative weight.
@@ -35,18 +35,7 @@ impl Weighted {
 
         let idx = self.rr_fallback_cursor.fetch_add(1, Ordering::Relaxed);
         let start = idx.checked_rem(total).unwrap_or(0);
-
-        let mut rotated = Vec::with_capacity(total);
-        if let Some(slice_end) = available.get(start..) {
-            for m in slice_end {
-                rotated.push(m.id.clone());
-            }
-        }
-        if let Some(slice_start) = available.get(..start) {
-            for m in slice_start {
-                rotated.push(m.id.clone());
-            }
-        }
+        let rotated = rotate(available, start);
 
         Selection::Sequential(rotated)
     }
