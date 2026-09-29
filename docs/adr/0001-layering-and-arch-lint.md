@@ -30,10 +30,10 @@ enforced from the first commit and not discovered in phase 8.
 
 Two exemptions, both deliberate:
 
-- **`styx-proto` is shared foundation, not a feature crate.** Every crate
-  parses through the wire codec, so the isolation rule does not reach it. It is
-  exempt as a dependency *target* — everyone may name it — and remains bound as
-  a *source*: it names no feature crate. A restriction phrased as "no crate may
+- **`styx-proto` and `styx-core` are shared foundations, not feature crates.** Every crate
+  may depend on them, so the feature isolation rule does not reach them as targets.
+  They remain bound as *sources*: neither names a feature crate, and `styx-proto` names
+  no workspace-internal crate. A restriction phrased as "no crate may
   name another workspace crate" would forbid this and break the entire build.
 - **`styx-web` is presentation, not a peer**, and may reach a feature's
   `application` layer. Written carelessly, the isolation rule forbids exactly

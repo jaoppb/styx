@@ -10,7 +10,7 @@ use std::time::{Instant, SystemTime};
 /// Implementations must be thread-safe (`Send + Sync + 'static`).
 ///
 /// Production code uses `SystemClock` in `infrastructure::clock`.
-/// Test harnesses use `TestClock` in `tests/harness/clock.rs`.
+/// Test harnesses use `TestClock` in `test_util::clock`.
 pub trait Clock: Send + Sync + 'static {
     /// Returns the current wall-clock UTC time.
     ///

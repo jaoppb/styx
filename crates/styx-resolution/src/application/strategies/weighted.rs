@@ -112,7 +112,7 @@ mod tests {
 
     use super::*;
     use crate::domain::circuit::CircuitState;
-    use crate::domain::upstream::{UpstreamId, UpstreamKind};
+    use styx_core::{UpstreamId, UpstreamKind};
 
     fn make_weighted_view(id: &str, weight: u32, available: bool) -> MemberView {
         MemberView {

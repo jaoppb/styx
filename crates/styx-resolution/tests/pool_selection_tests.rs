@@ -6,10 +6,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use harness::{CommandableUpstream, TestClock, UpstreamBehavior};
+use styx_core::UpstreamId;
 use styx_proto::{Name, Question, RecordClass, RecordType};
 use styx_resolution::{
     CanaryConfig, CircuitConfig, Do53Forwarder, EdnsBufferSize, OrderedFailover, PoolMember,
-    ProbeConfig, ProbePolicy, RaceAll, RoundRobin, UpstreamId, UpstreamPool, Weighted,
+    ProbeConfig, ProbePolicy, RaceAll, RoundRobin, UpstreamPool, Weighted,
 };
 
 fn make_test_question(qname: &str) -> Question {

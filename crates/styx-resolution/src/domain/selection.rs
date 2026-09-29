@@ -4,8 +4,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use styx_core::{UpstreamId, UpstreamKind};
+
 use crate::domain::circuit::CircuitState;
-use crate::domain::upstream::{UpstreamId, UpstreamKind};
 use crate::domain::weight::Weight;
 
 /// Identifies the configured upstream selection strategy.

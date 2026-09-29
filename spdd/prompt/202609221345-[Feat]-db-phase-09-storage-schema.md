@@ -612,8 +612,8 @@ within the crate.
   ports as traits. No `turso`/`libsql` types, no SQL, no `async` runtime concern. Its own
   newtypes (`GroupId`, `ClientId`, `ClientKey`, `UnixTimestamp`) live here, alongside
   `styx-proto`'s `RecordType`, `ResponseCode` and `Ttl`, reused rather than re-derived —
-  `styx-proto` is shared foundation and the one dependency the no-cross-feature rule
-  exempts.
+  `styx-proto` (alongside `styx-core`) is shared foundation and exempt from the
+  no-cross-feature rule.
 - `application` — the snapshot build, the ingestion state machine, purge and retention,
   client discovery, migration running. Orchestration only; depends on `domain` traits.
 - `infrastructure` — the Turso connection, hand-written SQL migrations as embedded `.sql`

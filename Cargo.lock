@@ -742,10 +742,19 @@ name = "styx"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "styx-core",
  "styx-resolution",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "styx-core"
+version = "0.1.0"
+dependencies = [
+ "styx-proto",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -767,6 +776,7 @@ version = "0.1.0"
 dependencies = [
  "hickory-proto",
  "serde",
+ "styx-core",
  "styx-proto",
  "thiserror 1.0.69",
  "tokio",

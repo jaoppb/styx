@@ -279,9 +279,9 @@ attacker-facing NSEC3 primitives — see Norm 14.
   a trait (a port) in the consumer's own `domain`, implemented by an adapter in the
   `styx` binary. `styx-dnssec` therefore declares `ChainSource` and
   `TrustAnchorSource` itself and never names `styx-recursion`.
-- The single exception to that rule is `styx-proto`, the wire codec: every crate parses
-  through it, so it is shared foundation rather than a feature crate, and the
-  `[[restrict-use]]` rules must be written so as not to forbid it.
+- The shared foundation crates are `styx-proto` (wire codec) and `styx-core` (shared
+  contracts and `Clock`): every crate may depend on them, and the `[[restrict-use]]`
+  rules must be written so as not to forbid them.
 - **Rationale for a separate crate rather than a module inside `styx-recursion`**: a
   forwarded answer needs validating too. A validator living inside the recursor either
   cannot serve the forwarder path, or grows a second divergent code path for it. The
@@ -459,8 +459,8 @@ attacker-facing NSEC3 primitives — see Norm 14.
 4. `TrustAnchorSource` is a trait in `styx_dnssec::domain::ports`.
 5. `PinnedRootAnchor` implements `TrustAnchorSource` from a compiled-in IANA anchor.
 6. `FileTrustAnchor` implements `TrustAnchorSource` from the `trust-anchor` TOML path.
-7. `Clock` is the trait from Phase 2, injected as `Arc<C>` where `C: Clock`; the validator
-   never reads wall-clock time directly.
+7. `Clock` is the trait from `styx-core`, injected as `Arc<C>` where `C: Clock`; the
+   validator never reads wall-clock time directly.
 8. Error types are `thiserror` enums: `ValidationError`, `ChainSourceError`,
    `TrustAnchorError`, `DenialError`. Every fallible function returns
    `Result<T, E>`; no `unwrap`, no `expect`, no panic in shipping code.
@@ -468,8 +468,8 @@ attacker-facing NSEC3 primitives — see Norm 14.
 ### Module layering inside `styx-dnssec`
 
 1. **`domain`** — pure types and rules, no I/O, no async, no external crates beyond
-   `styx-proto` and error/logging plumbing, split by concept into its own file per
-   `AGENTS.md`'s small-single-purpose-modules rule, the same way `styx-proto` splits
+   `styx-proto`, `styx-core` and error/logging plumbing, split by concept into its own file
+   per `AGENTS.md`'s small-single-purpose-modules rule, the same way `styx-proto` splits
    `domain/rdata/basic.rs` from `domain/rdata/dnssec.rs` rather than collecting every
    `rdata` type into one file:
    - `domain/verdict.rs` — `ValidationVerdict`, `VerdictReason`, `ValidationOutcome`,
@@ -506,7 +506,8 @@ attacker-facing NSEC3 primitives — see Norm 14.
 ### Dependencies
 
 1. `Validator` depends on `ChainSource`, `TrustAnchorSource` and `Clock` — all statically
-   dispatched via generics (`<C: Clock>` and method generics on `validate`).
+   dispatched via generics (`<C: Clock>` and method generics on `validate`). It imports
+   `Clock` directly from `styx_core`.
 2. `Validator` depends on `styx-proto` for record types and canonical encoding.
 3. `Validator` does **not** depend on `styx-recursion`, `styx-resolution` or any other
    feature crate. Cargo must be able to prove this.

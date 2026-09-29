@@ -12,10 +12,9 @@ use styx_proto::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 
-use crate::domain::clock::Clock;
+use styx_core::{Clock, Upstream, UpstreamError, UpstreamId, UpstreamKind, UpstreamResponse};
+
 use crate::domain::edns::EdnsBufferSize;
-use crate::domain::error::UpstreamError;
-use crate::domain::upstream::{Upstream, UpstreamId, UpstreamKind, UpstreamResponse};
 
 /// A classic DNS over UDP (Do53) forwarder with automatic TCP fallback on truncation.
 #[derive(Debug)]

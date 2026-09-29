@@ -13,8 +13,8 @@ use cargo_metadata::{DependencyKind, Metadata, PackageId};
 
 use crate::names;
 
-/// The shared foundation crate every other crate may name.
-const SHARED_FOUNDATION: &str = "styx-proto";
+/// The shared foundation crates every other crate may name.
+const SHARED_FOUNDATIONS: &[&str] = &["styx-proto", "styx-core"];
 
 /// The composition root: the only crate that may name every feature crate.
 const COMPOSITION_ROOT: &str = "styx";
@@ -28,7 +28,7 @@ const TOOLING: &str = "xtask";
 /// What a workspace member is, for the purposes of the layering rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Class {
-    /// `styx-proto`: everyone may name it, it names no one.
+    /// `styx-proto` and `styx-core`: everyone may name them, they name no feature.
     SharedFoundation,
     /// `styx-<feature>`: may not name another feature crate.
     Feature,
@@ -47,8 +47,10 @@ impl Class {
     /// deliberate: a new feature crate is covered by this gate the moment it
     /// joins the workspace, rather than when somebody remembers to list it.
     fn of(name: &str) -> Self {
+        if SHARED_FOUNDATIONS.contains(&name) {
+            return Self::SharedFoundation;
+        }
         match name {
-            SHARED_FOUNDATION => Self::SharedFoundation,
             COMPOSITION_ROOT => Self::CompositionRoot,
             PRESENTATION => Self::Presentation,
             TOOLING => Self::Tooling,
@@ -67,7 +69,7 @@ fn is_normal_edge(kinds: &[cargo_metadata::DepKindInfo]) -> bool {
 /// The link-graph layering gate: no feature crate may link another.
 ///
 /// A violation is a **normal** edge from one feature crate to another. Edges
-/// into `styx-proto`, edges out of the `styx` binary, edges from `styx-web`
+/// into shared foundation crates, edges out of the `styx` binary, edges from `styx-web`
 /// into a feature crate, and dev edges of any shape are all permitted.
 ///
 /// # Errors

@@ -369,9 +369,9 @@ Descent --> RecursionError : fails with
 - **Feature crates never depend on each other.** Cross-feature needs are expressed as a
   trait (a port) in the consumer's `domain` module and implemented by an adapter in the
   `styx` binary. `styx-recursion` therefore depends on **no other feature crate**.
-- **`styx-proto` is the single exception**: it is shared foundation, not a feature crate,
-  because every crate parses through the wire codec. The arch-lint `[[restrict-use]]`
-  rules must be written so as not to forbid it.
+- **`styx-proto` and `styx-core` are shared foundation**: they are not feature crates,
+  and every crate may depend on them. `styx-recursion` depends on both shared foundation
+  crates and depends on **no feature crate**.
 - `domain` — the `Descent` state machine, `MinimisationState`, `ZoneCut`, `Delegation`,
   `NsSet`, bailiwick predicates, `DescentBudget`, `RecursionError`. Zero I/O, zero
   `async`, zero clock reads (time arrives as a parameter).
@@ -543,7 +543,7 @@ from the UI.**
 
 ### Trait (port) relationships
 
-1. `Upstream` (defined in `styx-resolution`'s domain, phase 3) declares `id()`, `kind()`
+1. `Upstream` (defined in `styx-core`'s domain, shared foundation) declares `id()`, `kind()`
    and
    `async fn resolve(&self, query: &Question, deadline: Instant) -> Result<UpstreamResponse, UpstreamError>`.
    **`Recursor` implements `Upstream`** — the same port the Do53 forwarder implements —
@@ -551,10 +551,10 @@ from the UI.**
    part in provenance: the pool stamps `kind` on the response, and Phase 4's cache stage
    maps `Recursor` to `AnswerSource::Recursion`. So the query log distinguishes recursive
    answers from forwarded ones without this crate naming `AnswerSource` at all.
-2. `Clock` (defined in phase 2) is injected into `Recursor` and into the infrastructure
-   cache. Every timeout, RTT sample, TTL expiry and minimisation-verdict expiry reads time
-   through it. It cannot be retrofitted; it is a parameter from the first line of this
-   crate.
+2. `Clock` (defined in `styx-core`'s domain, shared foundation) is injected into `Recursor`
+   and into the infrastructure cache. Every timeout, RTT sample, TTL expiry and
+   minimisation-verdict expiry reads time through it. It cannot be retrofitted; it is a
+   parameter from the first line of this crate.
 3. `Transport` is a trait in `styx-recursion::domain`, implemented in
    `styx-recursion::infrastructure` by the Do53 UDP/TCP adapter and implemented in tests
    by a recording fake. It is how the descent state machine stays I/O-free.
@@ -570,8 +570,8 @@ from the UI.**
 
 ### Dependencies
 
-1. `styx-recursion` depends on `styx-proto` only. It depends on
-   **no other feature crate**.
+1. `styx-recursion` depends on `styx-proto` and `styx-core` only. It depends on
+   **no feature crate**.
 2. `Recursor<C: Clock, T: Transport, D: DiagnosticsSink, M: ChainMaterialSink>`
    (application) holds `Arc<InfraCache>`, `Arc<C>`, `Arc<T>`, `Arc<D>`, `Arc<M>` and its
    config.

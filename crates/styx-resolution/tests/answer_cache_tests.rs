@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use harness::{CommandableUpstream, DnsClient, TestClock, TestServer, UpstreamBehavior};
+use styx_core::UpstreamId;
 use styx_proto::{
     Header, Message, Name, Opcode, Question, RecordClass, RecordType, ResponseCode, Ttl,
 };
@@ -14,7 +15,7 @@ use styx_resolution::{
     Admission, AllowAllFilter, AnswerCache, CacheCapacity, CacheKey, CacheStage, CircuitConfig,
     ClientId, DiscardObserver, Do53Forwarder, EdnsBufferSize, FilterPolicy, FilterVerdict,
     NoLocalRecords, OrderedFailover, PoolMember, ProbeConfig, ProbePolicy, ShardedAnswerCache,
-    TtlPolicy, UpstreamId, UpstreamPool,
+    TtlPolicy, UpstreamPool,
 };
 
 fn make_query(name: &str, rtype: RecordType) -> Message {
