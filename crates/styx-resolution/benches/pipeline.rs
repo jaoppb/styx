@@ -177,13 +177,13 @@ fn bench_pipeline(c: &mut Criterion) {
         let _ = writer.write(small_answer.clone(), &ctx_tcp);
     });
     report_alloc("pipeline_handle_refused", || {
-        let _ = rt.block_on(pipeline_refused.handle(ctx_refused.clone()));
+        let _ = rt.block_on(pipeline_refused.handle(&ctx_refused));
     });
     report_alloc("pipeline_handle_local_hit", || {
-        let _ = rt.block_on(pipeline_local.handle(ctx_local.clone()));
+        let _ = rt.block_on(pipeline_local.handle(&ctx_local));
     });
     report_alloc("pipeline_handle_filtered", || {
-        let _ = rt.block_on(pipeline_filtered.handle(ctx_filtered.clone()));
+        let _ = rt.block_on(pipeline_filtered.handle(&ctx_filtered));
     });
     println!("==========================================\n");
 
@@ -214,27 +214,15 @@ fn bench_pipeline(c: &mut Criterion) {
     });
 
     group.bench_function("pipeline_handle_refused", |b| {
-        b.iter_batched(
-            || ctx_refused.clone(),
-            |ctx| rt.block_on(pipeline_refused.handle(black_box(ctx))),
-            BatchSize::SmallInput,
-        );
+        b.iter(|| rt.block_on(pipeline_refused.handle(black_box(&ctx_refused))));
     });
 
     group.bench_function("pipeline_handle_local_hit", |b| {
-        b.iter_batched(
-            || ctx_local.clone(),
-            |ctx| rt.block_on(pipeline_local.handle(black_box(ctx))),
-            BatchSize::SmallInput,
-        );
+        b.iter(|| rt.block_on(pipeline_local.handle(black_box(&ctx_local))));
     });
 
     group.bench_function("pipeline_handle_filtered", |b| {
-        b.iter_batched(
-            || ctx_filtered.clone(),
-            |ctx| rt.block_on(pipeline_filtered.handle(black_box(ctx))),
-            BatchSize::SmallInput,
-        );
+        b.iter(|| rt.block_on(pipeline_filtered.handle(black_box(&ctx_filtered))));
     });
 
     group.finish();
