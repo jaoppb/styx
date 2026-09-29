@@ -26,14 +26,14 @@ distinct ways:
 
 - **Cycle detection**: An iterative pointer resolution loop maintains a bitset of visited
   byte offsets within each decompression pass. Re-visiting an offset within a single name
-  decompression immediately halts and returns
-  `DecodeError::CompressionLoopOrBudgetExceeded`.
+  decompression immediately halts and returns `DecodeError::CompressionLoop(target)`.
 - **Forward and self pointer rejection**: Pointers targeting an offset equal to or greater
-  than their own wire location, or pointing past buffer boundaries, are rejected.
+  than their own wire location, or pointing past buffer boundaries, are rejected with
+  `DecodeError::PointerOutOfRange`.
 - **Expansion budget**: The decoder maintains an overall expansion budget per message,
   defaulting to `DEFAULT_EXPANSION_BUDGET = 4096` octets. Every decompressed label octet
   decrements this budget. If cumulative decompressed label bytes exceed the budget, the
-  decoder aborts with `DecodeError::CompressionLoopOrBudgetExceeded`.
+  decoder aborts with `DecodeError::ExpansionBudgetExceeded`.
 
 ## Consequences
 

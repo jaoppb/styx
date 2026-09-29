@@ -7,9 +7,10 @@
 //! - RDATA bounds checking (no overruns or trailing bytes).
 //! - Zero panics on any input.
 
+mod bitset;
 mod rdata;
 
-use std::collections::HashSet;
+pub use bitset::OffsetBitset;
 
 use crate::application::cursor::Cursor;
 use crate::domain::edns::Opt;
@@ -28,7 +29,7 @@ const MIN_QUESTION_BYTES: usize = 5;
 const MIN_RECORD_BYTES: usize = 11;
 
 /// Default name expansion budget in total expanded octets per message.
-pub const DEFAULT_EXPANSION_BUDGET: usize = 2048;
+pub const DEFAULT_EXPANSION_BUDGET: usize = 4096;
 
 /// DNS message decoder.
 pub struct Decoder<'a> {
@@ -37,7 +38,9 @@ pub struct Decoder<'a> {
     /// Expansion budget for decompression.
     pub expansion_budget: usize,
     /// Known valid label start offsets for compression pointer validation.
-    pub valid_label_starts: HashSet<usize>,
+    pub valid_label_starts: OffsetBitset,
+    /// Offsets visited during pointer resolution in the current name decompression.
+    pub visited: OffsetBitset,
 }
 
 impl<'a> Decoder<'a> {
@@ -47,7 +50,8 @@ impl<'a> Decoder<'a> {
         Self {
             cursor: Cursor::new(buf),
             expansion_budget: DEFAULT_EXPANSION_BUDGET,
-            valid_label_starts: HashSet::new(),
+            valid_label_starts: OffsetBitset::new(buf.len()),
+            visited: OffsetBitset::new(buf.len()),
         }
     }
 
@@ -100,13 +104,13 @@ impl<'a> Decoder<'a> {
     /// Returns [`DecodeError`] on invalid pointers, loops, or length violations.
     pub fn read_name(&mut self) -> Result<Name, DecodeError> {
         let mut labels = Vec::new();
-        let mut visited = HashSet::new();
+        self.visited.clear();
         let mut return_pos = None;
         let mut expanded_bytes = 0usize;
 
         loop {
             let pos = self.cursor.position();
-            visited.insert(pos);
+            self.visited.insert(pos);
             match self.read_label_or_pointer()? {
                 LabelStep::Root => break,
                 LabelStep::Normal(label) => {
@@ -119,7 +123,7 @@ impl<'a> Decoder<'a> {
                     )?;
                 }
                 LabelStep::Pointer(target) => {
-                    self.handle_pointer_step(target, &mut visited, pos, &mut return_pos)?;
+                    self.handle_pointer_step(target, pos, &mut return_pos)?;
                 }
             }
         }
@@ -133,7 +137,6 @@ impl<'a> Decoder<'a> {
     fn handle_pointer_step(
         &mut self,
         target: usize,
-        visited: &mut HashSet<usize>,
         ptr_start: usize,
         return_pos: &mut Option<usize>,
     ) -> Result<(), DecodeError> {
@@ -141,7 +144,7 @@ impl<'a> Decoder<'a> {
         if return_pos.is_none() {
             *return_pos = Some(ptr_pos);
         }
-        self.resolve_pointer_target(ptr_start, target, visited)?;
+        self.resolve_pointer_target(ptr_start, target)?;
         self.cursor.seek(target)
     }
 
@@ -174,12 +177,7 @@ impl<'a> Decoder<'a> {
         Ok(LabelStep::Normal(label))
     }
 
-    fn resolve_pointer_target(
-        &self,
-        ptr_start: usize,
-        target: usize,
-        visited: &HashSet<usize>,
-    ) -> Result<(), DecodeError> {
+    fn resolve_pointer_target(&self, ptr_start: usize, target: usize) -> Result<(), DecodeError> {
         let buf_len = self.cursor.len();
         if target >= buf_len {
             return Err(DecodeError::PointerOutOfRange {
@@ -187,10 +185,10 @@ impl<'a> Decoder<'a> {
                 len: buf_len,
             });
         }
-        if target == ptr_start || visited.contains(&target) {
+        if target == ptr_start || self.visited.contains(target) {
             return Err(DecodeError::CompressionLoop(target));
         }
-        if target >= ptr_start || !self.valid_label_starts.contains(&target) {
+        if target >= ptr_start || !self.valid_label_starts.contains(target) {
             return Err(DecodeError::PointerOutOfRange {
                 pointer: target,
                 len: buf_len,
