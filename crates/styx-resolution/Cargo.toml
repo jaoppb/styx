@@ -20,6 +20,12 @@ toml.workspace = true
 [dev-dependencies]
 styx-core = { path = "../styx-core", features = ["test-support"] }
 hickory-proto.workspace = true
+criterion.workspace = true
+stats_alloc.workspace = true
+
+[[bench]]
+name = "pipeline"
+harness = false
 
 [lints]
 workspace = true

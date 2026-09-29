@@ -37,6 +37,8 @@ tokio-util = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 hickory-proto = { version = "0.26", default-features = false, features = ["std", "dnssec-ring"] }
+criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+stats_alloc = "0.1"
 
 # ---------------------------------------------------------------------------
 # The denied lint set, declared once. Every member opts in with

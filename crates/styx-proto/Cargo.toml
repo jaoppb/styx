@@ -13,6 +13,12 @@ tracing.workspace = true
 
 [dev-dependencies]
 hickory-proto = { version = "0.26", default-features = false, features = ["std", "dnssec-ring"] }
+criterion.workspace = true
+stats_alloc.workspace = true
+
+[[bench]]
+name = "codec"
+harness = false
 
 [lints]
 workspace = true
