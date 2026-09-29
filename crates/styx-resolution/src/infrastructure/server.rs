@@ -18,11 +18,10 @@ use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::MaxResponseSize;
-use crate::infrastructure::tcp::TcpListener;
+use crate::infrastructure::tcp::{TcpListener, DEFAULT_TCP_IDLE_TIMEOUT};
 use crate::infrastructure::udp::UdpListener;
 
 const DEFAULT_UDP_PAYLOAD_SIZE: u16 = 1232;
-const DEFAULT_TCP_IDLE_SECS: u64 = 5;
 const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 2;
 
 fn default_listen_addrs() -> Vec<SocketAddr> {
@@ -46,7 +45,7 @@ const fn default_udp_size() -> u16 {
 }
 
 const fn default_tcp_idle() -> u64 {
-    DEFAULT_TCP_IDLE_SECS
+    DEFAULT_TCP_IDLE_TIMEOUT.as_secs()
 }
 
 const fn default_query_timeout() -> u64 {

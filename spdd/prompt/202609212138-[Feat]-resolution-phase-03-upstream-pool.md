@@ -705,7 +705,7 @@ Ordered by dependency. Each task is independently completable and independently 
 ### 4. Define the `SelectionStrategy` port and `MemberView` — `domain::selection`
 
 1. **Responsibility**: the per-pool choice of which member(s) answer a query, as a pure
-   function.
+   function, and candidate upstream list rotation.
 2. **Types**:
    - `MemberView` — `{ id, kind, weight, srtt, circuit, available }`. A read-only
      projection; strategies see nothing else.
@@ -716,7 +716,12 @@ Ordered by dependency. Each task is independently completable and independently 
 3. **Trait**: `SelectionStrategy: Send + Sync`
    - `fn name(&self) -> StrategyName`
    - `fn select(&self, candidates: &[MemberView], now: Instant) -> Selection`
-4. **Constraints**: synchronous, no I/O, no health mutation, no `UpstreamTransport`
+4. **Helper**: `pub fn rotate(available: &[&MemberView], start: usize) -> Vec<UpstreamId>`
+   rotates candidate upstream views starting at offset `start` (modulo `available.len()`),
+   collecting the tail slice then head slice into a preallocated `Vec<UpstreamId>`.
+   Provides defensive wrapping when `start >= available.len()`. Shared between
+   `RoundRobin` and `Weighted` to avoid duplicated rotation code.
+5. **Constraints**: synchronous, no I/O, no health mutation, no `UpstreamTransport`
    access. Availability filtering is applied by the pool when building the projection, so
    no strategy re-derives the circuit rule.
 
@@ -726,15 +731,16 @@ Ordered by dependency. Each task is independently completable and independently 
    **in configured order**. The standby case: the second member may see zero traffic for
    weeks, which is exactly the blind spot the probe policy exists to cover.
 2. **`RoundRobin`**: an `AtomicUsize` cursor advanced once per selection, returning
-   `Sequential` rotated to start at the cursor so that the remainder is the fallback
-   order. Correct under concurrency: the cursor is the only shared mutable state and is
-   advanced with a relaxed fetch-add.
+   `Sequential` rotated via `domain::selection::rotate(&available, start)` so that the
+   remainder is the fallback order. Correct under concurrency: the cursor is the only
+   shared mutable state and is advanced with a relaxed fetch-add.
 3. **`Weighted`**: a weighted draw over available members by `Weight`, returning
    `Sequential` with the drawn member first and the rest as fallback. The pool total is
    computed once via `Weight::checked_sum`, never a raw running `+=` at the call site,
    since `arithmetic_side_effects` is denied. Degenerate configurations are defined, not
-   undefined: total weight of zero degrades to round-robin order; a single available
-   member returns it; equal weights are uniform. No division by a possibly-zero total.
+   undefined: total weight of zero degrades to round-robin order via
+   `domain::selection::rotate(available, start)`; a single available member returns it;
+   equal weights are uniform. No division by a possibly-zero total.
 4. **`RaceAll`**: returns `Fanout` of **all** available members. Documented at the
    definition site as a privacy decision: it multiplies outbound QPS and shows every
    domain to every provider in the pool.

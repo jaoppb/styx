@@ -938,13 +938,17 @@ concerns, not a zone-file server.
    connection plus partial-read recovery stays within `excessive_nesting`'s threshold of 4
    and `too_many_lines`' 60-line cap. Timestamps passed to `RequestContext::new` are read
    from `clock.now_monotonic()`.
+5. **Constants**: exports `pub const DEFAULT_TCP_IDLE_TIMEOUT: Duration =`
+   `Duration::from_secs(5);` as the single canonical default idle timeout for TCP client
+   connections.
 
 ### 13. Implement `Server` and `ServerConfig` — `styx-resolution::infrastructure::server` and the `styx` binary
 
 1. **`ServerConfig::from_toml(path) -> Result<ServerConfig, ConfigError>`**: listen
    addresses, default UDP payload size, TCP idle timeout, query timeout. **Infrastructure
    only.** No policy field may appear here, and none of these may ever be mirrored in the
-   database.
+   database. Defaults `tcp_idle_timeout_secs` via `DEFAULT_TCP_IDLE_TIMEOUT.as_secs()`
+   from `infrastructure::tcp` to preserve a single source of truth.
 2. **`Server::bind(config, pipeline, clock) -> Result<Server<L, F, O, C, T>, ServerError>`**:
    bind one UDP and one TCP listener per configured address; spawn each as a **supervised**
    task under a shared cancellation token; record handles.
