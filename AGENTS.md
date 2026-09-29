@@ -70,7 +70,7 @@ styx/
 ├── crates/
 │   ├── styx/                   # Composition root binary (startup, CLI, wiring)
 │   │   └── src/main.rs
-│   ├── styx-proto/             # Shared foundation: zero-copy DNS wire codec
+│   ├── styx-proto/             # Shared foundation: DNS wire codec (owned domain types)
 │   │   └── src/
 │   │       ├── domain/         # Wire types: Header, Question, Name, Record, RData, EDNS
 │   │       ├── application/    # Cursor (bounds-checked buffer), Encoder, Decoder

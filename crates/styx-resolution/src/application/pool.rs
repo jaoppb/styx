@@ -1,12 +1,16 @@
 //! Upstream pool dispatch, member health ownership, and candidate selection.
 
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
-use styx_core::{Clock, Upstream, UpstreamId, UpstreamResponse};
+use styx_core::{
+    Clock, FailureClass, Upstream, UpstreamError, UpstreamId, UpstreamKind, UpstreamResponse,
+};
 use styx_proto::Question;
 use tokio::task::JoinSet;
+use tracing::Instrument;
 
-use crate::domain::circuit::CircuitConfig;
+use crate::domain::circuit::{CircuitConfig, CircuitState};
 use crate::domain::error::PoolError;
 use crate::domain::health::{HealthState, Outcome};
 use crate::domain::probe::{CanaryConfig, ProbePolicy};
@@ -49,6 +53,14 @@ pub struct UpstreamPool<S, U, C> {
     circuit: CircuitConfig,
     probe_policy: ProbePolicy,
 }
+
+type FanoutTaskResult = (
+    UpstreamId,
+    UpstreamKind,
+    Instant,
+    Result<UpstreamResponse, UpstreamError>,
+    tracing::Span,
+);
 
 impl<S, U, C> UpstreamPool<S, U, C>
 where
@@ -105,7 +117,24 @@ where
                 Ok(guard) => guard,
                 Err(poisoned) => poisoned.into_inner(),
             };
+            let prev_circuit = health.circuit();
             health.observe(outcome, now, &self.circuit);
+            let next_circuit = health.circuit();
+            match (prev_circuit, next_circuit) {
+                (
+                    CircuitState::Closed | CircuitState::HalfOpen { .. },
+                    CircuitState::Open { .. },
+                ) => {
+                    tracing::warn!(upstream = %id, "upstream circuit opened");
+                }
+                (
+                    CircuitState::Open { .. } | CircuitState::HalfOpen { .. },
+                    CircuitState::Closed,
+                ) => {
+                    tracing::warn!(upstream = %id, "upstream circuit closed");
+                }
+                _ => {}
+            }
         }
     }
 
@@ -140,7 +169,10 @@ where
         let selection = self.strategy.select(&views, now);
 
         match selection {
-            Selection::NoneAvailable => Err(PoolError::AllUpstreamsDown),
+            Selection::NoneAvailable => {
+                tracing::warn!("all upstreams down in pool");
+                Err(PoolError::AllUpstreamsDown)
+            }
             Selection::Sequential(ids) => self.try_sequential(&ids, query).await,
             Selection::Fanout(ids) => self.try_fanout(&ids, query).await,
         }
@@ -152,22 +184,38 @@ where
         query: &Question,
     ) -> Result<UpstreamResponse, PoolError> {
         let mut last_error = None;
+        let strategy = self.strategy.name();
 
         for id in ids {
             let Some(member) = self.members.iter().find(|m| m.id == *id) else {
                 continue;
             };
 
+            let span = tracing::info_span!(
+                "upstream_dispatch",
+                member_id = %member.id,
+                strategy = ?strategy,
+                outcome = tracing::field::Empty,
+                elapsed_ms = tracing::field::Empty,
+            );
+
             let start = self.clock.now_monotonic();
             let deadline = start.checked_add(member.canary.timeout).unwrap_or(start);
 
-            match member.upstream.resolve(query, deadline).await {
+            let res = member
+                .upstream
+                .resolve(query, deadline)
+                .instrument(span.clone())
+                .await;
+            let elapsed = self
+                .clock
+                .now_monotonic()
+                .checked_duration_since(start)
+                .unwrap_or_default();
+
+            match res {
                 Ok(mut resp) => {
-                    let elapsed = self
-                        .clock
-                        .now_monotonic()
-                        .checked_duration_since(start)
-                        .unwrap_or_default();
+                    record_span_outcome(&span, elapsed, None);
                     self.record(
                         &member.id,
                         Outcome::Success {
@@ -182,10 +230,12 @@ where
                     return Ok(resp);
                 }
                 Err(err) => {
+                    let class = err.classify();
+                    record_span_outcome(&span, elapsed, Some(class));
                     self.record(
                         &member.id,
                         Outcome::Failure {
-                            class: err.classify(),
+                            class,
                             was_probe: false,
                         },
                     );
@@ -204,6 +254,7 @@ where
     ) -> Result<UpstreamResponse, PoolError> {
         let mut set = JoinSet::new();
         let raced_count = u8::try_from(ids.len()).unwrap_or(u8::MAX);
+        let strategy = self.strategy.name();
 
         for id in ids {
             let Some(member) = self.members.iter().find(|m| m.id == *id) else {
@@ -217,16 +268,35 @@ where
             let start = self.clock.now_monotonic();
             let deadline = start.checked_add(member.canary.timeout).unwrap_or(start);
 
+            let span = tracing::info_span!(
+                "upstream_dispatch",
+                member_id = %id_clone,
+                strategy = ?strategy,
+                outcome = tracing::field::Empty,
+                elapsed_ms = tracing::field::Empty,
+            );
+
             set.spawn(async move {
-                let res = upstream.resolve(&q, deadline).await;
-                (id_clone, kind, start, res)
+                let res = upstream
+                    .resolve(&q, deadline)
+                    .instrument(span.clone())
+                    .await;
+                (id_clone, kind, start, res, span)
             });
         }
 
+        self.collect_fanout_results(set, raced_count).await
+    }
+
+    async fn collect_fanout_results(
+        &self,
+        mut set: JoinSet<FanoutTaskResult>,
+        raced_count: u8,
+    ) -> Result<UpstreamResponse, PoolError> {
         let mut last_error = None;
 
         while let Some(join_res) = set.join_next().await {
-            let (id, kind, start, result) = match join_res {
+            let (id, kind, start, result, span) = match join_res {
                 Ok(tuple) => tuple,
                 Err(_) => continue,
             };
@@ -239,6 +309,7 @@ where
 
             match result {
                 Ok(mut resp) => {
+                    record_span_outcome(&span, elapsed, None);
                     self.record(
                         &id,
                         Outcome::Success {
@@ -254,10 +325,12 @@ where
                     return Ok(resp);
                 }
                 Err(err) => {
+                    let class = err.classify();
+                    record_span_outcome(&span, elapsed, Some(class));
                     self.record(
                         &id,
                         Outcome::Failure {
-                            class: err.classify(),
+                            class,
                             was_probe: false,
                         },
                     );
@@ -274,4 +347,18 @@ where
     pub fn members(&self) -> &[PoolMember<U>] {
         &self.members
     }
+}
+
+pub(crate) fn record_span_outcome(
+    span: &tracing::Span,
+    elapsed: std::time::Duration,
+    result_class: Option<FailureClass>,
+) {
+    let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    span.record("elapsed_ms", elapsed_ms);
+    match result_class {
+        None => span.record("outcome", "success"),
+        Some(FailureClass::UpstreamFault) => span.record("outcome", "upstream_fault"),
+        Some(FailureClass::AnswerFault) => span.record("outcome", "answer_fault"),
+    };
 }

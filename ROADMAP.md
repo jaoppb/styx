@@ -63,7 +63,7 @@ Taking the phases out of order is how this stalls.
 
 Two tiers.
 
-**Per push** — hermetic, fast, no network: `just gate`. Formatting, clippy's 15
+**Per push** — hermetic, fast, no network: `just gate`. Formatting, clippy's 21
 denied lints, `arch-lint check`, the `cargo tree` layering gate, the
 `hickory-dev-only` check, socket-level tests, and the `--no-default-features`
 headless build.
