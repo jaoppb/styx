@@ -309,3 +309,34 @@ install-hooks:
 [doc("Apply formatting.")]
 fmt:
     cargo fmt --all
+
+# ---------------------------------------------------------------------------
+# Fuzzing
+# ---------------------------------------------------------------------------
+
+# Runs cargo-fuzz targets for styx-proto.
+# Continuous from phase 1 (ROADMAP.md:78). Not part of `gate` because fuzzing
+# is non-deterministic and requires the nightly toolchain.
+[doc("Run cargo-fuzz targets locally (target=all|decode_arbitrary|decode_encode_roundtrip, duration in seconds).")]
+fuzz target="all" duration="60":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! cargo fuzz --help >/dev/null 2>&1; then
+        echo "cargo-fuzz is not installed or not on PATH. Run: just install-tools (or cargo install cargo-fuzz)" >&2
+        exit 1
+    fi
+    if ! rustup run nightly rustc --version >/dev/null 2>&1; then
+        echo "Rust nightly toolchain is required for fuzzing. Run: rustup toolchain install nightly" >&2
+        exit 1
+    fi
+    targets=()
+    if [[ "{{ target }}" == "all" ]]; then
+        targets=("decode_arbitrary" "decode_encode_roundtrip")
+    else
+        targets=("{{ target }}")
+    fi
+    for t in "${targets[@]}"; do
+        echo "── fuzz: $t ({{ duration }}s) ────────────────────────────────"
+        (cd crates/styx-proto && cargo +nightly fuzz run "$t" -- -max_total_time="{{ duration }}")
+    done
+

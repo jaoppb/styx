@@ -56,6 +56,10 @@ this document revises.
 - **Dependency and lint versions are declared once**, in `[workspace.dependencies]` and
   `[workspace.lints]`; every member crate opts in with `workspace = true` rather than
   re-declaring either.
+- **Continuous fuzzing on the codec and validator.** `cargo-fuzz` targets live under
+  `fuzz/` in feature crates, running continuously in CI on a scheduled workflow and
+  locally via `just fuzz`. Fuzzing is non-deterministic and requires the nightly
+  compiler, so it is kept outside the hermetic per-push `gate`.
 
 ## Workspace layout and module structure
 
