@@ -25,6 +25,10 @@ pub enum ConfigError {
     #[error("EDNS buffer size {0} is below 512-octet floor")]
     EdnsBufferTooSmall(u16),
 
+    /// Advertised EDNS buffer size is above the 4096-octet maximum ceiling.
+    #[error("EDNS buffer size {0} is above 4096-octet ceiling")]
+    EdnsBufferTooLarge(u16),
+
     /// A recursor canary question does not require full root descent.
     #[error("recursor canary must test full root descent")]
     CanaryNotDescending,

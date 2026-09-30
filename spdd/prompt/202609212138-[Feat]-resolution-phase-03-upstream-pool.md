@@ -271,6 +271,7 @@ class ConfigError {
     <<enum thiserror>>
     EmptyPool
     EdnsBufferTooSmall
+    EdnsBufferTooLarge
     CanaryNotDescending
 }
 
@@ -860,8 +861,9 @@ Ordered by dependency. Each task is independently completable and independently 
      `UpstreamError::Malformed`.
    - `async fn retry_tcp(&self, query: &Question, deadline: Instant) -> Result<Message, UpstreamError>`
      — used only when the UDP response has TC=1, which is not an answer. Success sets
-     `via_tcp = true` and the latency sample covers the whole operation; failure is
-     `UpstreamError::Truncated`.
+     `via_tcp = true` and the latency sample covers the whole operation; propagates the
+     inner exchange error (`Transport`, `Timeout`, `Malformed`, `Mismatched`), returning
+     `UpstreamError::Truncated` only when the TCP response itself has TC=1.
    - `fn map_response(message: Message) -> Result<UpstreamResponse, UpstreamError>` — REFUSED
      → `Refused` (`UpstreamFault`); SERVFAIL → `ServerFailure` (`AnswerFault`, `is_upstream: false`); NOERROR/NXDOMAIN → success with the message
      returned as-is.
@@ -895,12 +897,12 @@ Ordered by dependency. Each task is independently completable and independently 
      `arithmetic_side_effects` would deny.
    - `EdnsBufferSize` (`domain::edns`) — a newtype over `u16`. Constructor
      `fn new(octets: u16) -> Result<EdnsBufferSize, ConfigError>` rejects anything below
-     512 octets, the pre-EDNS message ceiling — advertising less helps nothing and is
-     almost certainly a misconfiguration. Accessor `fn octets(&self) -> u16`; no setter.
+     512 octets (the pre-EDNS message ceiling) or above 4096 octets (matching the UDP
+     receive buffer ceiling). Accessor `fn octets(&self) -> u16`; no setter.
      This is the value `Do53Forwarder` writes into the EDNS(0) OPT record (Operation 9).
    - `ConfigError` (`thiserror`, `domain::config`): `EmptyPool`, `EdnsBufferTooSmall(u16)`,
-     `CanaryNotDescending`. Returned by config parsing; no `anyhow`, no stringly-typed
-     validation failure.
+     `EdnsBufferTooLarge(u16)`, `CanaryNotDescending`. Returned by config parsing; no `anyhow`,
+     no stringly-typed validation failure.
 3. **Constraints**:
    - Parsed from TOML at boot into `Result<PoolConfig, ConfigError>`. **No hot reload** —
      the configuration boundary is deliberate: the file owns infrastructure, the database
@@ -911,7 +913,8 @@ Ordered by dependency. Each task is independently completable and independently 
      the same warning in the UI.
    - Validation at parse, each a distinct `ConfigError` variant: at least one member
      (`EmptyPool`); every `edns_buffer` at or above the 512-octet floor
-     (`EdnsBufferTooSmall`); a recursor member's canary must be a descent-requiring name
+     (`EdnsBufferTooSmall`) and at or below the 4096-octet ceiling
+     (`EdnsBufferTooLarge`); a recursor member's canary must be a descent-requiring name
      (`CanaryNotDescending`). Weights are accepted for every strategy and are simply
      unused outside `weighted` — that is not a validation failure.
 

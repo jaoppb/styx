@@ -37,6 +37,8 @@ pub enum UpstreamBehavior {
     Timeout,
     /// Sets TC=1 on UDP to force TCP fallback, then answers normally on TCP.
     TruncateUdp,
+    /// Sets TC=1 on TCP to simulate truncation persisting across TCP fallback.
+    TruncateTcp,
     /// Responds with RCODE=SERVFAIL.
     Servfail,
     /// Responds with RCODE=REFUSED.
@@ -116,6 +118,35 @@ impl CommandableUpstream {
 
         Self::spawn_tcp_loop(
             tcp_listener,
+            Arc::clone(&query_count),
+            Arc::clone(&behavior),
+            cancel.clone(),
+        );
+
+        Ok(Self {
+            udp_addr,
+            tcp_addr,
+            query_count,
+            behavior,
+            cancel,
+        })
+    }
+
+    /// Starts a commandable upstream listening only on UDP (no TCP listener bound).
+    ///
+    /// # Errors
+    /// Returns [`HarnessError`] if binding fails.
+    pub async fn start_udp_only() -> Result<Self, HarnessError> {
+        let cancel = CancellationToken::new();
+        let query_count = Arc::new(AtomicUsize::new(0));
+        let behavior = Arc::new(RwLock::new(UpstreamBehavior::Normal));
+
+        let udp_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
+        let udp_addr = udp_socket.local_addr()?;
+        let tcp_addr = udp_addr;
+
+        Self::spawn_udp_loop(
+            Arc::clone(&udp_socket),
             Arc::clone(&query_count),
             Arc::clone(&behavior),
             cancel.clone(),
@@ -284,7 +315,9 @@ impl CommandableUpstream {
         hmsg.metadata.authoritative = true;
         hmsg.metadata.recursion_available = true;
 
-        if !is_tcp && matches!(behavior, UpstreamBehavior::TruncateUdp) {
+        if (!is_tcp && matches!(behavior, UpstreamBehavior::TruncateUdp))
+            || matches!(behavior, UpstreamBehavior::TruncateTcp)
+        {
             hmsg.metadata.truncation = true;
         }
 
