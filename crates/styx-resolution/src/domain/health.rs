@@ -134,10 +134,54 @@ impl HealthState {
     #[must_use]
     pub fn is_available(&self, now: Instant, config: &CircuitConfig) -> bool {
         match self.circuit {
-            CircuitState::Closed | CircuitState::HalfOpen { .. } => true,
+            CircuitState::Closed => true,
+            CircuitState::HalfOpen { in_flight } => !in_flight,
             CircuitState::Open { since } => {
                 let elapsed = now.checked_duration_since(since).unwrap_or_default();
                 elapsed >= config.open_cooldown
+            }
+        }
+    }
+
+    /// Attempts to admit a query or probe for dispatch, updating in-flight state.
+    pub fn try_admit(&mut self, now: Instant, config: &CircuitConfig) -> bool {
+        match self.circuit {
+            CircuitState::Closed => true,
+            CircuitState::HalfOpen { ref mut in_flight } => {
+                if *in_flight {
+                    false
+                } else {
+                    *in_flight = true;
+                    true
+                }
+            }
+            CircuitState::Open { since } => {
+                let elapsed = now.checked_duration_since(since).unwrap_or_default();
+                if elapsed >= config.open_cooldown {
+                    self.circuit = CircuitState::HalfOpen { in_flight: true };
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    /// Attempts to admit a background health probe, transitioning Open to HalfOpen.
+    pub fn try_admit_probe(&mut self) -> bool {
+        match self.circuit {
+            CircuitState::Closed => true,
+            CircuitState::HalfOpen { ref mut in_flight } => {
+                if *in_flight {
+                    false
+                } else {
+                    *in_flight = true;
+                    true
+                }
+            }
+            CircuitState::Open { .. } => {
+                self.circuit = CircuitState::HalfOpen { in_flight: true };
+                true
             }
         }
     }
@@ -159,9 +203,9 @@ impl HealthState {
     }
 
     /// Transitions an Open circuit to HalfOpen when starting a trial query or probe.
-    pub fn mark_half_open(&mut self, now: Instant) {
+    pub fn mark_half_open(&mut self) {
         if let CircuitState::Open { .. } = self.circuit {
-            self.circuit = CircuitState::HalfOpen { trial_started: now };
+            self.circuit = CircuitState::HalfOpen { in_flight: false };
             self.half_open_successes = 0;
         }
     }
@@ -180,6 +224,8 @@ impl HealthState {
                 if self.half_open_successes >= config.half_open_successes {
                     self.circuit = CircuitState::Closed;
                     self.half_open_successes = 0;
+                } else {
+                    self.circuit = CircuitState::HalfOpen { in_flight: false };
                 }
             }
             CircuitState::Open { .. } => {
@@ -196,6 +242,9 @@ impl HealthState {
                 Some(existing) => compute_ewma(existing, sample),
             });
         }
+        if let CircuitState::HalfOpen { ref mut in_flight } = self.circuit {
+            *in_flight = false;
+        }
     }
 
     fn record_upstream_fault(&mut self, now: Instant, config: &CircuitConfig) {
@@ -208,10 +257,9 @@ impl HealthState {
                     self.circuit = CircuitState::Open { since: now };
                 }
             }
-            CircuitState::HalfOpen { .. } => {
+            CircuitState::HalfOpen { .. } | CircuitState::Open { .. } => {
                 self.circuit = CircuitState::Open { since: now };
             }
-            CircuitState::Open { .. } => {}
         }
     }
 }
@@ -255,7 +303,7 @@ mod tests {
         let config = CircuitConfig {
             failure_threshold: 2,
             open_cooldown: Duration::from_secs(5),
-            half_open_successes: 1,
+            half_open_successes: 2,
         };
         let now = Instant::now();
 
@@ -290,8 +338,11 @@ mod tests {
         // Advance past cooldown: becomes available for half-open trial
         let past = now.checked_add(Duration::from_secs(6)).expect("advance");
         assert!(health.is_available(past, &config));
+        assert!(health.try_admit(past, &config));
+        assert_eq!(health.circuit(), CircuitState::HalfOpen { in_flight: true });
+        assert!(!health.try_admit(past, &config));
 
-        // Success restores to closed
+        // First success in HalfOpen (needs 2 for Closed)
         health.observe(
             Outcome::Success {
                 latency: Duration::from_millis(20),
@@ -300,7 +351,73 @@ mod tests {
             past,
             &config,
         );
-        // Note: if it was Open, record_success on Open... wait, if trial started:
-        // HalfOpen success closes it!
+        assert_eq!(
+            health.circuit(),
+            CircuitState::HalfOpen { in_flight: false }
+        );
+        assert!(health.try_admit(past, &config));
+
+        // Second success restores to Closed
+        health.observe(
+            Outcome::Success {
+                latency: Duration::from_millis(20),
+                was_probe: true,
+            },
+            past,
+            &config,
+        );
+        assert_eq!(health.circuit(), CircuitState::Closed);
+        assert!(health.is_available(past, &config));
+    }
+
+    #[test]
+    fn test_half_open_failure_rearms_cooldown() {
+        let config = CircuitConfig {
+            failure_threshold: 2,
+            open_cooldown: Duration::from_secs(5),
+            half_open_successes: 1,
+        };
+        let now = Instant::now();
+        let mut health = HealthState::new();
+
+        health.observe(
+            Outcome::Failure {
+                class: FailureClass::UpstreamFault,
+                was_probe: false,
+            },
+            now,
+            &config,
+        );
+        health.observe(
+            Outcome::Failure {
+                class: FailureClass::UpstreamFault,
+                was_probe: false,
+            },
+            now,
+            &config,
+        );
+        assert_eq!(health.circuit(), CircuitState::Open { since: now });
+
+        let t1 = now.checked_add(Duration::from_secs(6)).expect("advance");
+        assert!(health.try_admit(t1, &config));
+        assert_eq!(health.circuit(), CircuitState::HalfOpen { in_flight: true });
+
+        // Failure in HalfOpen re-arms Open { since: t1 }
+        health.observe(
+            Outcome::Failure {
+                class: FailureClass::UpstreamFault,
+                was_probe: false,
+            },
+            t1,
+            &config,
+        );
+        assert_eq!(health.circuit(), CircuitState::Open { since: t1 });
+        assert!(!health.is_available(t1, &config));
+
+        let t2 = t1.checked_add(Duration::from_secs(2)).expect("advance");
+        assert!(!health.is_available(t2, &config));
+
+        let t3 = t1.checked_add(Duration::from_secs(6)).expect("advance");
+        assert!(health.is_available(t3, &config));
     }
 }

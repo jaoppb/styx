@@ -1,7 +1,6 @@
 //! Classic Do53 DNS forwarder over UDP with TCP fallback.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -25,7 +24,6 @@ pub struct Do53Forwarder<C> {
     udp_timeout: Duration,
     tcp_timeout: Duration,
     clock: Arc<C>,
-    tx_id: Arc<AtomicU16>,
 }
 
 impl<C> Clone for Do53Forwarder<C> {
@@ -37,7 +35,6 @@ impl<C> Clone for Do53Forwarder<C> {
             udp_timeout: self.udp_timeout,
             tcp_timeout: self.tcp_timeout,
             clock: Arc::clone(&self.clock),
-            tx_id: Arc::clone(&self.tx_id),
         }
     }
 }
@@ -60,7 +57,6 @@ impl<C: Clock> Do53Forwarder<C> {
             udp_timeout,
             tcp_timeout,
             clock,
-            tx_id: Arc::new(AtomicU16::new(1)),
         }
     }
 
@@ -71,7 +67,7 @@ impl<C: Clock> Do53Forwarder<C> {
     }
 
     fn encode_query(&self, query: &Question) -> Result<(u16, Vec<u8>), UpstreamError> {
-        let tx_id = self.tx_id.fetch_add(1, Ordering::Relaxed);
+        let tx_id = rand::random::<u16>();
         let header = Header::new_query(tx_id, Opcode::Query, true);
         let mut msg = Message::new(header);
         msg.questions.push(query.clone());
@@ -88,7 +84,13 @@ impl<C: Clock> Do53Forwarder<C> {
         Ok((tx_id, buf))
     }
 
-    async fn send_udp(&self, bytes: &[u8], deadline: Instant) -> Result<Vec<u8>, UpstreamError> {
+    async fn send_udp(
+        &self,
+        bytes: &[u8],
+        query: &Question,
+        expected_id: u16,
+        deadline: Instant,
+    ) -> Result<Message, UpstreamError> {
         let socket = match self.addr {
             SocketAddr::V4(_) => UdpSocket::bind("0.0.0.0:0").await,
             SocketAddr::V6(_) => UdpSocket::bind("[::]:0").await,
@@ -109,14 +111,35 @@ impl<C: Clock> Do53Forwarder<C> {
         let remaining = deadline.checked_duration_since(now).unwrap_or_default();
         let timeout_budget = remaining.min(self.udp_timeout);
 
-        let mut recv_buf = vec![0u8; 4096];
-        let n = tokio::time::timeout(timeout_budget, socket.recv(&mut recv_buf))
-            .await
-            .map_err(|_| UpstreamError::Timeout)?
-            .map_err(|e| UpstreamError::Transport(e.kind()))?;
+        tokio::time::timeout(
+            timeout_budget,
+            self.recv_until_valid(&socket, query, expected_id),
+        )
+        .await
+        .map_err(|_| UpstreamError::Timeout)?
+    }
 
-        recv_buf.truncate(n);
-        Ok(recv_buf)
+    async fn recv_until_valid(
+        &self,
+        socket: &UdpSocket,
+        query: &Question,
+        expected_id: u16,
+    ) -> Result<Message, UpstreamError> {
+        let mut recv_buf = vec![0u8; 4096];
+        loop {
+            let n = socket
+                .recv(&mut recv_buf)
+                .await
+                .map_err(|e| UpstreamError::Transport(e.kind()))?;
+
+            let Some(slice) = recv_buf.get(..n) else {
+                continue;
+            };
+
+            if let Ok(msg) = self.validate_and_decode(slice, query, expected_id) {
+                return Ok(msg);
+            }
+        }
     }
 
     fn validate_and_decode(
@@ -197,7 +220,7 @@ impl<C: Clock> Do53Forwarder<C> {
     fn map_response(message: Message) -> Result<Message, UpstreamError> {
         match message.header.rcode {
             ResponseCode::REFUSED => Err(UpstreamError::Refused),
-            ResponseCode::SERVFAIL => Err(UpstreamError::ServerFailure { is_upstream: true }),
+            ResponseCode::SERVFAIL => Err(UpstreamError::ServerFailure { is_upstream: false }),
             _ => Ok(message),
         }
     }
@@ -220,9 +243,8 @@ impl<C: Clock> Upstream for Do53Forwarder<C> {
         let start = self.clock.now_monotonic();
         let (tx_id, query_bytes) = self.encode_query(query)?;
 
-        let (message, via_tcp) = match self.send_udp(&query_bytes, deadline).await {
-            Ok(raw) => {
-                let msg = self.validate_and_decode(&raw, query, tx_id)?;
+        let (message, via_tcp) = match self.send_udp(&query_bytes, query, tx_id, deadline).await {
+            Ok(msg) => {
                 if msg.header.truncated {
                     let tcp_msg = self.retry_tcp(query, deadline).await?;
                     (tcp_msg, true)

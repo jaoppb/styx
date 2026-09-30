@@ -86,6 +86,10 @@ where
     }
 
     async fn execute_probe(pool: &UpstreamPool<S, U, C>, clock: &C, id: &UpstreamId) {
+        if !pool.try_admit_probe(id) {
+            return;
+        }
+
         let Some(member) = pool.members().iter().find(|m| m.id == *id) else {
             return;
         };

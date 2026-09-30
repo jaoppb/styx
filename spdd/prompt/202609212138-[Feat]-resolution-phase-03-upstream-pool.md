@@ -863,7 +863,7 @@ Ordered by dependency. Each task is independently completable and independently 
      `via_tcp = true` and the latency sample covers the whole operation; failure is
      `UpstreamError::Truncated`.
    - `fn map_response(message: Message) -> Result<UpstreamResponse, UpstreamError>` — REFUSED
-     → `Refused`; SERVFAIL → `ServerFailure`; NOERROR/NXDOMAIN → success with the message
+     → `Refused` (`UpstreamFault`); SERVFAIL → `ServerFailure` (`AnswerFault`, `is_upstream: false`); NOERROR/NXDOMAIN → success with the message
      returned as-is.
    - `resolve` itself calls these in sequence, retrying over TCP only on TC=1, and never
      duplicates a step's logic inline.

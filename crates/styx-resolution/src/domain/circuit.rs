@@ -40,8 +40,8 @@ pub enum CircuitState {
     },
     /// Testing recovery; admitting a limited probe or trial traffic.
     HalfOpen {
-        /// Timestamp when the trial probe was initiated.
-        trial_started: Instant,
+        /// Whether a trial query or probe is currently in flight.
+        in_flight: bool,
     },
 }
 

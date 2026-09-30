@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use harness::{CommandableUpstream, TestClock, UpstreamBehavior};
-use styx_core::{FailureClass, UpstreamId};
+use styx_core::UpstreamId;
 use styx_proto::{Name, Question, RecordClass, RecordType};
 use styx_resolution::{
     CanaryConfig, CircuitConfig, CircuitState, Do53Forwarder, EdnsBufferSize, OrderedFailover,
@@ -210,8 +210,9 @@ async fn test_tcp_fallback_on_truncation() {
 async fn test_answer_fault_does_not_open_circuit() {
     let clock = Arc::new(TestClock::new());
     let up = CommandableUpstream::start().await.expect("up start");
-    let member = create_member("up", &up, clock.clone());
+    up.set_behavior(UpstreamBehavior::Servfail);
 
+    let member = create_member("up", &up, clock.clone());
     let pool = UpstreamPool::new(
         vec![member],
         OrderedFailover::new(),
@@ -224,21 +225,149 @@ async fn test_answer_fault_does_not_open_circuit() {
         ProbePolicy::new(ProbeConfig::default()),
     );
 
-    // Record 5 answer faults directly (e.g. SERVFAIL for bad name / NXDOMAIN)
+    let bad_query = make_test_question("broken-dnssec.example.");
+
+    // Send 5 queries that return SERVFAIL through Do53Forwarder
     for _ in 0..5 {
-        pool.record(
-            &UpstreamId::new("up"),
-            styx_resolution::Outcome::Failure {
-                class: FailureClass::AnswerFault,
-                was_probe: false,
-            },
-        );
+        let err = pool.resolve(&bad_query).await.unwrap_err();
+        assert!(matches!(
+            err,
+            PoolError::Exhausted {
+                last_error: Some(styx_core::UpstreamError::ServerFailure { is_upstream: false })
+            }
+        ));
     }
 
-    // Circuit must remain CLOSED
+    // Circuit must remain CLOSED despite 5 SERVFAILs
     let views = pool.snapshot();
     assert_eq!(views[0].circuit, CircuitState::Closed);
     assert!(views[0].available);
+
+    // Subsequent query for another name succeeds when upstream returns normal
+    up.set_behavior(UpstreamBehavior::Normal);
+    let good_query = make_test_question("good.example.");
+    let resp = pool
+        .resolve(&good_query)
+        .await
+        .expect("good query should succeed");
+    assert_eq!(resp.answered_by, UpstreamId::new("up"));
+}
+
+#[tokio::test]
+async fn test_half_open_requires_two_successes_and_single_trial() {
+    let clock = Arc::new(TestClock::new());
+    let up = CommandableUpstream::start().await.expect("up start");
+
+    let member = create_member("up", &up, clock.clone());
+    let pool = Arc::new(UpstreamPool::new(
+        vec![member],
+        OrderedFailover::new(),
+        clock.clone(),
+        CircuitConfig {
+            failure_threshold: 2,
+            open_cooldown: Duration::from_secs(30),
+            half_open_successes: 2,
+        },
+        ProbePolicy::new(ProbeConfig::default()),
+    ));
+
+    let query = make_test_question("two.success.test.");
+
+    // Trip circuit with 2 failures
+    up.set_behavior(UpstreamBehavior::Timeout);
+    let _ = pool.resolve(&query).await;
+    let _ = pool.resolve(&query).await;
+    assert!(matches!(
+        pool.snapshot()[0].circuit,
+        CircuitState::Open { .. }
+    ));
+
+    // Advance clock past cooldown
+    clock.advance(Duration::from_secs(35));
+
+    // Delay response so trial stays in flight
+    up.set_behavior(UpstreamBehavior::Delay(Duration::from_millis(150)));
+
+    let pool_clone = pool.clone();
+    let q_clone = query.clone();
+    let trial_handle = tokio::spawn(async move { pool_clone.resolve(&q_clone).await });
+
+    // Brief yield to let trial task start and acquire trial admission
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Concurrent query while trial is in flight must be rejected
+    let concurrent_err = pool.resolve(&query).await.unwrap_err();
+    assert!(matches!(concurrent_err, PoolError::AllUpstreamsDown));
+
+    // Await first trial completion
+    let trial_resp = trial_handle
+        .await
+        .expect("task join")
+        .expect("trial 1 succeeds");
+    assert_eq!(trial_resp.answered_by, UpstreamId::new("up"));
+
+    // Still in HalfOpen because half_open_successes = 2
+    assert_eq!(
+        pool.snapshot()[0].circuit,
+        CircuitState::HalfOpen { in_flight: false }
+    );
+
+    // Second trial succeeds and transitions to Closed
+    up.set_behavior(UpstreamBehavior::Normal);
+    let trial2_resp = pool.resolve(&query).await.expect("trial 2 succeeds");
+    assert_eq!(trial2_resp.answered_by, UpstreamId::new("up"));
+    assert_eq!(pool.snapshot()[0].circuit, CircuitState::Closed);
+}
+
+#[tokio::test]
+async fn test_half_open_failure_rearms_cooldown_end_to_end() {
+    let clock = Arc::new(TestClock::new());
+    let up = CommandableUpstream::start().await.expect("up start");
+
+    let member = create_member("up", &up, clock.clone());
+    let pool = UpstreamPool::new(
+        vec![member],
+        OrderedFailover::new(),
+        clock.clone(),
+        CircuitConfig {
+            failure_threshold: 2,
+            open_cooldown: Duration::from_secs(30),
+            half_open_successes: 1,
+        },
+        ProbePolicy::new(ProbeConfig::default()),
+    );
+
+    let query = make_test_question("rearm.test.");
+
+    // Trip circuit to Open
+    up.set_behavior(UpstreamBehavior::Timeout);
+    let _ = pool.resolve(&query).await;
+    let _ = pool.resolve(&query).await;
+
+    // Advance clock past initial cooldown
+    clock.advance(Duration::from_secs(35));
+
+    // Upstream still fails: trial query fails
+    let _ = pool.resolve(&query).await;
+
+    // Must be Open again with re-armed cooldown
+    let views = pool.snapshot();
+    assert!(!views[0].available);
+    assert!(matches!(views[0].circuit, CircuitState::Open { .. }));
+
+    // Advance only 10s: still within new cooldown -> fails immediately
+    clock.advance(Duration::from_secs(10));
+    let err = pool.resolve(&query).await.unwrap_err();
+    assert!(matches!(err, PoolError::AllUpstreamsDown));
+
+    // Advance past new cooldown (remaining 25s)
+    clock.advance(Duration::from_secs(25));
+    up.set_behavior(UpstreamBehavior::Normal);
+
+    // Trial succeeds and circuit closes
+    let resp = pool.resolve(&query).await.expect("recovery succeeds");
+    assert_eq!(resp.answered_by, UpstreamId::new("up"));
+    assert_eq!(pool.snapshot()[0].circuit, CircuitState::Closed);
 }
 
 #[tokio::test]
