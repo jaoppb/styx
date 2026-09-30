@@ -143,3 +143,50 @@ async fn test_txid_is_randomized_across_queries() {
     // 100 sequential queries in AtomicU16 would yield 99 sequential pairs.
     assert!(sequential_pairs < 2, "TXIDs appeared sequential: {txids:?}");
 }
+
+#[tokio::test]
+async fn test_forwarder_tcp_fallback_connection_refused_propagates_transport_error() {
+    let clock = Arc::new(TestClock::new());
+    let upstream = CommandableUpstream::start_udp_only()
+        .await
+        .expect("start udp-only upstream");
+    upstream.set_behavior(UpstreamBehavior::TruncateUdp);
+
+    let forwarder = create_forwarder("fwd", &upstream, clock.clone(), Duration::from_millis(500));
+    let query = make_test_question("tcp.refused.test.");
+    let deadline = clock.now_monotonic() + Duration::from_secs(1);
+
+    let err = forwarder
+        .resolve(&query, deadline)
+        .await
+        .expect_err("should fail when TCP connection is refused");
+
+    assert!(
+        matches!(
+            err,
+            UpstreamError::Transport(std::io::ErrorKind::ConnectionRefused)
+        ),
+        "expected Transport(ConnectionRefused), got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_forwarder_tcp_fallback_truncated_tcp_yields_truncated_error() {
+    let clock = Arc::new(TestClock::new());
+    let upstream = CommandableUpstream::start().await.expect("start upstream");
+    upstream.set_behavior(UpstreamBehavior::TruncateTcp);
+
+    let forwarder = create_forwarder("fwd", &upstream, clock.clone(), Duration::from_millis(500));
+    let query = make_test_question("tcp.truncated.test.");
+    let deadline = clock.now_monotonic() + Duration::from_secs(1);
+
+    let err = forwarder
+        .resolve(&query, deadline)
+        .await
+        .expect_err("should fail when TCP response is truncated");
+
+    assert!(
+        matches!(err, UpstreamError::Truncated),
+        "expected UpstreamError::Truncated, got: {err:?}"
+    );
+}

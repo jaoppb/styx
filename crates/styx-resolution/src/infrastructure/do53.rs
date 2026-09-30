@@ -208,13 +208,16 @@ impl<C: Clock> Do53Forwarder<C> {
                 .await
                 .map_err(|e| UpstreamError::Transport(e.kind()))?;
 
-            self.validate_and_decode(&resp_buf, query, tx_id)
+            let msg = self.validate_and_decode(&resp_buf, query, tx_id)?;
+            if msg.header.truncated {
+                return Err(UpstreamError::Truncated);
+            }
+            Ok(msg)
         };
 
         tokio::time::timeout(timeout_budget, exchange)
             .await
             .map_err(|_| UpstreamError::Timeout)?
-            .map_err(|_| UpstreamError::Truncated)
     }
 
     fn map_response(message: Message) -> Result<Message, UpstreamError> {
