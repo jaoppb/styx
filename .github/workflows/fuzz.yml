@@ -1,0 +1,77 @@
+name: fuzz
+
+# Scheduled continuous fuzzing on the wire codec (ROADMAP.md:78).
+# Fuzzing is non-deterministic and requires nightly, so it runs separately
+# from the per-push gate to keep the push path hermetic and fast.
+on:
+  schedule:
+    # Daily at 00:00 UTC
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Duration to run each target (seconds)"
+        required: false
+        default: "600"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - decode_arbitrary
+          - decode_encode_roundtrip
+    steps:
+      - uses: actions/checkout@v4
+
+      # LibFuzzer instrumentation and sanitizers require the nightly compiler.
+      - name: Install the nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}-nightly
+
+      # cargo-fuzz is pinned in mise.toml alongside all other tools.
+      - uses: jdx/mise-action@v2
+
+      # The corpus is persisted across runs so each iteration builds upon
+      # prior discoveries. Run-id key with prefix fallback guarantees a clean
+      # save on success while restoring the latest available corpus.
+      - name: Restore or initialize corpus
+        uses: actions/cache@v4
+        id: corpus-cache
+        with:
+          path: crates/styx-proto/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Run cargo-fuzz
+        run: |
+          set -euo pipefail
+          mkdir -p "crates/styx-proto/fuzz/corpus/${{ matrix.target }}"
+          duration="${{ inputs.duration }}"
+          duration="${duration:-600}"
+          echo "Running fuzz target ${{ matrix.target }} for ${duration}s..."
+          cd crates/styx-proto
+          cargo +nightly fuzz run "${{ matrix.target }}" -- -max_total_time="${duration}"
+
+      # LibFuzzer writes crashes to crates/styx-proto/fuzz/artifacts/<target>/
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: crates/styx-proto/fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore

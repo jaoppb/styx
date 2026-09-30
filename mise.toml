@@ -26,3 +26,4 @@
 just = "1.58.0"
 lefthook = "2.1.14"
 "cargo:cross" = "0.2.5"
+"cargo:cargo-fuzz" = "0.13.2"
