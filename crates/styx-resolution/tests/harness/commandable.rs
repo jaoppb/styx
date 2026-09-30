@@ -43,6 +43,12 @@ pub enum UpstreamBehavior {
     Refused,
     /// Responds with a mismatched transaction ID.
     MismatchedId,
+    /// Responds with a mismatched question name.
+    MismatchedQuestion,
+    /// Sends a stray mismatched ID datagram followed by a normal response.
+    MismatchedIdThenNormal,
+    /// Sends a stray mismatched question datagram followed by a normal response.
+    MismatchedQuestionThenNormal,
     /// Silently drops all queries.
     DropAll,
     /// Responds with NXDOMAIN and an SOA record in Authority.
@@ -183,6 +189,24 @@ impl CommandableUpstream {
                         let Some(slice) = buf.get(..len) else {
                             continue;
                         };
+                        if matches!(b, UpstreamBehavior::MismatchedIdThenNormal) {
+                            if let Some(m) = Self::build_response(slice, &UpstreamBehavior::MismatchedId, false) {
+                                let _ = socket.send_to(&m, peer).await;
+                            }
+                            if let Some(n) = Self::build_response(slice, &UpstreamBehavior::Normal, false) {
+                                let _ = socket.send_to(&n, peer).await;
+                            }
+                            continue;
+                        }
+                        if matches!(b, UpstreamBehavior::MismatchedQuestionThenNormal) {
+                            if let Some(m) = Self::build_response(slice, &UpstreamBehavior::MismatchedQuestion, false) {
+                                let _ = socket.send_to(&m, peer).await;
+                            }
+                            if let Some(n) = Self::build_response(slice, &UpstreamBehavior::Normal, false) {
+                                let _ = socket.send_to(&n, peer).await;
+                            }
+                            continue;
+                        }
                         if let Some(resp_bytes) = Self::build_response(slice, &b, false) {
                             let _ = socket.send_to(&resp_bytes, peer).await;
                         }
@@ -273,7 +297,10 @@ impl CommandableUpstream {
             _ => hmsg.metadata.response_code = HResponseCode::NoError,
         }
 
-        let qname_str = question.qname.to_string();
+        let qname_str = match behavior {
+            UpstreamBehavior::MismatchedQuestion => "mismatched.invalid.".to_string(),
+            _ => question.qname.to_string(),
+        };
         let h_qname = HName::from_str(&qname_str).ok()?;
         let mut query = hickory_proto::op::Query::new();
         query.set_name(h_qname.clone());
@@ -327,6 +354,7 @@ impl CommandableUpstream {
                             | UpstreamBehavior::Delay(_)
                             | UpstreamBehavior::TruncateUdp
                             | UpstreamBehavior::MismatchedId
+                            | UpstreamBehavior::MismatchedQuestion
                     )
                 {
                     let rec = HRecord::from_rdata(

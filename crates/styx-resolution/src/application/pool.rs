@@ -138,6 +138,32 @@ where
         }
     }
 
+    /// Attempts to admit a query or probe on the specified member.
+    #[must_use]
+    pub fn try_admit(&self, id: &UpstreamId) -> bool {
+        let Some(member) = self.members.iter().find(|m| m.id == *id) else {
+            return false;
+        };
+        let mut health = match member.health.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        health.try_admit(self.clock.now_monotonic(), &self.circuit)
+    }
+
+    /// Attempts to admit a background health probe on the specified member.
+    #[must_use]
+    pub fn try_admit_probe(&self, id: &UpstreamId) -> bool {
+        let Some(member) = self.members.iter().find(|m| m.id == *id) else {
+            return false;
+        };
+        let mut health = match member.health.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        health.try_admit_probe()
+    }
+
     /// Returns a list of upstream IDs due for active background probing.
     #[must_use]
     pub fn due_for_probe(&self) -> Vec<UpstreamId> {
@@ -184,67 +210,82 @@ where
         query: &Question,
     ) -> Result<UpstreamResponse, PoolError> {
         let mut last_error = None;
-        let strategy = self.strategy.name();
 
         for id in ids {
+            if !self.try_admit(id) {
+                continue;
+            }
+
             let Some(member) = self.members.iter().find(|m| m.id == *id) else {
                 continue;
             };
 
-            let span = tracing::info_span!(
-                "upstream_dispatch",
-                member_id = %member.id,
-                strategy = ?strategy,
-                outcome = tracing::field::Empty,
-                elapsed_ms = tracing::field::Empty,
-            );
-
-            let start = self.clock.now_monotonic();
-            let deadline = start.checked_add(member.canary.timeout).unwrap_or(start);
-
-            let res = member
-                .upstream
-                .resolve(query, deadline)
-                .instrument(span.clone())
-                .await;
-            let elapsed = self
-                .clock
-                .now_monotonic()
-                .checked_duration_since(start)
-                .unwrap_or_default();
-
-            match res {
-                Ok(mut resp) => {
-                    record_span_outcome(&span, elapsed, None);
-                    self.record(
-                        &member.id,
-                        Outcome::Success {
-                            latency: elapsed,
-                            was_probe: false,
-                        },
-                    );
-                    resp.answered_by = member.id.clone();
-                    resp.kind = member.upstream.kind();
-                    resp.elapsed = elapsed;
-                    resp.raced_count = 1;
-                    return Ok(resp);
-                }
-                Err(err) => {
-                    let class = err.classify();
-                    record_span_outcome(&span, elapsed, Some(class));
-                    self.record(
-                        &member.id,
-                        Outcome::Failure {
-                            class,
-                            was_probe: false,
-                        },
-                    );
-                    last_error = Some(err);
-                }
+            match self.dispatch_member(member, query).await {
+                Ok(resp) => return Ok(resp),
+                Err(err) => last_error = Some(err),
             }
         }
 
         Err(PoolError::Exhausted { last_error })
+    }
+
+    async fn dispatch_member(
+        &self,
+        member: &PoolMember<U>,
+        query: &Question,
+    ) -> Result<UpstreamResponse, UpstreamError> {
+        let strategy = self.strategy.name();
+        let span = tracing::info_span!(
+            "upstream_dispatch",
+            member_id = %member.id,
+            strategy = ?strategy,
+            outcome = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty,
+        );
+
+        let start = self.clock.now_monotonic();
+        let deadline = start.checked_add(member.canary.timeout).unwrap_or(start);
+
+        let res = member
+            .upstream
+            .resolve(query, deadline)
+            .instrument(span.clone())
+            .await;
+        let elapsed = self
+            .clock
+            .now_monotonic()
+            .checked_duration_since(start)
+            .unwrap_or_default();
+
+        match res {
+            Ok(mut resp) => {
+                record_span_outcome(&span, elapsed, None);
+                self.record(
+                    &member.id,
+                    Outcome::Success {
+                        latency: elapsed,
+                        was_probe: false,
+                    },
+                );
+                resp.answered_by = member.id.clone();
+                resp.kind = member.upstream.kind();
+                resp.elapsed = elapsed;
+                resp.raced_count = 1;
+                Ok(resp)
+            }
+            Err(err) => {
+                let class = err.classify();
+                record_span_outcome(&span, elapsed, Some(class));
+                self.record(
+                    &member.id,
+                    Outcome::Failure {
+                        class,
+                        was_probe: false,
+                    },
+                );
+                Err(err)
+            }
+        }
     }
 
     async fn try_fanout(
@@ -257,6 +298,10 @@ where
         let strategy = self.strategy.name();
 
         for id in ids {
+            if !self.try_admit(id) {
+                continue;
+            }
+
             let Some(member) = self.members.iter().find(|m| m.id == *id) else {
                 continue;
             };

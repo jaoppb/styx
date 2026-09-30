@@ -36,10 +36,11 @@ a trivial denial-of-service vector against the resolver.
 - **Classification types**: `styx_resolution::domain::upstream::FailureClass`
   partitions errors into:
   - `FailureClass::UpstreamFault`: Network I/O errors, timeouts, connection
-    refusals, malformed wire encoding, ID mismatches, and upstream `SERVFAIL`
-    responses.
+    refusals, upstream `REFUSED` responses (declining service), malformed wire
+    encoding, ID mismatches, and synthetic canary probe failures.
   - `FailureClass::AnswerFault`: Valid protocol responses returning `NXDOMAIN`,
-    `REFUSED`, `FORMERR`, or `NOTIMP`.
+    `SERVFAIL` for client domain queries (e.g. DNSSEC validation failures on
+    broken names), `FORMERR`, or `NOTIMP`.
 - **Health penalty isolation**:
   - Only `UpstreamFault` increments consecutive failure counters, penalizes
     passive latency estimates, or advances the circuit breaker toward the `Open`
