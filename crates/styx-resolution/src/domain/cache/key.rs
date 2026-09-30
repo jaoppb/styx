@@ -16,13 +16,9 @@ impl CanonicalName {
     /// Canonicalizes a domain name by converting all ASCII characters to lowercase.
     #[must_use]
     pub fn canonicalize(name: &Name) -> Self {
-        let lowered_labels: Vec<_> = name
-            .labels()
-            .iter()
-            .map(styx_proto::Label::as_lowercase)
-            .collect();
-        let inner = Name::new(lowered_labels).unwrap_or_else(|_| Name::root());
-        Self { inner }
+        Self {
+            inner: name.to_canonical(),
+        }
     }
 
     /// Returns `true` if `self` is equal to or a subdomain of `other`.
@@ -30,23 +26,7 @@ impl CanonicalName {
     /// Root (`.`) is considered a parent of all domain names.
     #[must_use]
     pub fn is_subdomain_of(&self, other: &Self) -> bool {
-        if other.inner.is_root() {
-            return true;
-        }
-
-        let self_labels = self.inner.labels();
-        let other_labels = other.inner.labels();
-
-        if self_labels.len() < other_labels.len() {
-            return false;
-        }
-
-        // Compare labels right-to-left (from TLD up towards leaf)
-        self_labels
-            .iter()
-            .rev()
-            .zip(other_labels.iter().rev())
-            .all(|(a, b)| a == b)
+        self.inner.is_subdomain_of(&other.inner)
     }
 
     /// Returns the number of non-root labels in this domain name.

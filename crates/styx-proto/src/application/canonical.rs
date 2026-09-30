@@ -17,17 +17,12 @@ use crate::domain::record::{ResourceRecord, Ttl};
 /// to least significant). Each label is compared as lowercase octets in unsigned order.
 #[must_use]
 pub fn canonical_name_cmp(a: &Name, b: &Name) -> Ordering {
-    let a_canon = a.to_canonical();
-    let b_canon = b.to_canonical();
-    let a_labels = a_canon.labels();
-    let b_labels = b_canon.labels();
-
-    let mut a_iter = a_labels.iter().rev();
-    let mut b_iter = b_labels.iter().rev();
+    let mut a_iter = a.labels().rev();
+    let mut b_iter = b.labels().rev();
 
     loop {
         match (a_iter.next(), b_iter.next()) {
-            (Some(la), Some(lb)) => match la.as_bytes().cmp(lb.as_bytes()) {
+            (Some(la), Some(lb)) => match compare_labels_canonical(la.as_bytes(), lb.as_bytes()) {
                 Ordering::Equal => continue,
                 other => return other,
             },
@@ -36,6 +31,16 @@ pub fn canonical_name_cmp(a: &Name, b: &Name) -> Ordering {
             (None, None) => return Ordering::Equal,
         }
     }
+}
+
+fn compare_labels_canonical(a: &[u8], b: &[u8]) -> Ordering {
+    for (&ca, &cb) in a.iter().zip(b.iter()) {
+        match ca.to_ascii_lowercase().cmp(&cb.to_ascii_lowercase()) {
+            Ordering::Equal => continue,
+            other => return other,
+        }
+    }
+    a.len().cmp(&b.len())
 }
 
 /// Compares two resource records in RFC 4034 §6.3 canonical RRset order.

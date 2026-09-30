@@ -7,16 +7,17 @@
 //! - RDATA bounds checking (no overruns or trailing bytes).
 //! - Zero panics on any input.
 
+mod bitset;
 mod rdata;
 
-use std::collections::HashSet;
+pub use bitset::OffsetBitset;
 
 use crate::application::cursor::Cursor;
 use crate::domain::edns::Opt;
 use crate::domain::error::DecodeError;
 use crate::domain::header::{Header, MessageKind, Opcode, ResponseCode};
 use crate::domain::message::Message;
-use crate::domain::name::{Label, Name, MAX_LABEL_LEN, MAX_NAME_LEN};
+use crate::domain::name::{Name, MAX_LABEL_LEN, MAX_NAME_LEN};
 use crate::domain::question::Question;
 use crate::domain::rdata::RData;
 use crate::domain::record::{RecordClass, RecordType, ResourceRecord, Ttl};
@@ -28,7 +29,7 @@ const MIN_QUESTION_BYTES: usize = 5;
 const MIN_RECORD_BYTES: usize = 11;
 
 /// Default name expansion budget in total expanded octets per message.
-pub const DEFAULT_EXPANSION_BUDGET: usize = 2048;
+pub const DEFAULT_EXPANSION_BUDGET: usize = 4096;
 
 /// DNS message decoder.
 pub struct Decoder<'a> {
@@ -37,7 +38,9 @@ pub struct Decoder<'a> {
     /// Expansion budget for decompression.
     pub expansion_budget: usize,
     /// Known valid label start offsets for compression pointer validation.
-    pub valid_label_starts: HashSet<usize>,
+    pub valid_label_starts: OffsetBitset,
+    /// Offsets visited during pointer resolution in the current name decompression.
+    pub visited: OffsetBitset,
 }
 
 impl<'a> Decoder<'a> {
@@ -47,7 +50,8 @@ impl<'a> Decoder<'a> {
         Self {
             cursor: Cursor::new(buf),
             expansion_budget: DEFAULT_EXPANSION_BUDGET,
-            valid_label_starts: HashSet::new(),
+            valid_label_starts: OffsetBitset::new(buf.len()),
+            visited: OffsetBitset::new(buf.len()),
         }
     }
 
@@ -99,27 +103,30 @@ impl<'a> Decoder<'a> {
     ///
     /// Returns [`DecodeError`] on invalid pointers, loops, or length violations.
     pub fn read_name(&mut self) -> Result<Name, DecodeError> {
-        let mut labels = Vec::new();
-        let mut visited = HashSet::new();
+        let mut wire = Vec::with_capacity(32);
+        self.visited.clear();
         let mut return_pos = None;
         let mut expanded_bytes = 0usize;
 
         loop {
             let pos = self.cursor.position();
-            visited.insert(pos);
+            self.visited.insert(pos);
             match self.read_label_or_pointer()? {
-                LabelStep::Root => break,
+                LabelStep::Root => {
+                    wire.push(0);
+                    break;
+                }
                 LabelStep::Normal(label) => {
                     handle_normal_label(
                         label,
-                        &mut labels,
+                        &mut wire,
                         &mut expanded_bytes,
                         return_pos.is_some(),
                         &mut self.expansion_budget,
                     )?;
                 }
                 LabelStep::Pointer(target) => {
-                    self.handle_pointer_step(target, &mut visited, pos, &mut return_pos)?;
+                    self.handle_pointer_step(target, pos, &mut return_pos)?;
                 }
             }
         }
@@ -127,13 +134,15 @@ impl<'a> Decoder<'a> {
         if let Some(pos) = return_pos {
             self.cursor.seek(pos)?;
         }
-        Name::new(labels).map_err(DecodeError::from)
+        if wire.len() > MAX_NAME_LEN {
+            return Err(DecodeError::NameTooLong);
+        }
+        Ok(Name::from_wire(wire.into_boxed_slice()))
     }
 
     fn handle_pointer_step(
         &mut self,
         target: usize,
-        visited: &mut HashSet<usize>,
         ptr_start: usize,
         return_pos: &mut Option<usize>,
     ) -> Result<(), DecodeError> {
@@ -141,11 +150,11 @@ impl<'a> Decoder<'a> {
         if return_pos.is_none() {
             *return_pos = Some(ptr_pos);
         }
-        self.resolve_pointer_target(ptr_start, target, visited)?;
+        self.resolve_pointer_target(ptr_start, target)?;
         self.cursor.seek(target)
     }
 
-    fn read_label_or_pointer(&mut self) -> Result<LabelStep, DecodeError> {
+    fn read_label_or_pointer(&mut self) -> Result<LabelStep<'a>, DecodeError> {
         let pos = self.cursor.position();
         let b = self.cursor.read_u8()?;
         if b == 0 {
@@ -168,18 +177,12 @@ impl<'a> Decoder<'a> {
         if len > MAX_LABEL_LEN {
             return Err(DecodeError::LabelTooLong);
         }
-        let octets = self.cursor.read_slice(len)?.to_vec();
+        let octets = self.cursor.read_slice(len)?;
         self.valid_label_starts.insert(pos);
-        let label = Label::new(octets).map_err(DecodeError::from)?;
-        Ok(LabelStep::Normal(label))
+        Ok(LabelStep::Normal(octets))
     }
 
-    fn resolve_pointer_target(
-        &self,
-        ptr_start: usize,
-        target: usize,
-        visited: &HashSet<usize>,
-    ) -> Result<(), DecodeError> {
+    fn resolve_pointer_target(&self, ptr_start: usize, target: usize) -> Result<(), DecodeError> {
         let buf_len = self.cursor.len();
         if target >= buf_len {
             return Err(DecodeError::PointerOutOfRange {
@@ -187,10 +190,10 @@ impl<'a> Decoder<'a> {
                 len: buf_len,
             });
         }
-        if target == ptr_start || visited.contains(&target) {
+        if target == ptr_start || self.visited.contains(target) {
             return Err(DecodeError::CompressionLoop(target));
         }
-        if target >= ptr_start || !self.valid_label_starts.contains(&target) {
+        if target >= ptr_start || !self.valid_label_starts.contains(target) {
             return Err(DecodeError::PointerOutOfRange {
                 pointer: target,
                 len: buf_len,
@@ -393,8 +396,8 @@ impl<'a> Decoder<'a> {
 }
 
 fn handle_normal_label(
-    label: Label,
-    labels: &mut Vec<Label>,
+    label: &[u8],
+    wire: &mut Vec<u8>,
     expanded_bytes: &mut usize,
     is_pointer: bool,
     expansion_budget: &mut usize,
@@ -411,13 +414,18 @@ fn handle_normal_label(
             .checked_sub(label.len())
             .ok_or(DecodeError::ExpansionBudgetExceeded)?;
     }
-    labels.push(label);
+    let len_u8 = match u8::try_from(label.len()) {
+        Ok(l) => l,
+        Err(_) => return Err(DecodeError::LabelTooLong),
+    };
+    wire.push(len_u8);
+    wire.extend_from_slice(label);
     Ok(())
 }
 
-enum LabelStep {
+enum LabelStep<'b> {
     Root,
-    Normal(Label),
+    Normal(&'b [u8]),
     Pointer(usize),
 }
 

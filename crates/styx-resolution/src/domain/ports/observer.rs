@@ -40,4 +40,11 @@ pub trait QueryObserver: Send + Sync + 'static {
 
     /// Returns the total count of detail entries dropped due to full buffers.
     fn dropped_detail(&self) -> u64;
+
+    /// Returns whether detailed query traces are enabled.
+    ///
+    /// Callers can check this before allocating a [`QueryDetail`].
+    fn wants_detail(&self) -> bool {
+        true
+    }
 }

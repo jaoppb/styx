@@ -74,25 +74,25 @@ where
     ///
     /// # Errors
     /// Returns [`PipelineError`] mapped to DNS RCODEs on validation or resolution failure.
-    pub async fn handle(&self, ctx: RequestContext) -> Result<Message, PipelineError> {
+    pub async fn handle(&self, ctx: &RequestContext) -> Result<Message, PipelineError> {
         let question = match self.validate_input(&ctx.query) {
-            Ok(q) => q.clone(),
-            Err(err) => return self.handle_error(&ctx, err),
+            Ok(q) => q,
+            Err(err) => return self.handle_error(ctx, err),
         };
 
-        if let Some(forged) = self.try_local_records(&ctx, &question) {
+        if let Some(forged) = self.try_local_records(ctx, question) {
             let outcome = forged.outcome();
-            self.record_telemetry(&ctx, &question, &outcome);
+            self.record_telemetry(ctx, question, &outcome);
             return Ok(forged.into_response());
         }
 
-        if let Some(forged) = self.try_filter(&ctx, &question) {
+        if let Some(forged) = self.try_filter(ctx, question) {
             let outcome = forged.outcome();
-            self.record_telemetry(&ctx, &question, &outcome);
+            self.record_telemetry(ctx, question, &outcome);
             return Ok(forged.into_response());
         }
 
-        self.run_terminal(&ctx, &question).await
+        self.run_terminal(ctx, question).await
     }
 
     fn validate_input<'a>(&self, query: &'a Message) -> Result<&'a Question, PipelineError> {
@@ -163,18 +163,22 @@ where
         err: PipelineError,
     ) -> Result<Message, PipelineError> {
         let rcode = err.response_code();
-        let fallback_question = match ctx.query.questions.first() {
-            Some(q) => q.clone(),
-            None => Question::new(
-                styx_proto::Name::root(),
-                styx_proto::RecordType::A,
-                RecordClass::In,
-            ),
+        let fallback;
+        let question = match ctx.query.questions.first() {
+            Some(q) => q,
+            None => {
+                fallback = Question::new(
+                    styx_proto::Name::root(),
+                    styx_proto::RecordType::A,
+                    RecordClass::In,
+                );
+                &fallback
+            }
         };
 
         let outcome = ResolutionOutcome::Error { rcode };
 
-        self.record_telemetry(ctx, &fallback_question, &outcome);
+        self.record_telemetry(ctx, question, &outcome);
         Err(err)
     }
 
@@ -189,12 +193,14 @@ where
         let elapsed = now_mono.saturating_duration_since(ctx.received_at);
 
         self.observer.record_outcome(&ctx.client, question, outcome);
-        self.observer.offer_detail(QueryDetail {
-            client: ctx.client,
-            question: question.clone(),
-            outcome: outcome.clone(),
-            at: now_utc,
-            elapsed,
-        });
+        if self.observer.wants_detail() {
+            self.observer.offer_detail(QueryDetail {
+                client: ctx.client,
+                question: question.clone(),
+                outcome: outcome.clone(),
+                at: now_utc,
+                elapsed,
+            });
+        }
     }
 }

@@ -32,4 +32,20 @@ impl QueryObserver for DiscardObserver {
     fn dropped_detail(&self) -> u64 {
         0
     }
+
+    fn wants_detail(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_discard_observer_does_not_want_detail() {
+        let observer = DiscardObserver::new();
+        assert!(!observer.wants_detail());
+        assert_eq!(observer.dropped_detail(), 0);
+    }
 }

@@ -19,7 +19,7 @@ pub use domain::edns::{EdnsOption, Opt, DEFAULT_EDNS_UDP_PAYLOAD_SIZE};
 pub use domain::error::{DecodeError, EncodeError, NameError};
 pub use domain::header::{Header, MessageKind, Opcode, ResponseCode};
 pub use domain::message::Message;
-pub use domain::name::{Label, Name, MAX_LABEL_LEN, MAX_NAME_LEN};
+pub use domain::name::{Label, LabelRef, Name, MAX_LABEL_LEN, MAX_NAME_LEN};
 pub use domain::question::Question;
 pub use domain::rdata::basic::{MxRdata, SoaRdata, SrvRdata, TxtRdata};
 pub use domain::rdata::dnssec::{
