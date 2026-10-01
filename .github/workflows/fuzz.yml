@@ -32,7 +32,7 @@ jobs:
           - decode_arbitrary
           - decode_encode_roundtrip
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # LibFuzzer instrumentation and sanitizers require the nightly compiler.
       - name: Install the nightly toolchain
@@ -43,13 +43,13 @@ jobs:
           key: ${{ matrix.target }}-nightly
 
       # cargo-fuzz is pinned in mise.toml alongside all other tools.
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v5
 
       # The corpus is persisted across runs so each iteration builds upon
       # prior discoveries. Run-id key with prefix fallback guarantees a clean
       # save on success while restoring the latest available corpus.
       - name: Restore or initialize corpus
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         id: corpus-cache
         with:
           path: crates/styx-proto/fuzz/corpus/${{ matrix.target }}
@@ -70,7 +70,7 @@ jobs:
       # LibFuzzer writes crashes to crates/styx-proto/fuzz/artifacts/<target>/
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: crates/styx-proto/fuzz/artifacts/${{ matrix.target }}
