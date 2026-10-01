@@ -65,7 +65,7 @@ _rumdl-version:
         echo "mise is not installed. See https://mise.jdx.dev, then run: just install-tools" >&2
         exit 1
     fi
-    pinned="$(mise config get 'tools.cargo:rumdl')"
+    pinned="$(mise config get 'tools.rumdl')"
     if ! command -v rumdl >/dev/null 2>&1; then
         echo "rumdl is not installed. Run: just install-tools" >&2
         exit 1

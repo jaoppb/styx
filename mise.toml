@@ -22,8 +22,8 @@
 # copy of it — the exact problem this file exists to avoid.
 [tools]
 "cargo:arch-lint-cli" = "0.6.0"
-"cargo:rumdl" = "0.2.75"
+rumdl = "0.2.75"
 just = "1.58.0"
 lefthook = "2.1.14"
-"cargo:cross" = "0.2.5"
-"cargo:cargo-fuzz" = "0.13.2"
+"aqua:cross-rs/cross" = "0.2.5"
+"github:rust-fuzz/cargo-fuzz" = "0.13.2"

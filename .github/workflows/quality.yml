@@ -19,7 +19,7 @@ jobs:
     name: gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # rust-toolchain.toml pins the version, the components and the musl
       # targets. Nothing here restates them, so the pin has one home.
@@ -33,7 +33,7 @@ jobs:
       # file — the same `mise install` behind `just install-tools` — and puts
       # its shims on PATH, so the `just gate` step below finds a `just` binary
       # without a separate setup-just step, at the version this file pins.
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v5
 
       # The whole per-push gate, in one step, via the same target a developer
       # runs. Hermetic: no network, no external service, no live DNS.
