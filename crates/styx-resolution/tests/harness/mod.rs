@@ -14,4 +14,4 @@ pub use clock::TestClock;
 pub use commandable::{CommandableUpstream, UpstreamBehavior};
 pub use error::HarnessError;
 pub use fake::{FakeNameServer, FakeRole, ZoneScript};
-pub use server::TestServer;
+pub use server::{ServerSettings, TestServer};

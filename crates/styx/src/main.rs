@@ -17,8 +17,8 @@ use std::time::Duration;
 use anyhow::Context;
 use styx_core::SystemClock;
 use styx_resolution::{
-    AllowAllFilter, DiscardObserver, MaxResponseSize, NoLocalRecords, Pipeline, Server,
-    ServerConfig,
+    default_socket_count, AllowAllFilter, ConcurrencyLimits, DiscardObserver, MaxResponseSize,
+    NoLocalRecords, Pipeline, Server, ServerConfig,
 };
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -30,6 +30,7 @@ const DEFAULT_LOG_FILTER: LevelFilter = LevelFilter::INFO;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
+    raise_descriptor_limit();
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -89,8 +90,47 @@ async fn load_config() -> anyhow::Result<ServerConfig> {
         udp_payload_size_default: MaxResponseSize::classic(),
         tcp_idle_timeout: Duration::from_secs(5),
         query_timeout: Duration::from_secs(2),
+        limits: ConcurrencyLimits::default_limits()
+            .with_udp_sockets_per_addr(default_socket_count()),
     })
 }
+
+/// Raises the `RLIMIT_NOFILE` soft limit to the hard limit before any socket is bound.
+///
+/// The upstream forwarder binds a socket per query, so at the default caps peak
+/// descriptor use exceeds the 1024 soft limit a systemd service starts with. Failure
+/// is logged and boot continues: the accept loop already survives `EMFILE`.
+#[cfg(target_os = "linux")]
+fn raise_descriptor_limit() {
+    use rustix::process::{getrlimit, setrlimit, Resource, Rlimit};
+
+    let limit = getrlimit(Resource::Nofile);
+    if limit.current == limit.maximum {
+        tracing::info!(soft = ?limit.current, hard = ?limit.maximum, "descriptor limit unchanged");
+        return;
+    }
+    let raised = Rlimit {
+        current: limit.maximum,
+        maximum: limit.maximum,
+    };
+    match setrlimit(Resource::Nofile, raised) {
+        Ok(()) => tracing::info!(
+            previous_soft = ?limit.current,
+            soft = ?limit.maximum,
+            "raised descriptor soft limit to the hard limit"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            soft = ?limit.current,
+            hard = ?limit.maximum,
+            "could not raise descriptor soft limit"
+        ),
+    }
+}
+
+/// Descriptor limits are left to the operator off Linux.
+#[cfg(not(target_os = "linux"))]
+fn raise_descriptor_limit() {}
 
 /// Installs the `tracing` subscriber, taking its filter from the environment.
 fn init_tracing() {
