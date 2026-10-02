@@ -4,16 +4,22 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use styx_proto::application::Decoder;
-use styx_proto::{
-    frame_tcp, read_tcp_frame_length, Header, Message, Opcode, Opt, Question, ResponseCode,
-};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use styx_proto::application::{Decoder, Encoder};
+use styx_proto::{read_tcp_frame_length, Header, Message, Opcode, Opt, Question, ResponseCode};
+use tokio::io::AsyncReadExt;
 use tokio::net::{TcpStream, UdpSocket};
 
 use styx_core::{Clock, Upstream, UpstreamError, UpstreamId, UpstreamKind, UpstreamResponse};
 
 use crate::domain::edns::EdnsBufferSize;
+use crate::infrastructure::tcp_frame::{write_framed, FrameWriteError};
+
+/// Encode budget for an outgoing query: a header, one question and an OPT record total
+/// about 282 octets, so 512 never trips the budget and avoids reserving 4 KiB.
+const QUERY_ENCODE_BUDGET: usize = 512;
+
+/// UDP receive buffer size, matching the largest EDNS buffer the forwarder may advertise.
+const UDP_RECEIVE_OCTETS: usize = EdnsBufferSize::MAX_CEILING as usize;
 
 /// A classic DNS over UDP (Do53) forwarder with automatic TCP fallback on truncation.
 #[derive(Debug)]
@@ -75,13 +81,12 @@ impl<C: Clock> Do53Forwarder<C> {
         let opt = Opt::new(self.edns_buffer.octets(), 0, 0, false, Vec::new());
         msg.opt = Some(opt);
 
-        let mut buf = vec![0u8; 4096];
-        let written = msg
-            .encode(&mut buf, 4096)
+        let mut encoder = Encoder::new(QUERY_ENCODE_BUDGET);
+        encoder
+            .encode_message(&msg)
             .map_err(|e| UpstreamError::Malformed(e.to_string()))?;
-        buf.truncate(written);
 
-        Ok((tx_id, buf))
+        Ok((tx_id, encoder.buf))
     }
 
     async fn send_udp(
@@ -125,7 +130,7 @@ impl<C: Clock> Do53Forwarder<C> {
         query: &Question,
         expected_id: u16,
     ) -> Result<Message, UpstreamError> {
-        let mut recv_buf = vec![0u8; 4096];
+        let mut recv_buf = [0u8; UDP_RECEIVE_OCTETS];
         loop {
             let n = socket
                 .recv(&mut recv_buf)
@@ -170,7 +175,9 @@ impl<C: Clock> Do53Forwarder<C> {
 
     async fn retry_tcp(
         &self,
+        query_bytes: &[u8],
         query: &Question,
+        expected_id: u16,
         deadline: Instant,
     ) -> Result<Message, UpstreamError> {
         let now = self.clock.now_monotonic();
@@ -182,14 +189,12 @@ impl<C: Clock> Do53Forwarder<C> {
                 .await
                 .map_err(|e| UpstreamError::Transport(e.kind()))?;
 
-            let (tx_id, query_bytes) = self.encode_query(query)?;
-            let framed =
-                frame_tcp(&query_bytes).map_err(|e| UpstreamError::Malformed(e.to_string()))?;
-
-            stream
-                .write_all(&framed)
+            write_framed(&mut stream, query_bytes)
                 .await
-                .map_err(|e| UpstreamError::Transport(e.kind()))?;
+                .map_err(|e| match e {
+                    FrameWriteError::Io(kind) => UpstreamError::Transport(kind),
+                    FrameWriteError::BodyTooLong { .. } => UpstreamError::Malformed(e.to_string()),
+                })?;
 
             let mut len_buf = [0u8; 2];
             stream
@@ -208,7 +213,7 @@ impl<C: Clock> Do53Forwarder<C> {
                 .await
                 .map_err(|e| UpstreamError::Transport(e.kind()))?;
 
-            let msg = self.validate_and_decode(&resp_buf, query, tx_id)?;
+            let msg = self.validate_and_decode(&resp_buf, query, expected_id)?;
             if msg.header.truncated {
                 return Err(UpstreamError::Truncated);
             }
@@ -246,16 +251,12 @@ impl<C: Clock> Upstream for Do53Forwarder<C> {
         let start = self.clock.now_monotonic();
         let (tx_id, query_bytes) = self.encode_query(query)?;
 
-        let (message, via_tcp) = match self.send_udp(&query_bytes, query, tx_id, deadline).await {
-            Ok(msg) => {
-                if msg.header.truncated {
-                    let tcp_msg = self.retry_tcp(query, deadline).await?;
-                    (tcp_msg, true)
-                } else {
-                    (msg, false)
-                }
-            }
-            Err(err) => return Err(err),
+        let udp_message = self.send_udp(&query_bytes, query, tx_id, deadline).await?;
+        let (message, via_tcp) = if udp_message.header.truncated {
+            let tcp_message = self.retry_tcp(&query_bytes, query, tx_id, deadline).await?;
+            (tcp_message, true)
+        } else {
+            (udp_message, false)
         };
 
         let mapped = Self::map_response(message)?;
@@ -273,5 +274,36 @@ impl<C: Clock> Upstream for Do53Forwarder<C> {
             via_tcp,
             raced_count: 1,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use styx_core::test_util::TestClock;
+    use styx_proto::{RecordClass, RecordType};
+
+    use super::*;
+
+    #[test]
+    fn encode_query_roundtrips_through_decoder() {
+        let forwarder = Do53Forwarder::new(
+            UpstreamId::new("unit"),
+            SocketAddr::from(([127, 0, 0, 1], 53)),
+            EdnsBufferSize::default(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Arc::new(TestClock::new()),
+        );
+        let name = styx_proto::Name::from_ascii("example.org.").expect("name");
+        let question = Question::new(name, RecordType::A, RecordClass::In);
+
+        let (tx_id, bytes) = forwarder.encode_query(&question).expect("encode");
+        let message = Decoder::new(&bytes).decode_message().expect("decode");
+
+        assert_eq!(message.header.id, tx_id);
+        assert!(message.header.recursion_desired);
+        assert_eq!(message.questions, vec![question]);
+        let opt = message.opt.expect("opt record");
+        assert_eq!(opt.udp_payload_size(), EdnsBufferSize::default().octets());
     }
 }

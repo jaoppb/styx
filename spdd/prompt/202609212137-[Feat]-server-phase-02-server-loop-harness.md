@@ -213,6 +213,12 @@ class ResponseWriter {
   +truncate_if_needed(Message, MaxResponseSize) Message
 }
 
+class FrameWriteError {
+  <<enumeration>>
+  BodyTooLong
+  Io
+}
+
 class Clock {
   <<interface>>
   +now_utc() SystemTime
@@ -326,6 +332,7 @@ Server "1" --> "1" Pipeline : dispatches to
 Server "1" --> "1" Clock : injected
 UdpListener --> RequestContext : produces
 TcpListener --> RequestContext : produces
+TcpListener ..> FrameWriteError : frames replies via write_framed, fails with
 RequestContext "1" --> "1" ClientId : identifies
 RequestContext "1" --> "1" Transport : arrived on
 RequestContext "1" --> "1" MaxResponseSize : bounds truncation to
@@ -392,6 +399,12 @@ concerns, not a zone-file server.
   across packets, and multiple queries on one connection. This class of bug is exactly
   what in-memory test transports never surface, which is the main reason the harness uses
   real sockets.
+- **Framing happens at the socket, not in the encoder.** *(amendment, issue 41)*
+  `ResponseWriter::write` returns the unframed body on every transport. The two-byte
+  prefix and the body go out as two `IoSlice`s through one `write_vectored` loop in
+  `infrastructure::tcp_frame::write_framed`, so no framed copy of the message is ever
+  built. The helper is generic over `AsyncWrite` (static dispatch) and is shared with
+  Phase 3's `Do53Forwarder` TCP fallback.
 - **Supervised async tasks from the first listener.** *Why:* in a single process, a panic
   in any task can take DNS down for the whole house. `panic = "deny"` is one of the 21
   denied lints and it is load-bearing, but its real mitigation — a `catch_unwind` boundary
@@ -591,8 +604,9 @@ concerns, not a zone-file server.
    - `application` — `Pipeline`, which orchestrates the fixed stage order and holds the
      compile-time generic collaborator handles (`Arc<L>`, `Arc<F>`, `Arc<O>`, `Arc<C>`,
      `Arc<T>`). Depends on `domain` and `styx-core`.
-   - `infrastructure` — `UdpListener`, `TcpListener`, `Server`, `ResponseWriter`, and the
-     no-op port implementations `AllowAllFilter`, `NoLocalRecords`, `DiscardObserver`.
+   - `infrastructure` — `UdpListener`, `TcpListener`, `Server`, `ResponseWriter`, the
+     `tcp_frame` module (`write_framed`, `FrameWriteError`), and the no-op port
+     implementations `AllowAllFilter`, `NoLocalRecords`, `DiscardObserver`.
      Generic over collaborator ports. Depends on `domain`, `application`, and `styx-core`.
 4. **`styx`** *(the binary)* — reads `ServerConfig` from TOML, constructs `SystemClock`
    directly from `styx_core`, selects the port implementations, builds the `Pipeline`,
@@ -894,7 +908,13 @@ concerns, not a zone-file server.
      deny` is paid once.
 2. **`write(message, ctx) -> Result<Vec<u8>, EncodeError>`**
    - Logic: apply `truncate_if_needed` with `ctx.max_response_size` on UDP; encode via
-     `styx-proto`; on TCP, prepend the two-byte length prefix.
+     `styx-proto`'s `Encoder` and return `encoder.buf` directly, never through
+     `Message::encode` or `frame_tcp`. On TCP, encode with a `MAX_TCP_MESSAGE_LEN` budget
+     and return the **unframed** body; the caller frames it on the wire through
+     `write_framed` (Operation 12, item 6). *(Amendment, issue 41.)*
+   - The doc comment states that TCP output carries no length prefix.
+   - A unit test pins it: the TCP output's first two octets are the header ID, not a
+     length, and its length equals the encoded size.
 3. **Constraints**: never emit a response larger than the transport permits. Never set TC
    on a response that fits. Never emit an ECS option.
 
@@ -941,6 +961,35 @@ concerns, not a zone-file server.
 5. **Constants**: exports `pub const DEFAULT_TCP_IDLE_TIMEOUT: Duration =`
    `Duration::from_secs(5);` as the single canonical default idle timeout for TCP client
    connections.
+6. **Writing frames** *(amendment, issue 41)*: replies are framed by a shared helper in a
+   new module, `infrastructure::tcp_frame`, declared `pub mod tcp_frame;` in
+   `infrastructure/mod.rs` with `FrameWriteError` and `write_framed` re-exported. They
+   are public only because the `pipeline` benchmark is an external caller.
+   - `FrameWriteError` derives `Debug, Clone, PartialEq, Eq, thiserror::Error`. It holds
+     only a length and an `std::io::ErrorKind`, so it stays allocation-free and
+     comparable in tests. Variants:
+     - `BodyTooLong { length: usize }`, message
+       `tcp frame body of {length} octets exceeds 65535`, when the body length does not
+       fit a `u16`.
+     - `Io(std::io::ErrorKind)`, message `tcp frame write failed: {0}`, when the writer
+       errors, accepts zero bytes (`WriteZero`), or reports more bytes than were offered
+       (`InvalidData`).
+   - `async fn write_framed<W: AsyncWrite + Unpin>(writer: &mut W, body: &[u8]) ->
+     Result<(), FrameWriteError>`, documented with `# Errors`. Logic: derive the prefix
+     with `u16::try_from` (never a cast), build two `IoSlice`s (prefix, then body), and
+     loop on `write_vectored` while slices remain, advancing with
+     `IoSlice::advance_slices`. A count above the offered total, computed with
+     `saturating_add`, is rejected before advancing, since `advance_slices` would panic.
+     No flush. A zero-length body writes the prefix only.
+   - `TcpListener` gains a private associated async function taking
+     `stream: &mut TcpStream`, `peer: SocketAddr` and `body: &[u8]`, returning `bool`. It
+     calls `write_framed`; on error it logs `tracing::error!` with `%peer` and `%err`
+     and returns `false`. Both the normal reply and `send_formerr` use it in place of
+     `write_all`.
+   - Unit tests beside the helper, with a hand-written fake `AsyncWrite`: prefix then
+     body in order; exact bytes under one-octet partial writes; empty body writes only
+     the prefix; 65535 octets accepted and 65536 rejected with `BodyTooLong`; `Ok(0)`
+     yields `Io(WriteZero)`; a writer error propagates as `Io`.
 
 ### 13. Implement `Server` and `ServerConfig` — `styx-resolution::infrastructure::server` and the `styx` binary
 
@@ -1167,6 +1216,10 @@ and expensive to discover later:
   clamped to at least 512 per RFC 6891 Section 6.2.3 — and 512 when absent.
 - The TCP length prefix is handled as stream framing: partial reads across packets, and
   multiple queries per connection.
+- A TCP reply on the wire is the prefix followed by the body, exactly as before, but
+  written without allocating a framed copy: `ResponseWriter::write` returns the unframed
+  body and `write_framed` is the only production code that emits a prefix.
+  *(Amendment, issue 41.)*
 - Every query receives a response, including malformed ones, mapped to an explicit RCODE.
   A query is never silently dropped once a header is recoverable.
 - `Server::shutdown()` completes with in-flight queries outstanding and does not hang.

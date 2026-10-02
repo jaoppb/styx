@@ -7,8 +7,10 @@ use std::time::Duration;
 
 use harness::{CommandableUpstream, TestClock, UpstreamBehavior};
 use styx_core::{Clock, Upstream, UpstreamError, UpstreamId};
-use styx_proto::{Name, Question, RecordClass, RecordType};
+use styx_proto::application::Encoder;
+use styx_proto::{Header, Message, MessageKind, Name, Opcode, Question, RecordClass, RecordType};
 use styx_resolution::{Do53Forwarder, EdnsBufferSize};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn make_test_question(qname: &str) -> Question {
     let name = match Name::from_ascii(qname) {
@@ -188,5 +190,73 @@ async fn test_forwarder_tcp_fallback_truncated_tcp_yields_truncated_error() {
     assert!(
         matches!(err, UpstreamError::Truncated),
         "expected UpstreamError::Truncated, got: {err:?}"
+    );
+}
+
+fn encode_response(id: u16, question: &Question, truncated: bool) -> Option<Vec<u8>> {
+    let mut header = Header::new_query(id, Opcode::Query, false);
+    header.kind = MessageKind::Response;
+    header.truncated = truncated;
+    let mut message = Message::new(header);
+    message.questions.push(question.clone());
+    let mut encoder = Encoder::new(512);
+    encoder.encode_message(&message).ok()?;
+    Some(encoder.buf)
+}
+
+#[tokio::test]
+async fn tcp_fallback_reuses_udp_transaction_id() {
+    let udp = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind udp");
+    let addr = udp.local_addr().expect("udp addr");
+    let tcp = tokio::net::TcpListener::bind(addr).await.expect("bind tcp");
+
+    let udp_task = tokio::spawn(async move {
+        let mut buf = [0u8; 4096];
+        let (n, peer) = udp.recv_from(&mut buf).await.expect("udp recv");
+        let query = Message::decode(buf.get(..n).expect("datagram")).expect("decode udp");
+        let question = query.questions.first().expect("question").clone();
+        let reply = encode_response(query.header.id, &question, true).expect("encode response");
+        udp.send_to(&reply, peer).await.expect("udp reply");
+        query.header.id
+    });
+    let tcp_task = tokio::spawn(async move {
+        let (mut stream, _) = tcp.accept().await.expect("accept");
+        let mut len_prefix = [0u8; 2];
+        stream.read_exact(&mut len_prefix).await.expect("read len");
+        let mut body = vec![0u8; usize::from(u16::from_be_bytes(len_prefix))];
+        stream.read_exact(&mut body).await.expect("read body");
+        let query = Message::decode(&body).expect("decode tcp");
+        let question = query.questions.first().expect("question").clone();
+        let reply = encode_response(query.header.id, &question, false).expect("encode response");
+        let framed = styx_proto::frame_tcp(&reply).expect("frame");
+        stream.write_all(&framed).await.expect("tcp reply");
+        query.header.id
+    });
+
+    let clock = Arc::new(TestClock::new());
+    let forwarder = Do53Forwarder::new(
+        UpstreamId::new("fwd"),
+        addr,
+        EdnsBufferSize::default(),
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+        clock.clone(),
+    );
+    let query = make_test_question("reuse.id.test.");
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+
+    let response = forwarder
+        .resolve(&query, deadline)
+        .await
+        .expect("tcp fallback answered");
+
+    assert!(response.via_tcp);
+    let udp_id = udp_task.await.expect("udp task");
+    let tcp_id = tcp_task.await.expect("tcp task");
+    assert_eq!(
+        udp_id, tcp_id,
+        "TCP retry must reuse the UDP transaction ID"
     );
 }

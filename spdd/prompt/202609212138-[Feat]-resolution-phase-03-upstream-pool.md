@@ -314,6 +314,7 @@ ProbeScheduler "1" --> "1" ProbePolicy : consults
 ProbePolicy ..> MemberView : evaluates
 Do53Forwarder ..> UpstreamError : fails with
 Do53Forwarder ..> EdnsBufferSize : advertises
+Do53Forwarder ..> FrameWriteError : frames TCP via write_framed (phase 2)
 UpstreamError ..> FailureClass : classified by
 UpstreamPool ..> UpstreamResponse : returns
 PoolConfig ..> UpstreamPool : constructs
@@ -439,6 +440,17 @@ PoolConfig ..> ConfigError : fails with
 - Deadlines come from the injected clock, not from real timers, so tests can drive them.
 - All socket work is async; `no-sync-io` is a denied lint and would catch a blocking call
   anyway.
+- **One encode, no copies.** *(Amendment, issue 41.)* The query is encoded once, straight
+  into an `Encoder` buffer with a 512-octet budget (`Encoder::new` reserves
+  `min(budget, 4096)`, and a header, one question and an OPT total about 282 octets).
+  The TCP retry reuses those bytes and their transaction ID, which RFC 7766 permits and
+  which `validate_and_decode` already checks. The prefix and body go out through Phase 2's
+  `write_framed` vectored helper, so no framed copy is built.
+- **Stack receive buffer.** The UDP receive buffer is a stack array of
+  `EdnsBufferSize::MAX_CEILING` (4096) octets, so no datagram the forwarder could have
+  advertised for is truncated. This adds about 4 KiB to each in-flight `resolve()` future,
+  multiplied by the racers under `race`, which is accepted at household scale.
+- The per-query UDP socket stays: it is source-port randomisation, not waste.
 
 ### 6. Failure and error strategy
 
@@ -512,6 +524,7 @@ styx-resolution/ (feature crate)
     infrastructure/
       do53.rs            # Do53Forwarder: UDP + TCP fallback
       udp.rs / tcp.rs    # transport details
+      tcp_frame.rs       # write_framed, FrameWriteError — Phase 2, reused by do53
 ```
 
 `health.rs`/`circuit.rs` and `config.rs`/`weight.rs`/`edns.rs` are each split by concept
@@ -549,8 +562,9 @@ different concept from the state machine it drives (`CircuitState`), and `Weight
    injected `Clock`.
 3. `application::strategies::weighted` additionally depends on `domain::weight`, for
    `Weight::checked_sum`.
-4. `infrastructure::do53` depends on `domain::{upstream, error, config, edns}` and on
-   **`styx-proto`** for encode/decode.
+4. `infrastructure::do53` depends on `domain::{upstream, error, config, edns}`, on
+   `infrastructure::tcp_frame` for TCP framing, and on **`styx-proto`** for encode/decode
+   (`Encoder` directly, never `Message::encode` or `frame_tcp`).
 5. `styx-proto` is **shared foundation, not a feature crate** — every crate parses through
    the wire codec, so the "feature crates never depend on each other" rule explicitly does
    not reach it. It is the one recorded exception, and the layering config must be written
@@ -849,26 +863,39 @@ Ordered by dependency. Each task is independently completable and independently 
    `{ id, addr: SocketAddr, edns_buffer: EdnsBufferSize, udp_timeout, tcp_timeout, clock }`.
 3. **`resolve` logic** — `resolve` itself is a short sequence of guard clauses over named
    private helpers, none of which is `resolve` re-implementing the others:
-   - `fn encode_query(&self, query: &Question) -> Result<Vec<u8>, UpstreamError>` — a fresh
-     transaction ID and an EDNS(0) OPT advertising `edns_buffer.octets()`, through
-     `styx-proto`.
-   - `async fn send_udp(&self, bytes: &[u8], deadline: Instant) -> Result<Vec<u8>, UpstreamError>`
-     — send over UDP, await a response until the earlier of `deadline` and the UDP
-     timeout. On expiry → `UpstreamError::Timeout`.
-   - `fn validate_and_decode(&self, raw: &[u8], query: &Question) -> Result<Message, UpstreamError>`
+   - `fn encode_query(&self, query: &Question) -> Result<(u16, Vec<u8>), UpstreamError>` —
+     a fresh transaction ID and an EDNS(0) OPT advertising `edns_buffer.octets()`, encoded
+     with `Encoder::new` at a private 512-octet budget constant and returned as
+     `(tx_id, encoder.buf)`. An `EncodeError` maps to `UpstreamError::Malformed`. Called
+     **once** per `resolve`. *(Amendment, issue 41.)*
+   - `async fn send_udp(&self, bytes: &[u8], query: &Question, expected_id: u16, deadline:
+     Instant) -> Result<Message, UpstreamError>` — bind a fresh socket, connect, send,
+     then `recv_until_valid` until the earlier of `deadline` and the UDP timeout. On
+     expiry → `UpstreamError::Timeout`.
+   - `async fn recv_until_valid(&self, socket: &UdpSocket, query: &Question, expected_id:
+     u16) -> Result<Message, UpstreamError>` — receive into a stack array whose length is
+     a private constant equal to `usize::from(EdnsBufferSize::MAX_CEILING)`, slice with
+     `get(..n)`, and skip any datagram that fails `validate_and_decode`.
+   - `fn validate_and_decode(&self, raw: &[u8], query: &Question, expected_id: u16) ->
+     Result<Message, UpstreamError>`
      — transaction ID match **and** question-section match, or `UpstreamError::Mismatched`
      (spoofing resistance), then decode through `styx-proto`; a decode failure is
      `UpstreamError::Malformed`.
-   - `async fn retry_tcp(&self, query: &Question, deadline: Instant) -> Result<Message, UpstreamError>`
-     — used only when the UDP response has TC=1, which is not an answer. Success sets
+   - `async fn retry_tcp(&self, query_bytes: &[u8], query: &Question, expected_id: u16,
+     deadline: Instant) -> Result<Message, UpstreamError>` — sends the same bytes and
+     transaction ID the UDP attempt used, with no re-encode, through
+     `write_framed(&mut stream, query_bytes)`. `FrameWriteError::BodyTooLong` maps to
+     `UpstreamError::Malformed(e.to_string())` and `FrameWriteError::Io(kind)` to
+     `UpstreamError::Transport(kind)`. Used only when the UDP response has TC=1, which is
+     not an answer. Success sets
      `via_tcp = true` and the latency sample covers the whole operation; propagates the
      inner exchange error (`Transport`, `Timeout`, `Malformed`, `Mismatched`), returning
      `UpstreamError::Truncated` only when the TCP response itself has TC=1.
    - `fn map_response(message: Message) -> Result<UpstreamResponse, UpstreamError>` — REFUSED
      → `Refused` (`UpstreamFault`); SERVFAIL → `ServerFailure` (`AnswerFault`, `is_upstream: false`); NOERROR/NXDOMAIN → success with the message
      returned as-is.
-   - `resolve` itself calls these in sequence, retrying over TCP only on TC=1, and never
-     duplicates a step's logic inline.
+   - `resolve` itself calls these in sequence, encoding once and retrying over TCP only
+     on TC=1 with the same bytes and `tx_id`, and never duplicates a step's logic inline.
 4. **Constraints**: async only (`no-sync-io` is denied); no `unwrap`/`expect`; all buffer
    handling checked (`indexing_slicing` is denied); every timestamp from the injected
    clock. The helper split above is required, not optional: it keeps `resolve` and every
@@ -943,6 +970,15 @@ Ordered by dependency. Each task is independently completable and independently 
    - **Probe silence (negative test)**: a busy, healthy member receives **zero** probe
      queries.
    - TCP fallback: TC=1 over UDP is retried over TCP and answered.
+   - `tcp_fallback_reuses_udp_transaction_id` *(amendment, issue 41)*: the TCP query
+     carries the same transaction ID the fake recorded on the UDP query, and the final
+     answer is returned.
+   - `encode_query_roundtrips_through_decoder` (unit test in `do53.rs`): the bytes decode
+     to the returned ID, recursion desired, the single question, and an OPT payload size
+     equal to the configured `EdnsBufferSize`.
+   - Benchmarks in `benches/pipeline.rs`: `do53_resolve_udp_loopback` against a spawned
+     loopback responder and `tcp_write_framed` against `tokio::io::sink()`, both also in
+     the `report_alloc` profile. Before and after figures go in the pull request.
    - Answer-vs-upstream fault: a SERVFAIL for one bad name does not open the circuit.
    - All-down: every member failing returns a definite error rendered as SERVFAIL, with no
      hang and no panic.
@@ -1105,6 +1141,10 @@ Scope, verbatim, from the same specification:
   completed branches feed health.
 - **Truncation**: a TC=1 UDP response is never returned as an answer; it is retried over
   TCP.
+- **Query-path allocation** *(amendment, issue 41)*: one heap allocation per query for
+  the encoded bytes, at a 512-octet capacity, and none on the receive path. No
+  production code in `styx-resolution` calls `Message::encode` or `frame_tcp`; a search
+  of `crates/styx-resolution/src` for either returns nothing.
 - **Response validation**: transaction ID and question section must match, or the response
   is discarded as `Mismatched`.
 - **Fault classification**: a SERVFAIL/NXDOMAIN about a bad *name* must never open a
