@@ -12,14 +12,16 @@ use std::time::Instant;
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use stats_alloc::{Region, StatsAlloc};
-use styx_core::SystemClock;
+use styx_core::{SystemClock, Upstream, UpstreamId};
 use styx_proto::{
     Header, Message, Name, Opcode, Question, RData, RecordClass, RecordType, ResourceRecord,
     ResponseCode, Ttl,
 };
+use styx_resolution::infrastructure::tcp_frame::write_framed;
 use styx_resolution::{
-    AllowAllFilter, ClientId, DiscardObserver, FilterPolicy, FilterVerdict, LocalRecords,
-    MaxResponseSize, NoLocalRecords, Pipeline, RequestContext, ResponseWriter, Transport,
+    AllowAllFilter, ClientId, DiscardObserver, Do53Forwarder, EdnsBufferSize, FilterPolicy,
+    FilterVerdict, LocalRecords, MaxResponseSize, NoLocalRecords, Pipeline, RequestContext,
+    ResponseWriter, Transport,
 };
 
 #[global_allocator]
@@ -166,7 +168,51 @@ fn bench_pipeline(c: &mut Criterion) {
         MaxResponseSize::tcp_ceiling(),
     );
 
+    let responder = rt
+        .block_on(tokio::net::UdpSocket::bind("127.0.0.1:0"))
+        .expect("bind responder");
+    let responder_addr = responder.local_addr().expect("responder address");
+    rt.spawn(async move {
+        let mut buf = [0u8; 4096];
+        while let Ok((n, peer)) = responder.recv_from(&mut buf).await {
+            if let Some(flags) = buf.get_mut(2) {
+                *flags |= 0x80;
+            }
+            let Some(reply) = buf.get(..n) else { continue };
+            let _ = responder.send_to(reply, peer).await;
+        }
+    });
+    let forwarder = Do53Forwarder::new(
+        UpstreamId::new("bench"),
+        responder_addr,
+        EdnsBufferSize::default(),
+        std::time::Duration::from_secs(1),
+        std::time::Duration::from_secs(1),
+        Arc::new(SystemClock::new()),
+    );
+    let forward_question = build_query("forward.example.org.")
+        .questions
+        .first()
+        .expect("question")
+        .clone();
+    let tcp_body = writer
+        .write(small_answer.clone(), &ctx_tcp)
+        .expect("tcp body");
+    let resolve_once = || {
+        let deadline = Instant::now()
+            .checked_add(std::time::Duration::from_secs(5))
+            .unwrap_or_else(Instant::now);
+        rt.block_on(forwarder.resolve(&forward_question, deadline))
+    };
+    let write_once = || rt.block_on(write_framed(&mut tokio::io::sink(), &tcp_body));
+
     println!("\n=== styx-resolution allocation profile ===");
+    report_alloc("do53_resolve_udp_loopback", || {
+        let _ = resolve_once();
+    });
+    report_alloc("tcp_write_framed", || {
+        let _ = write_once();
+    });
     report_alloc("response_writer_udp_fits", || {
         let _ = writer.write(small_answer.clone(), &ctx_udp_classic);
     });
@@ -212,6 +258,10 @@ fn bench_pipeline(c: &mut Criterion) {
             BatchSize::SmallInput,
         );
     });
+
+    group.bench_function("do53_resolve_udp_loopback", |b| b.iter(resolve_once));
+
+    group.bench_function("tcp_write_framed", |b| b.iter(write_once));
 
     group.bench_function("pipeline_handle_refused", |b| {
         b.iter(|| rt.block_on(pipeline_refused.handle(black_box(&ctx_refused))));

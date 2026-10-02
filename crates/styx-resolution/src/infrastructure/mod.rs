@@ -15,6 +15,7 @@ pub mod observer;
 pub mod response;
 pub mod server;
 pub mod tcp;
+pub mod tcp_frame;
 pub mod udp;
 
 pub use cache::{Eviction, EvictionReport, ShardedAnswerCache, DEFAULT_SHARDS};
@@ -25,4 +26,5 @@ pub use observer::DiscardObserver;
 pub use response::ResponseWriter;
 pub use server::{Server, ServerConfig};
 pub use tcp::TcpListener;
+pub use tcp_frame::{write_framed, FrameWriteError};
 pub use udp::UdpListener;

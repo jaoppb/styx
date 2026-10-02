@@ -58,7 +58,8 @@ impl ResponseWriter {
     /// Serializes a response message for transmission over the context's transport.
     ///
     /// On UDP, truncation is applied against `ctx.max_response_size`.
-    /// On TCP, a 2-byte big-endian frame prefix is prepended.
+    /// On TCP, the body is returned without a length prefix; the caller frames it on the
+    /// wire through [`crate::infrastructure::tcp_frame::write_framed`].
     ///
     /// # Errors
     /// Returns [`EncodeError`] on wire formatting failure or overflow.
@@ -78,7 +79,7 @@ impl ResponseWriter {
             Transport::Tcp => {
                 let mut encoder = Encoder::new(MAX_TCP_MESSAGE_LEN);
                 encoder.encode_message(&message)?;
-                styx_proto::frame_tcp(&encoder.buf)
+                Ok(encoder.buf)
             }
         }
     }
@@ -109,5 +110,38 @@ impl ResponseWriter {
         let mut encoder = Encoder::new(budget);
         encoder.encode_message(&message)?;
         Ok(encoder.buf)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+    use std::time::Instant;
+
+    use styx_proto::{Header, Opcode};
+
+    use super::*;
+    use crate::domain::request::ClientId;
+
+    #[test]
+    fn tcp_output_is_the_unframed_body() {
+        let query = Message::new(Header::new_query(0xBEEF, Opcode::Query, true));
+        let client = ClientId::from_socket_addr(SocketAddr::from(([127, 0, 0, 1], 5353)));
+        let ctx = RequestContext::new(
+            query.clone(),
+            client,
+            Transport::Tcp,
+            MaxResponseSize::tcp_ceiling(),
+            Instant::now(),
+        );
+
+        let body = ResponseWriter::new()
+            .write(query.clone(), &ctx)
+            .expect("write");
+
+        assert_eq!(body.get(..2), Some(&0xBEEFu16.to_be_bytes()[..]));
+        let mut encoder = Encoder::new(MAX_TCP_MESSAGE_LEN);
+        encoder.encode_message(&query).expect("encode");
+        assert_eq!(body, encoder.buf);
     }
 }

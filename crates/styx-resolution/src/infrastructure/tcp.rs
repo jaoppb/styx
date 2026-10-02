@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use styx_proto::application::Decoder;
 use styx_proto::{Header, Message, MessageKind, ResponseCode};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 
@@ -20,6 +20,7 @@ use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 use crate::infrastructure::response::ResponseWriter;
+use crate::infrastructure::tcp_frame::write_framed;
 
 /// Default idle timeout for idle TCP client connections (5 seconds).
 pub const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -229,9 +230,19 @@ where
 
         let writer = ResponseWriter::new();
         match writer.write(response, &ctx) {
-            Ok(wire) => stream.write_all(&wire).await.is_ok(),
+            Ok(body) => Self::write_frame(stream, peer, &body).await,
             Err(err) => {
                 tracing::error!(%peer, %err, "failed to serialize TCP response");
+                false
+            }
+        }
+    }
+
+    async fn write_frame(stream: &mut TcpStream, peer: SocketAddr, body: &[u8]) -> bool {
+        match write_framed(stream, body).await {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::error!(%peer, %err, "failed to write TCP response frame");
                 false
             }
         }
@@ -262,7 +273,7 @@ where
 
         let writer = ResponseWriter::new();
         match writer.write(resp, &ctx) {
-            Ok(wire) => stream.write_all(&wire).await.is_ok(),
+            Ok(body) => Self::write_frame(stream, peer, &body).await,
             Err(_) => false,
         }
     }
