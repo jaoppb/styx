@@ -5,12 +5,34 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use styx_resolution::{
-    AllowAllFilter, DiscardObserver, FilterPolicy, LocalRecords, MaxResponseSize, NoLocalRecords,
-    Pipeline, QueryObserver, RefusedTerminal, Server, ServerConfig, TerminalHandler,
+    AllowAllFilter, ConcurrencyLimits, DiscardObserver, FilterPolicy, LocalRecords,
+    MaxResponseSize, NoLocalRecords, Pipeline, QueryObserver, RefusedTerminal, Server,
+    ServerConfig, TerminalHandler,
 };
 
 use super::clock::TestClock;
 use super::error::HarnessError;
+
+/// Server settings a test may override; every `TestServer` uses one UDP socket.
+#[derive(Debug, Clone, Copy)]
+pub struct ServerSettings {
+    /// Concurrency caps.
+    pub limits: ConcurrencyLimits,
+    /// Per-query deadline (also the shutdown drain grace).
+    pub query_timeout: Duration,
+    /// TCP idle timeout.
+    pub tcp_idle_timeout: Duration,
+}
+
+impl Default for ServerSettings {
+    fn default() -> Self {
+        Self {
+            limits: ConcurrencyLimits::default_limits(),
+            query_timeout: Duration::from_secs(2),
+            tcp_idle_timeout: Duration::from_secs(5),
+        }
+    }
+}
 
 /// Test fixture booting a real server instance on ephemeral ports (port 0).
 pub struct TestServer<
@@ -59,7 +81,7 @@ where
         let clock = Arc::new(TestClock::new());
         let pipeline = Pipeline::new(local_records, filter, observer, clock.clone());
 
-        Self::boot_from_pipeline(pipeline, clock).await
+        Self::boot_from_pipeline(pipeline, clock, ServerSettings::default()).await
     }
 
     /// Boots an ephemeral server with custom hot-path collaborators and a custom terminal.
@@ -96,7 +118,25 @@ where
         let pipeline =
             Pipeline::new(local_records, filter, observer, clock.clone()).with_terminal(terminal);
 
-        TestServer::boot_from_pipeline(pipeline, clock).await
+        TestServer::boot_from_pipeline(pipeline, clock, ServerSettings::default()).await
+    }
+
+    /// Boots an ephemeral server with custom collaborators, terminal and settings.
+    ///
+    /// # Errors
+    /// Returns [`HarnessError`] if binding fails.
+    pub async fn boot_with_limits<T: TerminalHandler + Send + Sync + 'static>(
+        local_records: Arc<L>,
+        filter: Arc<F>,
+        observer: Arc<O>,
+        terminal: Arc<T>,
+        settings: ServerSettings,
+    ) -> Result<TestServer<L, F, O, TestClock, T>, HarnessError> {
+        let clock = Arc::new(TestClock::new());
+        let pipeline =
+            Pipeline::new(local_records, filter, observer, clock.clone()).with_terminal(terminal);
+
+        TestServer::boot_from_pipeline(pipeline, clock, settings).await
     }
 }
 
@@ -110,12 +150,14 @@ where
     async fn boot_from_pipeline(
         pipeline: Pipeline<L, F, O, TestClock, T>,
         clock: Arc<TestClock>,
+        settings: ServerSettings,
     ) -> Result<Self, HarnessError> {
         let config = ServerConfig {
             listen_addrs: vec![SocketAddr::from(([127, 0, 0, 1], 0))],
             udp_payload_size_default: MaxResponseSize::classic(),
-            tcp_idle_timeout: Duration::from_secs(5),
-            query_timeout: Duration::from_secs(2),
+            tcp_idle_timeout: settings.tcp_idle_timeout,
+            query_timeout: settings.query_timeout,
+            limits: settings.limits,
         };
 
         let server = Server::bind(config, Arc::new(pipeline), Arc::clone(&clock)).await?;
@@ -153,6 +195,12 @@ impl<L, F, O, C, T> TestServer<L, F, O, C, T> {
     #[must_use]
     pub fn clock(&self) -> Arc<TestClock> {
         Arc::clone(&self.clock)
+    }
+
+    /// Returns how many server-spawned tasks are still alive.
+    #[must_use]
+    pub fn active_tasks(&self) -> usize {
+        self.server.active_tasks()
     }
 
     /// Gracefully shuts down the server listeners.

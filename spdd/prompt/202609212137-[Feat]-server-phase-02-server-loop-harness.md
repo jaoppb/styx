@@ -30,6 +30,14 @@ against**, and deliberately leave the skeleton hollow.
   boot-a-server-on-port-0 fixture and the controllable test clock.
 - **Establish** the forged-answer honesty rule at a single construction point: forged
   answers clear AD, forge no signature, and never enter the answer cache.
+- **Process queries concurrently in both listeners** *(amendment, issue 64; sub-issues
+  34 and 37)*: one task per UDP datagram and one task per pipelined TCP query, all drawing
+  from **one process-wide query budget**; a global TCP connection cap; a hard per-query
+  deadline owned by the pipeline; `SO_REUSEPORT` receive scaling on Linux; and a shutdown
+  that drains and then aborts every spawned task. *Why:* the serial loop capped throughput
+  at one core (164k qps at both 1 and 8 client threads on the REFUSED path, server CPU
+  ~100 %), and once an upstream is wired one slow upstream query stalls **every** client
+  in the house for up to the upstream timeout.
 
 **Value**: phases 3 through 7 (upstream pool, answer cache, recursion, DNSSEC, encrypted
 inbound) are all written against this harness. The running server is almost a side effect
@@ -99,32 +107,109 @@ class ServerConfig {
   +MaxResponseSize udp_payload_size_default
   +Duration tcp_idle_timeout
   +Duration query_timeout
+  +ConcurrencyLimits limits
   +from_toml(path) Result~ServerConfig, ConfigError~
+  +check_deadline_covers(PoolConfig) Result~(), ConfigError~
+}
+
+class ConcurrencyLimits {
+  -NonZeroUsize max_in_flight_queries
+  -NonZeroUsize max_tcp_connections
+  -NonZeroUsize max_in_flight_per_connection
+  -NonZeroUsize udp_sockets_per_addr
+  -Duration tcp_write_timeout
+  +new(NonZeroUsize, NonZeroUsize, NonZeroUsize, NonZeroUsize, Duration) ConcurrencyLimits
+  +default_limits() ConcurrencyLimits
+  +with_udp_sockets_per_addr(NonZeroUsize) ConcurrencyLimits
+  +max_in_flight_queries() NonZeroUsize
+  +max_tcp_connections() NonZeroUsize
+  +max_in_flight_per_connection() NonZeroUsize
+  +udp_sockets_per_addr() NonZeroUsize
+  +tcp_write_timeout() Duration
+}
+
+class QueryBudget {
+  -Arc~Semaphore~ permits
+  -NonZeroUsize capacity
+  +new(NonZeroUsize) QueryBudget
+  +acquire() Option~QueryPermit~
+  +is_exhausted() bool
+  +capacity() NonZeroUsize
+  +close()
+}
+
+class QueryPermit {
+  -OwnedSemaphorePermit permit
+}
+
+class ConnectionBudget {
+  -Arc~Semaphore~ permits
+  +new(NonZeroUsize) ConnectionBudget
+  +try_admit() Option~ConnectionPermit~
+}
+
+class ConnectionPermit {
+  -OwnedSemaphorePermit permit
+}
+
+class ConnectionInFlight {
+  -Arc~Semaphore~ slots
+  -NonZeroUsize capacity
+  +track() Option~InFlightSlot~
+  +is_idle() bool
+  +idle() future
+}
+
+class InFlightSlot {
+  -OwnedSemaphorePermit permit
+}
+
+class OutboundFrame {
+  -Vec~u8~ body
+  -InFlightSlot slot
 }
 
 class Server {
   -Arc~Pipeline~ pipeline
   -Arc~C~ clock
   -Vec~ListenerHandle~ listeners
+  -QueryBudget budget
+  -ConnectionBudget connections
+  -TaskTracker tasks
+  -CancellationToken abort
+  -Duration shutdown_grace
   +bind(ServerConfig, Arc~Pipeline~, Arc~C~) Result~Server, ServerError~
   +local_addrs() Vec~SocketAddr~
+  +active_tasks() usize
   +shutdown() Result~(), ServerError~
 }
 
 class UdpListener {
-  -UdpSocket socket
-  -Arc~Pipeline~ pipeline
-  -Arc~C~ clock
+  -Arc~UdpSocket~ socket
+  -ListenerShared shared
+  +bind(addr, ListenerShared) Result~UdpListener, ListenerError~
+  +bind_group(addr, NonZeroUsize, ListenerShared) Result~Vec~UdpListener~, ListenerError~
   +bound_addr() SocketAddr
   +run(CancellationToken) Result~(), ListenerError~
 }
 
 class TcpListener {
   -TcpListener socket
-  -Arc~Pipeline~ pipeline
-  -Arc~C~ clock
+  -ListenerShared shared
+  -ConnectionBudget connections
+  -ConnectionSettings settings
+  +bind(addr, ListenerShared, ConnectionBudget, ConcurrencyLimits, Option~Duration~) Result~TcpListener, ListenerError~
   +bound_addr() SocketAddr
   +run(CancellationToken) Result~(), ListenerError~
+}
+
+class ListenerShared {
+  +Arc~Pipeline~ pipeline
+  +Arc~C~ clock
+  +QueryBudget budget
+  +TaskTracker tasks
+  +CancellationToken abort
+  +Duration query_timeout
 }
 
 class Transport {
@@ -198,6 +283,7 @@ class Pipeline {
   -Arc~C~ clock
   -Arc~T~ terminal
   +handle(RequestContext) Result~Message, PipelineError~
+  +handle_within(RequestContext, Duration) Result~Message, PipelineError~
 }
 
 class ForgedAnswer {
@@ -333,6 +419,19 @@ Server "1" --> "1" Clock : injected
 UdpListener --> RequestContext : produces
 TcpListener --> RequestContext : produces
 TcpListener ..> FrameWriteError : frames replies via write_framed, fails with
+ServerConfig "1" --> "1" ConcurrencyLimits : carries
+Server "1" --> "1" QueryBudget : owns the one process-wide
+Server "1" --> "1" ConnectionBudget : owns the one process-wide
+UdpListener ..> ListenerShared : constructed from
+TcpListener ..> ListenerShared : constructed from
+UdpListener --> QueryBudget : acquires before recv_from
+TcpListener --> QueryBudget : acquires per pipelined frame
+TcpListener --> ConnectionBudget : try_admit at accept
+QueryBudget --> QueryPermit : yields
+ConnectionBudget --> ConnectionPermit : yields
+TcpListener --> ConnectionInFlight : one per connection
+ConnectionInFlight --> InFlightSlot : yields
+OutboundFrame "1" --> "1" InFlightSlot : released after write
 RequestContext "1" --> "1" ClientId : identifies
 RequestContext "1" --> "1" Transport : arrived on
 RequestContext "1" --> "1" MaxResponseSize : bounds truncation to
@@ -368,6 +467,29 @@ phases away and every speculative method is a guess that phases 8–10 will have
 `ZoneScript` stays a scripted list, not a zone engine — **authoritative zone serving is
 an explicit v1 non-goal**; local records and per-zone overrides are resolution/filtering
 concerns, not a zone-file server.
+
+**Concurrency types** *(amendment, issue 64)*. `ConcurrencyLimits` is a newtype bag
+rather than five bare integers on `ServerConfig` because every value carries a rule: each
+cap is a `NonZeroUsize` (a zero cap is a server that answers nothing, rejected at parse
+time as `ConfigError::Invalid`), and `udp_sockets_per_addr` is always 1 on every target
+other than Linux. Only the first two caps come from TOML; the other three are named
+constants that `default_limits()` fills in and that only the harness overrides.
+`default_limits()` uses one UDP socket per address: the host's socket count comes from
+`infrastructure::udp_socket::default_socket_count()`, because
+`available_parallelism()` reads cgroup files and so does not belong in `domain`.
+`with_udp_sockets_per_addr` returns a copy with a new count — by value, so no
+validated cap can be reopened. `QueryBudget::is_exhausted` and `capacity` exist only for
+the rate-limited "budget exhausted" warning, which a small `WarnLimiter`
+(`infrastructure::admission`, crate-private) spaces at least one second apart. `QueryBudget` and `ConnectionBudget` wrap a `tokio::sync::Semaphore`
+so no listener ever touches a raw permit count; their permits are distinct newtypes so a
+connection permit cannot be passed where a query permit is required. `ConnectionInFlight`
+is one per TCP connection: its slot count is the per-connection in-flight cap, `is_idle`
+is true exactly when every slot is free, and `idle()` resolves when the last outstanding
+slot is released — it is what drives the RFC 7766 idle timer. `OutboundFrame` carries the
+encoded body to the connection's writer **together with** its `InFlightSlot`, so a query
+stops counting as in flight only once its response is on the wire. `ListenerShared`
+bundles the six collaborators every listener is constructed from, keeping `bind`
+signatures under clippy's `too_many_arguments`.
 
 ---
 
@@ -574,6 +696,114 @@ concerns, not a zone-file server.
   silently misattribute after a lease change; manual naming and a visible "last seen" are
   mitigations, not fixes.
 
+### 7. Concurrent query processing
+
+This section was added by the issue 64 amendment (sub-issues 34 and 37), settled in a
+design review on 2026-10-01.
+
+- **One process-wide query budget.** `Server` owns a single `QueryBudget` and hands a clone
+  to every UDP and TCP listener on every address in `listen_addrs`. The configured
+  `max_in_flight_queries` is therefore the true ceiling on concurrent pipeline work, not a
+  per-listener number that grows silently with `listen_addrs`. *Accepted consequence:* a
+  TCP client pipelining aggressively competes with UDP for the same permits.
+- **UDP admits by backpressure.** Each recv loop acquires a `QueryPermit` **before**
+  calling `recv_from`. At the cap the loop stops reading, the kernel socket buffer fills,
+  and the kernel drops the excess. Over-cap datagrams get **no** error response: under
+  overload styx does no extra work and is never a reflector. The recv loop only receives,
+  copies the datagram into an owned buffer sized to the received length, and spawns;
+  decoding, the pipeline, encoding and `send_to` all move into the spawned task, which
+  holds the permit until the reply is sent.
+- **The per-query deadline belongs to the pipeline, not the listener.** Every spawned
+  query calls `Pipeline::handle_within(ctx, query_timeout)`. On expiry the pipeline
+  answers SERVFAIL and records `ResolutionOutcome::Error { rcode: SERVFAIL }` through its
+  existing telemetry funnel. *Why not `tokio::time::timeout` around `handle` in the
+  listener:* a dropped pipeline future skips `record_outcome`, breaking the exactly-once
+  guarantee (Safeguards §6), and cuts off the pool's own per-member deadline before it can
+  record the failure in the passive EWMA and circuit breaker — an upstream that is always
+  slow would never have its circuit opened. This also makes `ServerConfig::query_timeout`
+  live; until this amendment it was parsed and never read.
+- **`query_timeout` must cover every member's own timeout.** The binary calls
+  `ServerConfig::check_deadline_covers(&pool)` at startup, rejecting a config whose
+  `query_timeout` is not strictly greater than the largest single member UDP or TCP
+  timeout, so the pool always settles its accounting for the first attempt before the
+  outer deadline fires. Failover across several slow members can still reach the outer
+  deadline; that case is answered and recorded by the pipeline as above.
+- **TCP connections are capped globally and refused fast.** The accept loop never stops.
+  Each accepted stream calls `ConnectionBudget::try_admit`; on `None` the stream is
+  dropped immediately (the client sees the connection close at once and falls back),
+  which makes "connections beyond the cap are closed" deterministic to test. There is no
+  per-IP cap.
+- **TCP pipelining: one task per query, one writer per connection.** The connection's
+  reader reads a frame, then awaits an `InFlightSlot` from its `ConnectionInFlight`, then
+  awaits a `QueryPermit`, then spawns the query. The order matters twice over: a reader
+  waiting for its next frame holds neither a slot (so `is_idle` can become true and the
+  idle timer can run) nor a global permit (so idle connections never pin the budget). At
+  the per-connection cap the reader blocks on the slot with one frame in hand and reads
+  nothing further until a response is written. Responses go out of order (RFC 7766
+  §6.2.1.1 allows it; the client matches by message ID) through a bounded channel to a
+  single writer task that owns the write half. The channel's capacity equals the
+  per-connection cap, and each `OutboundFrame` carries its slot, so a send into the
+  channel can never block.
+- **A slow reader stalls only itself.** The global `QueryPermit` is dropped as soon as the
+  response is **encoded**, before it is enqueued, so a client that never reads its socket
+  cannot pin the process-wide budget. Each `write_framed` call runs under
+  `tcp_write_timeout`; on expiry the writer cancels the connection's child token, which
+  stops the reader and every query task on that connection.
+- **The TCP idle timer measures true idleness.** Per RFC 7766 §6.2.3 the idle timeout runs
+  only while the connection has zero outstanding queries, and resets on every frame read.
+  A query still in flight — or a response still waiting for the writer — never lets the
+  connection be idled out from under it, whatever `tcp_idle_timeout_secs` is set to.
+- **`SO_REUSEPORT` receive scaling on Linux only.** On `target_os = "linux"` each listen
+  address binds `udp_sockets_per_addr` sockets through `socket2` with `SO_REUSEPORT`, each
+  with its own recv loop, all sharing the one `QueryBudget`. The first socket binds the
+  configured address; when its port is 0, the rest bind to the port the OS assigned it, so
+  the whole group shares one port. Every other target binds exactly one socket and gets
+  concurrency only from per-query tasks. TCP stays a single listening socket per address.
+- **Shutdown drains, then aborts.** Every spawned connection, writer and query task is
+  spawned onto the `Server`'s `TaskTracker`. `shutdown()` cancels the token (accept and
+  recv loops stop admitting), closes the `TaskTracker`, waits up to `shutdown_grace`
+  (equal to `query_timeout`, which already bounds every query) for the tracker to empty,
+  then aborts what remains, and returns only when no tracked task is alive.
+- **Two knobs in TOML, the rest named constants.** Only `max_in_flight_queries`
+  (default 1024) and `max_tcp_connections` (default 256) are operator-configurable.
+  `MAX_IN_FLIGHT_PER_CONNECTION` (32), `TCP_WRITE_TIMEOUT` (5 s) and the UDP socket count
+  — `std::thread::available_parallelism()` on Linux, falling back to 1 when it errors,
+  and always 1 elsewhere — are constants. *Why:* one person operates this resolver, and
+  every key is a way to misconfigure it; the two caps are the ones whose right value
+  depends on the household. `ConcurrencyLimits::new` still takes all five values, so the
+  harness can build small caps without TOML exposing them. *Why 1024:* at a few hundred
+  qps against a dead upstream, every query holds its permit for the full `query_timeout`;
+  1024 absorbs roughly five seconds of that — longer than `query_timeout` — before the
+  kernel starts dropping, for a worst case of a few MB. *Why 256:* room for every device
+  in a house to hold several connections, while staying far below any file-descriptor
+  limit so the cap trips before `EMFILE` does.
+- **The file-descriptor budget is made to fit, not hoped to fit.** `Do53Forwarder` binds
+  a fresh UDP socket per upstream query, and the pool's fan-out can query several members
+  at once, so peak descriptors are roughly `max_in_flight_queries` × fan-out width +
+  `max_tcp_connections` + the UDP listener sockets — well past the 1024 soft limit a
+  systemd service gets by default. At boot the binary raises the `RLIMIT_NOFILE` soft
+  limit to the hard limit (Linux only) and logs both values. Independently, `EMFILE` or
+  `ENFILE` from `accept()` is logged and retried after a 100 ms sleep inside the accept
+  loop, **never** returned as `ListenerError` — otherwise descriptor exhaustion would
+  bounce the TCP listener through the supervisor's crash backoff. An upstream bind that
+  still fails surfaces as that query's SERVFAIL.
+
+#### Accepted risks of the concurrency model
+
+- **Single-client UDP starvation.** Backpressure admits before the source address is known,
+  so per-client fairness on UDP is impossible in this design. One noisy device flooding a
+  dead name can hold every permit for up to `query_timeout`, queueing every other
+  household client in the kernel buffer. Accepted for a trusted home LAN; per-client
+  limiting belongs to a future rate-limiting issue.
+- **TCP can starve UDP** through the shared budget, by the same mechanism.
+- **Overload is invisible.** Clients see timeouts, not errors, and nothing reports a full
+  budget unless a `tracing` event fires when an acquire has to wait — emit one, at most
+  once per second per listener, carrying the budget size.
+- **`SO_REUSEPORT` hashes by 4-tuple**, so one heavy client always lands on the same
+  socket and its recv loop; receive scaling helps many clients, not one.
+- **Non-Linux targets silently lose receive scaling.** The socket count is 1 there, and
+  a single `tracing::info!` at bind says so.
+
 ---
 
 ## Structure
@@ -608,6 +838,14 @@ concerns, not a zone-file server.
      `tcp_frame` module (`write_framed`, `FrameWriteError`), and the no-op port
      implementations `AllowAllFilter`, `NoLocalRecords`, `DiscardObserver`.
      Generic over collaborator ports. Depends on `domain`, `application`, and `styx-core`.
+     *(Amendment, issue 64)* — split by concept so no file approaches the 400-line
+     `xtask module-size` cap: `admission` (`QueryBudget`, `QueryPermit`,
+     `ConnectionBudget`, `ConnectionPermit`, `ListenerShared`); `udp` (recv loop and
+     per-datagram task); `udp_socket` (the `socket2` `SO_REUSEPORT` group bind, the only
+     file with a `target_os = "linux"` branch); `tcp` (accept loop and connection
+     admission); `tcp_connection` (`ConnectionInFlight`, `InFlightSlot`, `OutboundFrame`,
+     the per-connection reader and writer tasks). `ConcurrencyLimits` lives in
+     `domain::limits` — it is a pure validated value with no async and no I/O.
 4. **`styx`** *(the binary)* — reads `ServerConfig` from TOML, constructs `SystemClock`
    directly from `styx_core`, selects the port implementations, builds the `Pipeline`,
    binds the `Server`, and supervises the listener tasks. **This is the only place that
@@ -619,6 +857,30 @@ concerns, not a zone-file server.
    `test-support`. Kept out of `domain::error` because `domain` ships in the production
    binary and `HarnessError` never does. **The only place `hickory-proto` may appear**, and
    only under `[dev-dependencies]`.
+
+### New dependencies and feature flags
+
+Added by the issue 64 amendment.
+
+1. **`socket2` 0.6** — new entry in `[workspace.dependencies]` (already present in
+   `Cargo.lock` transitively through `tokio`, so no new code enters the build), with the
+   `all` feature that exposes `set_reuse_port`; `styx-resolution` opts in with
+   `workspace = true` as a normal dependency, used only from `infrastructure::udp_socket`.
+2. **`tokio-util`** — the workspace entry gains the `rt` feature, which gates
+   `tokio_util::task::TaskTracker`. `CancellationToken` needs no feature and is unchanged.
+3. **`criterion`** — already a `styx-resolution` dev-dependency; the new
+   `listener_concurrency` bench adds a `[[bench]]` entry with `harness = false` beside the
+   existing `pipeline` bench.
+4. **`rustix` 1.x** — new entry in `[workspace.dependencies]` with default features off
+   and only `std` and `process` enabled, a normal dependency of the `styx` binary alone, under
+   `[target.'cfg(target_os = "linux")'.dependencies]`. *Why not `libc`:*
+   `unsafe_code = "forbid"` is workspace-wide, and `rustix` exposes `getrlimit` and
+   `setrlimit` as safe functions.
+5. **No new arch-lint entry.** `socket2` and `TaskTracker` are used only from
+   `infrastructure`; `domain::limits` holds only `NonZeroUsize` and `Duration`. The
+   `tokio::time` race inside `Pipeline::handle_within` is not I/O and passes
+   `no-sync-io-resolution-application`, exactly as `probe_scheduler`'s `tokio::time::sleep`
+   already does.
 
 ### Trait (port) implementations
 
@@ -639,10 +901,17 @@ concerns, not a zone-file server.
 ### Call and dependency graph
 
 1. `styx` binary → `ServerConfig::from_toml` → `Server::bind`.
-2. `Server` owns one `UdpListener` and one `TcpListener` per configured address, each
-   running as a supervised async task under a shared cancellation token.
-3. `UdpListener` / `TcpListener` → decode via `styx-proto` → construct `RequestContext` →
-   `Pipeline::handle`.
+2. `Server` owns one `UdpListener` group (`udp_sockets_per_addr` sockets on Linux, one
+   elsewhere) and one `TcpListener` per configured address, each running as a supervised
+   async task under a shared cancellation token, all sharing one `QueryBudget`, one
+   `ConnectionBudget` and one `TaskTracker`. *(Amendment, issue 64.)*
+3. `UdpListener` recv loop → `QueryBudget::acquire` → `recv_from` → spawn onto the
+   `TaskTracker`; the task decodes via `styx-proto` → constructs `RequestContext` →
+   `Pipeline::handle_within(ctx, query_timeout)` → encodes → `send_to` → drops the permit.
+   `TcpListener` accept loop → `ConnectionBudget::try_admit` → spawn the connection; its
+   reader → frame → `InFlightSlot` → `QueryPermit` → spawn the query task →
+   `Pipeline::handle_within` → encode → drop the permit → `OutboundFrame` into the
+   channel → the writer → `write_framed` → drop the slot. *(Amendment, issue 64.)*
 4. `Pipeline` → `LocalRecords::lookup` → `FilterPolicy::evaluate` → *(cache slot, absent
    until phase 4)* → *(upstream slot, absent until phase 3)* → `QueryObserver` on the
    response path.
@@ -657,7 +926,9 @@ concerns, not a zone-file server.
 ### Layer responsibilities
 
 1. **Listener layer (`infrastructure`)** — sockets, framing, the TCP length prefix,
-   timeouts, cancellation. Decodes and encodes. Owns no business rules.
+   timeouts, cancellation, admission (budgets, connection cap, in-flight slots) and task
+   spawning. Decodes and encodes. Owns no business rules, and does **not** own the
+   per-query deadline — that is the pipeline's, so the outcome is always recorded.
 2. **Pipeline layer (`application`)** — the fixed stage order, short-circuit decisions,
    outcome recording, observer notification. Owns the correctness property. Performs no
    I/O of its own.
@@ -882,6 +1153,19 @@ concerns, not a zone-file server.
    how Safeguards S3's exactly-once guarantee is met without duplicating the two observer
    calls at every return site. This keeps `handle` within `too_many_lines`' 60-line cap and
    `excessive_nesting`'s threshold of 4.
+6. **`handle_within(&self, ctx: &RequestContext, deadline: Duration) -> Result<Message,
+   PipelineError>`** *(amendment, issue 64)*: the method every listener calls. Validation
+   and stages 1 and 2 run exactly as in `handle` — they are synchronous and cannot exceed
+   any deadline. Only `run_terminal`'s `handle_terminal` future is raced against
+   `tokio::time::sleep(deadline)`. If the terminal finishes first, behaviour is identical
+   to `handle`. If the deadline fires first, the terminal future is dropped and the call
+   routes `PipelineError::Internal` (SERVFAIL) through `handle_error`, so `record_outcome`
+   runs **exactly once** with `ResolutionOutcome::Error { rcode: SERVFAIL }` and a
+   `tracing::warn!` records the expiry with the client and question. `handle` stays with
+   its current signature and no deadline; both delegate to one private helper taking
+   `Option<Duration>`, so existing unit tests and the `pipeline` bench are unaffected and
+   the stage sequence is written once. *Why here and not in the listener:* see
+   Approach §7 — a future dropped outside the pipeline skips the telemetry funnel.
 
 ### 9. Define the phase-2 terminal behaviour — `styx-resolution::application::pipeline`
 
@@ -939,6 +1223,39 @@ concerns, not a zone-file server.
    below clippy's threshold of 4, with line counts within `too_many_lines`' 60-line cap.
    All request timestamps passed to `RequestContext::new` are read from
    `self.clock.now_monotonic()`.
+6. **Concurrent dispatch** *(amendment, issue 64; supersedes item 3's serial logic)*:
+   - `bind_group(addr: SocketAddr, count: NonZeroUsize, shared: ListenerShared<L, F, O, C,
+     T>) -> Result<Vec<UdpListener<L, F, O, C, T>>, ListenerError>` binds the group through
+     `infrastructure::udp_socket` and returns one listener per socket, all reporting the
+     same `bound_addr`. `bind` remains as `bind_group` with a count of 1.
+   - `run` loops: `select!` on cancellation versus `QueryBudget::acquire`; a `None`
+     (budget closed) ends the loop with `Ok(())`. With the permit held, `select!` on
+     cancellation versus `recv_from` into the listener's fixed 4096-octet buffer; copy the
+     received prefix into an owned `Vec<u8>` of exactly the received length; spawn the
+     per-datagram task onto the `TaskTracker`, moving in the bytes, the peer, the permit
+     and clones of the `Arc`s. A recv error still returns `ListenerError::Io` to the
+     supervisor and releases the permit by dropping it.
+   - The per-datagram task runs the existing `handle_datagram` body — decode, FORMERR on
+     a recoverable header, `RequestContext`, `Pipeline::handle_within(ctx,
+     query_timeout)`, `ResponseWriter::write`, `send_to` on the shared `Arc<UdpSocket>` —
+     and drops the permit when it returns.
+   - When an acquire has to wait, emit `tracing::warn!` with the budget size and the bound
+     address, rate-limited to once per second per listener through the injected `Clock`.
+7. **`infrastructure::udp_socket`** *(amendment, issue 64)*:
+   `async fn bind_reuseport_group(addr: SocketAddr, count: NonZeroUsize) ->
+   Result<Vec<tokio::net::UdpSocket>, std::io::Error>` — async because the non-Linux
+   branch binds through tokio — and `default_socket_count() -> NonZeroUsize`, the
+   `available_parallelism()` count on Linux (1 when it errors) and 1 elsewhere.
+   - On `target_os = "linux"`: create each socket with `socket2::Socket::new` for the
+     address family, set `SO_REUSEPORT`, leave `IPV6_V6ONLY` at the OS default exactly
+     as `tokio::net::UdpSocket::bind` does, set non-blocking, bind, and convert into `tokio::net::UdpSocket` through
+     `std::net::UdpSocket`. The first binds `addr`; the rest bind `addr` with its port
+     replaced by the first socket's OS-assigned port, so a port-0 bind yields one shared
+     port.
+   - On every other target: ignore `count` beyond 1, log `tracing::info!` once if it
+     was above 1, and bind a single plain `tokio::net::UdpSocket`.
+   - Errors are `std::io::Error`, which `ListenerError::Io` already wraps via `#[from]`;
+     no new variant.
 
 ### 12. Implement `TcpListener` — `styx-resolution::infrastructure::tcp`
 
@@ -990,6 +1307,54 @@ concerns, not a zone-file server.
      body in order; exact bytes under one-octet partial writes; empty body writes only
      the prefix; 65535 octets accepted and 65536 rejected with `BodyTooLong`; `Ok(0)`
      yields `Io(WriteZero)`; a writer error propagates as `Io`.
+7. **Connection admission** *(amendment, issue 64; supersedes item 2's unbounded spawn)*:
+   An accept error whose `raw_os_error` is `EMFILE` or `ENFILE` is logged with
+   `tracing::warn!` (rate-limited to once per second) and retried after a 100 ms
+   `tokio::time::sleep` inside the accept loop; it is never returned as `ListenerError`.
+   Every other accept error keeps today's behaviour. `handle_accept_result` calls
+   `ConnectionBudget::try_admit`. On `None` it drops the
+   stream at once and emits `tracing::debug!` with the peer; the accept loop continues.
+   On `Some(permit)` it spawns the connection onto the `TaskTracker`, moving the permit in
+   so the slot frees when the connection task ends, however it ends.
+8. **Per-connection concurrency** *(amendment, issue 64; supersedes item 2's serial
+   read → process → write and the `&mut TcpStream` writer of item 6)*, in
+   `infrastructure::tcp_connection`:
+   - The connection task splits the stream with `TcpStream::into_split`, creates a child
+     `CancellationToken` of the server token, a `ConnectionInFlight` sized to
+     `max_in_flight_per_connection`, and a bounded `tokio::sync::mpsc` channel of
+     `OutboundFrame` with the same capacity, then runs the reader and the writer as
+     the two halves of one `tokio::join!` inside the connection task — not a second
+     tracked spawn — so the connection permit is held until both have finished.
+     `ConnectionSettings` (crate-private: idle timeout, write timeout, per-connection
+     cap) is fixed at `TcpListener::bind(addr, shared, connections, limits,
+     idle_timeout)` and copied into each connection.
+   - **Reader loop**: `select!` on the child token versus the next frame. The frame read
+     is raced against the idle timer **only while `ConnectionInFlight::is_idle()`**;
+     while queries are outstanding it waits on `idle()` first and starts the
+     `tcp_idle_timeout` countdown when it resolves. Every frame read resets the timer. A
+     frame then awaits `ConnectionInFlight::track()` (blocking at the per-connection cap),
+     then `QueryBudget::acquire`, then spawns the query task. `None` from either means
+     shutdown and ends the loop. `read_frame` keeps its partial-read handling and its
+     per-frame payload timeout; the prefix read itself has no timeout, because the idle
+     timer it is raced against is the only clock on an idle connection. The receipt
+     instant is read when the frame arrives, before the slot and permit waits, so the
+     query deadline counts that queueing too.
+   - **Query task**: decode, FORMERR on a recoverable header, `RequestContext` with
+     `MaxResponseSize::tcp_ceiling()`, `Pipeline::handle_within(ctx, query_timeout)`,
+     `ResponseWriter::write`, **drop the `QueryPermit`**, then send
+     `OutboundFrame { body, slot }` into the channel. A send to a closed channel (the
+     writer is gone) drops the frame and its slot silently.
+   - **Writer**: receive frames in completion order; `write_framed` each one on the
+     owned write half under `tokio::time::timeout(tcp_write_timeout, ..)`; drop the frame
+     (and so its slot) after the write. It does **not** watch the shutdown token: it
+     ends when every sender is gone — the reader has stopped and every query task has
+     finished — so responses still in flight at shutdown are written during the drain.
+     On a write error or timeout it logs `tracing::debug!` with the peer, cancels the
+     reader's child token and returns, so every queued send fails fast.
+   - `send_formerr` and the normal reply both go through the channel, never a direct
+     write, so the writer is the only code touching the write half.
+   - Shape: reader loop, query task and writer each stay a thin function with named
+     helpers, within `too_many_lines`' 60-line cap and `excessive_nesting`'s threshold.
 
 ### 13. Implement `Server` and `ServerConfig` — `styx-resolution::infrastructure::server` and the `styx` binary
 
@@ -1010,6 +1375,46 @@ concerns, not a zone-file server.
    `DiscardObserver`, then the `Pipeline`, then the `Server`. Initialise `tracing` at
    startup (`tracing-env-init`). **This is the only file that names both a port and an
    implementation.**
+6. **Concurrency configuration** *(amendment, issue 64)*: `RawConfig` gains exactly two
+   optional keys, `max_in_flight_queries` (default 1024) and `max_tcp_connections`
+   (default 256), each rejected as `ConfigError::Invalid` when zero. The other three
+   limits are constants in `domain::limits`: `MAX_IN_FLIGHT_PER_CONNECTION` = 32,
+   `TCP_WRITE_TIMEOUT` = 5 s, and the UDP socket count from
+   `std::thread::available_parallelism()` (1 when it errors, and always 1 off Linux).
+   The binary's built-in fallback config uses
+   `ConcurrencyLimits::default_limits().with_udp_sockets_per_addr(default_socket_count())`.
+7. **`ServerConfig::check_deadline_covers(&self, pool: &PoolConfig) -> Result<(),
+   ConfigError>`** *(amendment, issue 64)*: `ConfigError::Invalid` naming both durations
+   unless `query_timeout` is strictly greater than every member's UDP and TCP timeout.
+   The binary calls it after both configs load and before `Server::bind`, surfacing the
+   error as a startup failure through `anyhow`, **from the phase that first wires an
+   upstream pool into the binary** — today the binary still wires `RefusedTerminal` and
+   loads no `PoolConfig`, so there is nothing to check yet.
+8. **`Server::bind`** *(amendment, issue 64; extends item 2)*: before the per-address loop,
+   build one `QueryBudget`, one `ConnectionBudget` and one `TaskTracker`; per address,
+   `UdpListener::bind_group` with `udp_sockets_per_addr` and one `TcpListener::bind`;
+   spawn one supervised task per UDP socket and one per TCP listener. `local_addrs()`
+   still reports **one** UDP and one TCP entry per configured address, in that order, so
+   `TestServer`'s index-based read is unchanged.
+9. **`Server::shutdown`** *(amendment, issue 64; supersedes item 4)*: cancel the token;
+   close the `QueryBudget` so a loop parked in `acquire` wakes with `None`; await every
+   listener handle; close the `TaskTracker`; wait for it to empty for at most
+   `shutdown_grace` (= `query_timeout`); on expiry abort the remaining tasks and wait again
+   until the tracker is empty. Return only when no tracked task is alive. A listener
+   error or join failure no longer returns early: every handle is awaited and the drain
+   always runs, then the first error is returned. `active_tasks() -> usize` reports the
+   tracker's live count, so tests can assert that shutdown left nothing behind. `TaskTracker`
+   tracks but never aborts, so `Server` also owns a second, independent
+   `CancellationToken` — the **abort token**, carried in `ListenerShared` — and every
+   tracked task body runs under a `select!` against it. Aborting is cancelling that token;
+   no per-task handle registry sits on the hot path.
+10. **Descriptor limit** *(amendment, issue 64)*: under `target_os = "linux"`, the binary's
+    startup — before any socket is bound — reads `RLIMIT_NOFILE` with
+    `rustix::process::getrlimit` and, when the soft limit is below the hard limit, raises
+    the soft limit to the hard one with `rustix::process::setrlimit`. It logs
+    `tracing::info!` with both values on success, and `tracing::warn!` with the error on
+    failure, then continues booting. The call lives only in the `styx` binary — it is
+    process-global state, which belongs to the composition root.
 
 ### 14. Define the `thiserror` error taxonomy, split by concept, not one flat `error` module
 
@@ -1049,6 +1454,13 @@ concerns, not a zone-file server.
 
 ### 16. Build `TestServer` and `DnsClient` — harness, dev-only
 
+0. **Limits in the harness** *(amendment, issue 64)*: every `TestServer` boots with a UDP
+   socket count of 1 — never `available_parallelism()`, because the suite runs many
+   servers in parallel — and otherwise `default_limits()`. A harness `ServerSettings`
+   (`limits`, `query_timeout`, `tcp_idle_timeout`, with `Default` matching the old
+   fixed values) and `boot_with_limits(local_records, filter, observer, terminal,
+   settings)` let the Operation 17 concurrency tests set small caps and short timeouts;
+   `TestServer::active_tasks()` forwards to the server's.
 1. **`TestServer::boot_ephemeral()`**: build a `Pipeline` with the no-op ports and a
    `TestClock`, bind a `Server` on port 0, return the fixture with the **actual** UDP and
    TCP addresses read back from the OS.
@@ -1081,6 +1493,33 @@ concerns, not a zone-file server.
 6. **Observer**: `record_outcome` is invoked exactly once per query on every path,
    including every error path.
 7. **Shutdown**: `Server::shutdown()` completes with an in-flight query outstanding.
+8. **Concurrency** *(amendment, issue 64)* — each against an ephemeral-port server whose
+   terminal is a scripted double that delays a chosen qname:
+   - **UDP head-of-line**: a query to a name delayed 1 s, then 10 ms later a query
+     answered by a `LocalRecords` double; the second response arrives in under 50 ms.
+   - **TCP pipelining**: two queries written back to back on one connection, the first
+     delayed 1 s; the second response is read first, and both IDs match their queries.
+   - **Connection cap**: with `max_tcp_connections = 2`, a third connection is closed by
+     the server (a read returns EOF or reset) while the first two still answer.
+   - **Per-connection cap**: with `max_in_flight_per_connection = 1` and the first query
+     delayed, a second pipelined query is not answered until the first is.
+   - **Deadline**: with `query_timeout` 200 ms and a terminal delayed 1 s, the client gets
+     SERVFAIL within 400 ms and an observer double sees `record_outcome` exactly once
+     with `Error { rcode: SERVFAIL }`.
+   - **Idle timer**: with `tcp_idle_timeout` 100 ms and a query delayed 300 ms, the
+     connection stays open and delivers the response; it closes ~100 ms after that.
+   - **Slow reader**: a TCP client that pipelines queries and never reads leaves UDP
+     queries answering normally once its connection's cap is reached.
+   - **Shutdown drain**: with a query delayed past `shutdown_grace`, `shutdown()` returns
+     within grace plus a small margin and the `TaskTracker` is empty afterwards.
+   - **Reuseport group** (`cfg(target_os = "linux")` only): `udp_sockets_per_addr = 4` on
+     port 0 binds four sockets sharing one port, and queries from many source ports are
+     all answered.
+   - **Descriptor exhaustion**: a unit test drives the accept-error classifier with
+     `EMFILE` and `ENFILE` and asserts retry-not-crash; with any other kind it asserts
+     today's `ListenerError::Io`.
+   - **Config**: a zero cap is `ConfigError::Invalid`; `check_deadline_covers` rejects
+     `query_timeout` equal to a member timeout and accepts one strictly greater.
 
 ### 18. Verify the manual exit criterion
 
@@ -1091,6 +1530,57 @@ concerns, not a zone-file server.
 3. **Constraint**: this is a real deliverable, not a formality. Phases 1 through 7 produce
    nothing a human can look at except `dig` output, and because the cutover is last there
    is no external pressure either.
+
+### 19. Implement the admission types — `styx-resolution::infrastructure::admission` and `domain::limits`
+
+Added by the issue 64 amendment.
+
+1. **`ConcurrencyLimits`** (`domain::limits`): derives `Debug, Clone, Copy, PartialEq,
+   Eq`. All fields private, read through accessors — no setter, so a validated cap cannot
+   be reopened to zero. `new` is infallible because its parameters are already
+   `NonZeroUsize`; zero is rejected one step earlier, where `from_toml_str` converts the
+   raw integers.
+2. **`QueryBudget`**: derives `Clone` (a clone shares the `Arc<Semaphore>`).
+   `new(capacity: NonZeroUsize) -> QueryBudget`;
+   `async fn acquire(&self) -> Option<QueryPermit>` over `Semaphore::acquire_owned`,
+   mapping `AcquireError` (closed) to `None`; `close(&self)`. `QueryPermit` wraps
+   `OwnedSemaphorePermit` and releases on drop.
+3. **`ConnectionBudget`**: derives `Clone`. `new(capacity: NonZeroUsize)`;
+   `try_admit(&self) -> Option<ConnectionPermit>` over `Semaphore::try_acquire_owned`,
+   mapping both `NoPermits` and `Closed` to `None`.
+4. **`ConnectionInFlight`** (`infrastructure::tcp_connection`): `new(capacity:
+   NonZeroUsize)`; `async fn track(&self) -> Option<InFlightSlot>`; `is_idle(&self) ->
+   bool`, true when available permits equal `capacity`; `async fn idle(&self)`, which
+   resolves once `is_idle` holds, implemented with a `tokio::sync::Notify` signalled
+   from `InFlightSlot`'s `Drop`. Permit counts go through the semaphore, never a hand-kept
+   integer, so there is no arithmetic for `arithmetic_side_effects` to flag.
+5. **Constraints**: no `unwrap` on any acquire; no `Semaphore::forget`; every permit type
+   releases only by drop.
+
+### 20. Commit the listener concurrency bench — `crates/styx-resolution/benches/listener_concurrency.rs`
+
+*(Amendment, issue 64; replaces sub-issue 34's "server CPU > 150 %" exit criterion, which
+criterion cannot measure.)*
+
+1. **Setup**: one multi-thread tokio runtime; a `Server` bound on loopback port 0 with the
+   default `RefusedTerminal` (the REFUSED path, matching sub-issue 34's baseline) and
+   `ConcurrencyLimits::default_limits()`.
+2. **Group `udp_throughput`**: benchmark ids `clients/1` and `clients/8`; each iteration
+   sends a fixed batch of queries from that many concurrent client tasks, each on its own
+   socket, with a fixed in-flight window per client, and awaits every reply.
+   `Throughput::Elements` is set to the batch size so criterion reports queries per
+   second directly.
+3. **Group `head_of_line`**: a scripted terminal delays one qname by 1 s; the measured
+   operation is a locally-answered query sent while a delayed query is in flight.
+4. **Pass criterion**: on the reference machine (i5-12600K, Linux x86_64, `--release`,
+   loopback), `udp_throughput/clients/8` ≥ 2 × `udp_throughput/clients/1`, and
+   `head_of_line` stays under 50 ms. Run by hand with `cargo bench -p styx-resolution
+   --bench listener_concurrency`; the before/after table goes in the PR. **Not part of
+   `just gate`**: it depends on the machine and is not hermetic.
+5. **Constraints**: the file opens with the same crate-level `#![allow(missing_docs,
+   clippy::expect_used, clippy::too_many_lines)]` header the `pipeline` bench already
+   carries — bench code is not shipping code. Loopback only, and no `hickory-proto`
+   beyond the dev-dependency it already is.
 
 ---
 
@@ -1130,6 +1620,12 @@ concerns, not a zone-file server.
    process a panic in any task takes DNS down for the whole house, and the `catch_unwind`
    boundary that really mitigates this is **phase 12** — everything before it relies on
    the lint plus supervision. Shutdown must be prompt and must not hang on in-flight work.
+   *(Amendment, issue 64)*: every task spawned below a listener — connection, writer,
+   query, datagram — goes through the `Server`'s `TaskTracker`, never a bare
+   `tokio::spawn`, and runs under the abort token. Every unit of admitted work holds a
+   permit newtype released only by drop. The per-query deadline is the pipeline's
+   (`handle_within`), never a `timeout` wrapped around the pipeline by a caller, because a
+   future dropped outside the pipeline skips the telemetry funnel.
 
 6. **Logging**: `tracing` throughout (`require-tracing`), initialised once at binary
    startup (`tracing-env-init`), and never a print macro — `print_stdout`, `print_stderr`
@@ -1204,6 +1700,12 @@ and expensive to discover later:
   cleared, carries no RRSIG, and is uncacheable. Enforced structurally by the
   `ResolutionOutcome` enum, since phase 8's five blocked-reply modes and phase 9's local
   records all pass through it.
+- **S5 — Queries are concurrent and bounded** *(amendment, issue 64)*. Gated: the
+  Operation 17 item 8 socket tests (UDP head-of-line under 50 ms, TCP pipelined reorder,
+  connection beyond the cap closed, deadline answered and recorded once, idle timer held
+  open by an in-flight query, shutdown leaves no task alive). Manual, not gated: the
+  Operation 20 bench, `udp_throughput/clients/8` ≥ 2 × `clients/1` on the reference
+  machine, with the table posted in the PR.
 
 ### 2. Functional constraints
 
@@ -1223,6 +1725,21 @@ and expensive to discover later:
 - Every query receives a response, including malformed ones, mapped to an explicit RCODE.
   A query is never silently dropped once a header is recoverable.
 - `Server::shutdown()` completes with in-flight queries outstanding and does not hang.
+- *(Amendment, issue 64)* Queries are processed concurrently: no query waits on another
+  query's upstream, on UDP or within one TCP connection. Concurrent pipeline work never
+  exceeds `max_in_flight_queries`, process-wide; open TCP connections never exceed
+  `max_tcp_connections`; one connection's outstanding queries never exceed
+  `max_in_flight_per_connection`.
+- *(Amendment, issue 64)* Over-cap UDP datagrams are left to the kernel and get no
+  response; over-cap TCP connections are closed at accept. Both are deliberate exceptions
+  to "every query receives a response": answering under overload is the extra work the
+  cap exists to refuse.
+- *(Amendment, issue 64)* No answered query exceeds `query_timeout` from receipt to
+  pipeline completion; one that would is answered SERVFAIL and recorded once.
+- *(Amendment, issue 64)* A TCP connection with a query or response outstanding is never
+  closed by the idle timeout.
+- *(Amendment, issue 64)* After `shutdown()` returns, no task spawned by the server is
+  alive.
 
 ### 3. Correctness constraints (the ones that cannot be relaxed)
 
@@ -1294,6 +1811,11 @@ and expensive to discover later:
   `partial_pub_fields` is not a live risk: every struct in Entities is already uniformly
   public or uniformly private. Neither is `print_stdout`/`print_stderr`/`dbg_macro`: this
   phase logs exclusively through `tracing`.
+- *(Amendment, issue 64)* The new gate risks are `module-size` on `tcp.rs` (the reason
+  `tcp_connection.rs` exists), `excessive_nesting` in the TCP reader's nested `select!`
+  over cancellation, the frame read and the idle timer (factor each arm into a named
+  helper), and `too_many_arguments` on listener constructors (the reason
+  `ListenerShared` exists).
 - **`AGENTS.md`'s Object Calisthenics section is only partly a review discipline.**
   Nesting depth, function length, module length and mixed field visibility are gated —
   Phase 0 Norm 17 has the thresholds. Wrapping a primitive that carries domain rules, such
@@ -1331,6 +1853,12 @@ and expensive to discover later:
   phase 10. Only the `QueryObserver` port and its no-op.
 - **No web UI, no auth** — phase 11.
 - **No `catch_unwind` boundary, no musl artefacts** — phase 12.
+- *(Amendment, issue 64)* The bounded channel in `tcp_connection` is the TCP writer's
+  response queue, not the observer's detail channel; phase 10 still owns that one.
+- *(Amendment, issue 64)* **No per-client or per-IP limit** on UDP or TCP, **no response
+  rate limiting (RRL)**, **no over-cap error responses**, and **no `SO_REUSEPORT_LB`,
+  BSD, macOS or Windows receive balancing**. Each is a separate future issue if the home
+  network ever needs it.
 
 ### 8. Non-goal constraints (permanent for v1)
 
@@ -1366,3 +1894,19 @@ and expensive to discover later:
   output**, and because the cutover is last — the household stays on Pi-hole until v1 is
   complete — there is no external pressure either. Accepted as the cost of not doing a
   live migration under two hand-written security-critical subsystems.
+- *(Amendment, issue 64)* **One noisy client can starve the house on UDP** for up to
+  `query_timeout`, and a pipelining TCP client can starve UDP, because the budget is
+  global and UDP admits before it knows the source. Accepted for a trusted home LAN; see
+  Approach §7 for the full list of accepted concurrency risks.
+- *(Amendment, issue 64)* **Overload looks like packet loss to clients**: they see
+  timeouts, never an error. The rate-limited `tracing::warn!` on a waiting acquire is the
+  only operator-visible signal until phase 10 exposes counters.
+
+### 10. Open questions
+
+*(Amendment, issue 64.)* None remain. The three left after the first review were closed in
+a second one on 2026-10-02: exactly two TOML keys (`max_in_flight_queries` = 1024,
+`max_tcp_connections` = 256); the per-connection cap (32), write timeout (5 s) and UDP
+socket count (`available_parallelism()` on Linux) as named constants; and, surfaced while
+sizing those caps, the `RLIMIT_NOFILE` raise plus accept-`EMFILE` retry (Approach §7,
+Operations 12.7 and 13.10).

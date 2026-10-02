@@ -27,5 +27,8 @@ styx-resolution = { path = "../styx-resolution" }
 tokio.workspace = true
 anyhow.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix.workspace = true
+
 [lints]
 workspace = true
