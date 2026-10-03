@@ -158,6 +158,7 @@ where
             tcp_idle_timeout: settings.tcp_idle_timeout,
             query_timeout: settings.query_timeout,
             limits: settings.limits,
+            upstream: None,
         };
 
         let server = Server::bind(config, Arc::new(pipeline), Arc::clone(&clock)).await?;

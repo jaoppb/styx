@@ -25,6 +25,7 @@ tracing-subscriber.workspace = true
 styx-core = { path = "../styx-core" }
 styx-resolution = { path = "../styx-resolution" }
 tokio.workspace = true
+tokio-util.workspace = true
 anyhow.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

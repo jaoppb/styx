@@ -1,6 +1,7 @@
 //! Cache pipeline stage handling lookup, upstream resolution on miss, and admission.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use styx_core::{Clock, Upstream, UpstreamKind};
 
@@ -24,6 +25,7 @@ pub struct CacheStage<A, S, U, C> {
     pool: Arc<UpstreamPool<S, U, C>>,
     admission: Admission,
     clock: Arc<C>,
+    query_timeout: Duration,
 }
 
 impl<A, S, U, C> CacheStage<A, S, U, C>
@@ -35,12 +37,18 @@ where
 {
     /// Creates a new `CacheStage` with default admission TTL policies.
     #[must_use]
-    pub fn new(cache: Arc<A>, pool: Arc<UpstreamPool<S, U, C>>, clock: Arc<C>) -> Self {
+    pub fn new(
+        cache: Arc<A>,
+        pool: Arc<UpstreamPool<S, U, C>>,
+        clock: Arc<C>,
+        query_timeout: Duration,
+    ) -> Self {
         Self {
             cache,
             pool,
             admission: Admission::new(TtlPolicy::default()),
             clock,
+            query_timeout,
         }
     }
 
@@ -51,12 +59,14 @@ where
         pool: Arc<UpstreamPool<S, U, C>>,
         admission: Admission,
         clock: Arc<C>,
+        query_timeout: Duration,
     ) -> Self {
         Self {
             cache,
             pool,
             admission,
             clock,
+            query_timeout,
         }
     }
 
@@ -97,8 +107,9 @@ where
         &self,
         query_id: u16,
         question: &styx_proto::Question,
+        deadline: std::time::Instant,
     ) -> Result<ResolutionResponse, PipelineError> {
-        let upstream_resp = self.pool.resolve(question).await?;
+        let upstream_resp = self.pool.resolve(question, deadline).await?;
         let mut message = upstream_resp.message;
         message.header.id = query_id;
 
@@ -122,8 +133,9 @@ where
         query_id: u16,
         question: &styx_proto::Question,
         key: &CacheKey,
+        deadline: std::time::Instant,
     ) -> Result<ResolutionResponse, PipelineError> {
-        let upstream_resp = self.pool.resolve(question).await?;
+        let upstream_resp = self.pool.resolve(question, deadline).await?;
         let now = self.clock.now_monotonic();
 
         let answer_source = match upstream_resp.kind {
@@ -174,11 +186,16 @@ where
             .first()
             .ok_or(PipelineError::MalformedQuery)?;
 
+        let deadline = ctx
+            .received_at
+            .checked_add(self.query_timeout)
+            .unwrap_or(ctx.received_at);
+
         let key = match CacheKey::from_question(question) {
             Ok(k) => k,
             Err(CacheError::UncacheableQuestion(_)) => {
                 return self
-                    .resolve_uncacheable(ctx.query.header.id, question)
+                    .resolve_uncacheable(ctx.query.header.id, question, deadline)
                     .await;
             }
             Err(other) => return Err(PipelineError::Internal(other.to_string())),
@@ -187,7 +204,7 @@ where
         match self.cache.lookup(&key) {
             Lookup::Hit(entry) => self.handle_cache_hit(ctx.query.header.id, &key, entry),
             Lookup::Miss | Lookup::Expired => {
-                self.resolve_and_admit(ctx.query.header.id, question, &key)
+                self.resolve_and_admit(ctx.query.header.id, question, &key, deadline)
                     .await
             }
         }
