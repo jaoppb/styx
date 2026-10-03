@@ -10,21 +10,29 @@
 //! pipeline, and graceful shutdown. The Leptos SSR handler is wired in
 //! Phase 11.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context;
-use styx_core::SystemClock;
+use anyhow::{bail, Context};
+use styx_core::{SystemClock, UpstreamId};
 use styx_resolution::{
-    default_socket_count, AllowAllFilter, ConcurrencyLimits, DiscardObserver, MaxResponseSize,
-    NoLocalRecords, Pipeline, Server, ServerConfig,
+    AllowAllFilter, CacheStage, CanaryConfig, ConfiguredStrategy, DiscardObserver, Do53Forwarder,
+    NoLocalRecords, Pipeline, PoolConfig, PoolMember, ProbePolicy, ProbeScheduler, Server,
+    ServerConfig, ShardedAnswerCache, UpstreamPool,
 };
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 /// Log filter used when `RUST_LOG` is unset or unusable.
 const DEFAULT_LOG_FILTER: LevelFilter = LevelFilter::INFO;
+
+type ConcretePool = UpstreamPool<ConfiguredStrategy, Do53Forwarder<SystemClock>, SystemClock>;
+type ConcreteCache = ShardedAnswerCache<SystemClock>;
+type ConcreteStage =
+    CacheStage<ConcreteCache, ConfiguredStrategy, Do53Forwarder<SystemClock>, SystemClock>;
+type ConcretePipeline =
+    Pipeline<NoLocalRecords, AllowAllFilter, DiscardObserver, SystemClock, ConcreteStage>;
 
 /// Starts the process and supervises server listeners.
 #[tokio::main]
@@ -39,16 +47,21 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let config = load_config().await?;
+    let pool_config = config
+        .upstream
+        .as_ref()
+        .context("missing [upstream] configuration")?;
+
     let clock = Arc::new(SystemClock::new());
-    let filter = Arc::new(AllowAllFilter::new());
-    let local_records = Arc::new(NoLocalRecords::new());
-    let observer = Arc::new(DiscardObserver::new());
-    let pipeline = Arc::new(Pipeline::new(
-        local_records,
-        filter,
-        observer,
-        clock.clone(),
-    ));
+    let pool = build_pool(pool_config, clock.clone());
+    let pipeline = build_pipeline(pool.clone(), clock.clone(), config.query_timeout);
+
+    let probe_cancel = CancellationToken::new();
+    let scheduler = ProbeScheduler::new(pool, clock.clone(), pool_config.probe.tick);
+    let probe_token = probe_cancel.clone();
+    tokio::spawn(async move {
+        scheduler.run(probe_token).await;
+    });
 
     let mut server = Server::bind(config, pipeline, clock)
         .await
@@ -63,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to listen for shutdown signal")?;
 
     tracing::info!("shutdown signal received; closing listeners");
+    probe_cancel.cancel();
     server
         .shutdown()
         .await
@@ -70,29 +84,76 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn build_pool(pool_config: &PoolConfig, clock: Arc<SystemClock>) -> Arc<ConcretePool> {
+    let mut members = Vec::with_capacity(pool_config.members.len());
+    for member_cfg in &pool_config.members {
+        let id = UpstreamId::new(member_cfg.name.as_str());
+        let forwarder = Do53Forwarder::new(
+            id.clone(),
+            member_cfg.addr,
+            member_cfg.edns_buffer,
+            member_cfg.timeouts.udp,
+            member_cfg.timeouts.tcp,
+            clock.clone(),
+        );
+        let canary = member_cfg
+            .canary
+            .clone()
+            .unwrap_or_else(|| CanaryConfig::for_kind(member_cfg.kind));
+        members.push(PoolMember::new(id, forwarder, member_cfg.weight, canary));
+    }
+    let strategy = ConfiguredStrategy::from_name(pool_config.strategy);
+    Arc::new(UpstreamPool::new(
+        members,
+        strategy,
+        clock,
+        pool_config.circuit.clone(),
+        ProbePolicy::new(pool_config.probe.clone()),
+    ))
+}
+
+fn build_pipeline(
+    pool: Arc<ConcretePool>,
+    clock: Arc<SystemClock>,
+    query_timeout: Duration,
+) -> Arc<ConcretePipeline> {
+    let cache = Arc::new(ShardedAnswerCache::with_defaults(clock.clone()));
+    let cache_stage = Arc::new(CacheStage::new(cache, pool, clock.clone(), query_timeout));
+    Arc::new(
+        Pipeline::new(
+            Arc::new(NoLocalRecords::new()),
+            Arc::new(AllowAllFilter::new()),
+            Arc::new(DiscardObserver::new()),
+            clock,
+        )
+        .with_terminal(cache_stage),
+    )
+}
+
 async fn load_config() -> anyhow::Result<ServerConfig> {
     if let Some(path) = std::env::args().nth(1) {
-        return ServerConfig::from_toml(&path)
+        let config = ServerConfig::from_toml(&path)
             .await
-            .with_context(|| format!("failed to read config from {path}"));
+            .with_context(|| format!("failed to read config from {path}"))?;
+        if config.upstream.is_none() {
+            bail!("configuration file '{path}' is missing required [upstream] section");
+        }
+        return Ok(config);
     }
 
     let has_default_toml = tokio::fs::try_exists("styx.toml").await.unwrap_or_default();
 
     if has_default_toml {
-        return ServerConfig::from_toml("styx.toml")
+        let config = ServerConfig::from_toml("styx.toml")
             .await
-            .context("failed to read default styx.toml config");
+            .context("failed to read default styx.toml config")?;
+        if config.upstream.is_none() {
+            bail!("default 'styx.toml' is missing required [upstream] section");
+        }
+        return Ok(config);
     }
 
-    Ok(ServerConfig {
-        listen_addrs: vec![SocketAddr::from(([127, 0, 0, 1], 1053))],
-        udp_payload_size_default: MaxResponseSize::classic(),
-        tcp_idle_timeout: Duration::from_secs(5),
-        query_timeout: Duration::from_secs(2),
-        limits: ConcurrencyLimits::default_limits()
-            .with_udp_sockets_per_addr(default_socket_count()),
-    })
+    bail!("no configuration file found; please create 'styx.toml' or specify a configuration file path with [upstream] section")
 }
 
 /// Raises the `RLIMIT_NOFILE` soft limit to the hard limit before any socket is bound.

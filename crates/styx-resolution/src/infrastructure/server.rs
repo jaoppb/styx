@@ -51,6 +51,8 @@ struct RawConfig {
     max_in_flight_queries: Option<usize>,
     #[serde(default)]
     max_tcp_connections: Option<usize>,
+    #[serde(default)]
+    upstream: Option<toml::Value>,
 }
 
 const fn default_udp_size() -> u16 {
@@ -78,6 +80,8 @@ pub struct ServerConfig {
     pub query_timeout: Duration,
     /// Caps on concurrent listener work.
     pub limits: ConcurrencyLimits,
+    /// Upstream pool configuration, if present in TOML.
+    pub upstream: Option<PoolConfig>,
 }
 
 impl ServerConfig {
@@ -99,7 +103,13 @@ impl ServerConfig {
         if raw.listen_addrs.is_empty() {
             return Err(ConfigError::Invalid("listen_addrs cannot be empty".into()));
         }
-        Ok(Self {
+
+        let upstream = match raw.upstream {
+            Some(val) => Some(PoolConfig::from_toml_value(val)?),
+            None => None,
+        };
+
+        let config = Self {
             listen_addrs: raw.listen_addrs,
             udp_payload_size_default: MaxResponseSize::from_edns_advertised(
                 raw.udp_payload_size_default,
@@ -121,7 +131,14 @@ impl ServerConfig {
                 default_socket_count(),
                 TCP_WRITE_TIMEOUT,
             ),
-        })
+            upstream,
+        };
+
+        if let Some(pool) = &config.upstream {
+            config.check_deadline_covers(pool)?;
+        }
+
+        Ok(config)
     }
 
     /// Checks that `query_timeout` outlasts every pool member's own timeout, so the

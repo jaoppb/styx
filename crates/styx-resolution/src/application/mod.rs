@@ -18,5 +18,5 @@ pub use cache_stage::CacheStage;
 pub use pipeline::Pipeline;
 pub use pool::{PoolMember, UpstreamPool};
 pub use probe_scheduler::ProbeScheduler;
-pub use strategies::{OrderedFailover, RaceAll, RoundRobin, Weighted};
-pub use terminal::{RefusedTerminal, TerminalHandler};
+pub use strategies::{ConfiguredStrategy, OrderedFailover, RaceAll, RoundRobin, Weighted};
+pub use terminal::{PoolTerminal, RefusedTerminal, TerminalHandler};

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use harness::{CommandableUpstream, TestClock, UpstreamBehavior};
-use styx_core::UpstreamId;
+use styx_core::{Clock, UpstreamId};
 use styx_proto::{Name, Question, RecordClass, RecordType};
 use styx_resolution::{
     CanaryConfig, CircuitConfig, Do53Forwarder, EdnsBufferSize, OrderedFailover, PoolMember,
@@ -74,22 +74,29 @@ async fn test_ordered_failover_recovery_and_selection() {
     );
 
     let query = make_test_question("example.com.");
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
 
     // Initial query: primary serves
-    let resp = pool.resolve(&query).await.expect("query success");
+    let resp = pool.resolve(&query, deadline).await.expect("query success");
     assert_eq!(resp.answered_by, UpstreamId::new("up1"));
     assert_eq!(up1.query_count(), 1);
     assert_eq!(up2.query_count(), 0);
 
     // Primary fails: secondary answers
     up1.set_behavior(UpstreamBehavior::Timeout);
-    let resp2 = pool.resolve(&query).await.expect("query failover");
+    let resp2 = pool
+        .resolve(&query, deadline)
+        .await
+        .expect("query failover");
     assert_eq!(resp2.answered_by, UpstreamId::new("up2"));
     assert_eq!(up2.query_count(), 1);
 
     // Primary recovers: traffic returns to primary
     up1.set_behavior(UpstreamBehavior::Normal);
-    let resp3 = pool.resolve(&query).await.expect("query recovered");
+    let resp3 = pool
+        .resolve(&query, deadline)
+        .await
+        .expect("query recovered");
     assert_eq!(resp3.answered_by, UpstreamId::new("up1"));
 }
 
@@ -114,7 +121,8 @@ async fn test_round_robin_distribution_and_concurrency() {
 
     // Sequential alternating distribution
     for _ in 0..10 {
-        let _ = pool.resolve(&query).await.expect("query success");
+        let deadline = clock.now_monotonic() + Duration::from_secs(5);
+        let _ = pool.resolve(&query, deadline).await.expect("query success");
     }
     assert_eq!(up1.query_count(), 5);
     assert_eq!(up2.query_count(), 5);
@@ -124,7 +132,11 @@ async fn test_round_robin_distribution_and_concurrency() {
     for _ in 0..20 {
         let p = pool.clone();
         let q = query.clone();
-        handles.push(tokio::spawn(async move { p.resolve(&q).await }));
+        let c = clock.clone();
+        handles.push(tokio::spawn(async move {
+            let deadline = c.now_monotonic() + Duration::from_secs(5);
+            p.resolve(&q, deadline).await
+        }));
     }
 
     for h in handles {
@@ -156,7 +168,8 @@ async fn test_weighted_distribution_and_degenerate_cases() {
 
     let query = make_test_question("weighted.test.");
     for _ in 0..40 {
-        let _ = pool.resolve(&query).await.expect("query success");
+        let deadline = clock.now_monotonic() + Duration::from_secs(5);
+        let _ = pool.resolve(&query, deadline).await.expect("query success");
     }
 
     assert_eq!(up1.query_count(), 30);
@@ -171,7 +184,11 @@ async fn test_weighted_distribution_and_degenerate_cases() {
         CircuitConfig::default(),
         ProbePolicy::new(ProbeConfig::default()),
     );
-    let resp = single_pool.resolve(&query).await.expect("single success");
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+    let resp = single_pool
+        .resolve(&query, deadline)
+        .await
+        .expect("single success");
     assert_eq!(resp.answered_by, UpstreamId::new("up3"));
 
     // Degenerate case: zero total weight degrades to round-robin
@@ -188,8 +205,9 @@ async fn test_weighted_distribution_and_degenerate_cases() {
         ProbePolicy::new(ProbeConfig::default()),
     );
     for _ in 0..4 {
+        let deadline = clock.now_monotonic() + Duration::from_secs(5);
         let _ = zero_pool
-            .resolve(&query)
+            .resolve(&query, deadline)
             .await
             .expect("zero weight success");
     }
@@ -222,7 +240,11 @@ async fn test_race_fanout_and_attribution() {
     );
 
     let query = make_test_question("race.test.");
-    let resp = pool.resolve(&query).await.expect("race resolution");
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+    let resp = pool
+        .resolve(&query, deadline)
+        .await
+        .expect("race resolution");
 
     assert_eq!(resp.answered_by, UpstreamId::new("up2"));
     assert_eq!(resp.raced_count, 3);

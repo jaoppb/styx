@@ -1124,6 +1124,7 @@ dependencies = [
  "styx-core",
  "styx-resolution",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

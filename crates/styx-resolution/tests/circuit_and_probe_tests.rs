@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use harness::{CommandableUpstream, TestClock, UpstreamBehavior};
-use styx_core::UpstreamId;
+use styx_core::{Clock, UpstreamId};
 use styx_proto::{Name, Question, RecordClass, RecordType};
 use styx_resolution::{
     CanaryConfig, CircuitConfig, CircuitState, Do53Forwarder, EdnsBufferSize, OrderedFailover,
@@ -72,11 +72,12 @@ async fn test_circuit_tripping_and_clock_advancement_recovery() {
     );
 
     let query = make_test_question("circuit.test.");
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
 
     // Trip circuit with 2 consecutive failures
     up1.set_behavior(UpstreamBehavior::Timeout);
-    let _ = pool.resolve(&query).await;
-    let _ = pool.resolve(&query).await;
+    let _ = pool.resolve(&query, deadline).await;
+    let _ = pool.resolve(&query, deadline).await;
 
     // Check circuit tripped to Open
     let views = pool.snapshot();
@@ -84,7 +85,7 @@ async fn test_circuit_tripping_and_clock_advancement_recovery() {
     assert!(matches!(views[0].circuit, CircuitState::Open { .. }));
 
     // Subsequent query fails immediately with AllUpstreamsDown
-    let err = pool.resolve(&query).await.unwrap_err();
+    let err = pool.resolve(&query, deadline).await.unwrap_err();
     assert!(matches!(err, PoolError::AllUpstreamsDown));
 
     // Fast-forward clock past open_cooldown
@@ -94,7 +95,11 @@ async fn test_circuit_tripping_and_clock_advancement_recovery() {
     up1.set_behavior(UpstreamBehavior::Normal);
 
     // Available for half-open trial, succeeds and closes circuit
-    let resp = pool.resolve(&query).await.expect("recovery query success");
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+    let resp = pool
+        .resolve(&query, deadline)
+        .await
+        .expect("recovery query success");
     assert_eq!(resp.answered_by, UpstreamId::new("up1"));
 
     let views = pool.snapshot();
@@ -131,7 +136,8 @@ async fn test_probe_silence_on_healthy_upstream() {
     let query = make_test_question("active.example.");
     // Send real queries periodically so member is never idle beyond 60s
     for _ in 0..5 {
-        let _ = pool.resolve(&query).await.expect("query success");
+        let deadline = clock.now_monotonic() + Duration::from_secs(5);
+        let _ = pool.resolve(&query, deadline).await.expect("query success");
         clock.advance(Duration::from_secs(5));
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -167,7 +173,8 @@ async fn test_standby_probe_after_idle_window() {
     let query = make_test_question("primary.example.");
 
     // Serve queries only to primary
-    let _ = pool.resolve(&query).await.expect("query success");
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+    let _ = pool.resolve(&query, deadline).await.expect("query success");
     assert_eq!(up1.query_count(), 1);
     assert_eq!(up2.query_count(), 0);
 
@@ -199,7 +206,11 @@ async fn test_tcp_fallback_on_truncation() {
     );
 
     let query = make_test_question("truncated.test.");
-    let resp = pool.resolve(&query).await.expect("fallback success");
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+    let resp = pool
+        .resolve(&query, deadline)
+        .await
+        .expect("fallback success");
 
     // Proves TCP fallback happened seamlessly
     assert!(resp.via_tcp);
@@ -229,7 +240,8 @@ async fn test_answer_fault_does_not_open_circuit() {
 
     // Send 5 queries that return SERVFAIL through Do53Forwarder
     for _ in 0..5 {
-        let err = pool.resolve(&bad_query).await.unwrap_err();
+        let deadline = clock.now_monotonic() + Duration::from_secs(5);
+        let err = pool.resolve(&bad_query, deadline).await.unwrap_err();
         assert!(matches!(
             err,
             PoolError::Exhausted {
@@ -246,8 +258,9 @@ async fn test_answer_fault_does_not_open_circuit() {
     // Subsequent query for another name succeeds when upstream returns normal
     up.set_behavior(UpstreamBehavior::Normal);
     let good_query = make_test_question("good.example.");
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
     let resp = pool
-        .resolve(&good_query)
+        .resolve(&good_query, deadline)
         .await
         .expect("good query should succeed");
     assert_eq!(resp.answered_by, UpstreamId::new("up"));
@@ -275,8 +288,9 @@ async fn test_half_open_requires_two_successes_and_single_trial() {
 
     // Trip circuit with 2 failures
     up.set_behavior(UpstreamBehavior::Timeout);
-    let _ = pool.resolve(&query).await;
-    let _ = pool.resolve(&query).await;
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+    let _ = pool.resolve(&query, deadline).await;
+    let _ = pool.resolve(&query, deadline).await;
     assert!(matches!(
         pool.snapshot()[0].circuit,
         CircuitState::Open { .. }
@@ -290,13 +304,18 @@ async fn test_half_open_requires_two_successes_and_single_trial() {
 
     let pool_clone = pool.clone();
     let q_clone = query.clone();
-    let trial_handle = tokio::spawn(async move { pool_clone.resolve(&q_clone).await });
+    let p_c = clock.clone();
+    let trial_handle = tokio::spawn(async move {
+        let deadline = p_c.now_monotonic() + Duration::from_secs(5);
+        pool_clone.resolve(&q_clone, deadline).await
+    });
 
     // Brief yield to let trial task start and acquire trial admission
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     // Concurrent query while trial is in flight must be rejected
-    let concurrent_err = pool.resolve(&query).await.unwrap_err();
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+    let concurrent_err = pool.resolve(&query, deadline).await.unwrap_err();
     assert!(matches!(concurrent_err, PoolError::AllUpstreamsDown));
 
     // Await first trial completion
@@ -314,7 +333,11 @@ async fn test_half_open_requires_two_successes_and_single_trial() {
 
     // Second trial succeeds and transitions to Closed
     up.set_behavior(UpstreamBehavior::Normal);
-    let trial2_resp = pool.resolve(&query).await.expect("trial 2 succeeds");
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+    let trial2_resp = pool
+        .resolve(&query, deadline)
+        .await
+        .expect("trial 2 succeeds");
     assert_eq!(trial2_resp.answered_by, UpstreamId::new("up"));
     assert_eq!(pool.snapshot()[0].circuit, CircuitState::Closed);
 }
@@ -341,14 +364,16 @@ async fn test_half_open_failure_rearms_cooldown_end_to_end() {
 
     // Trip circuit to Open
     up.set_behavior(UpstreamBehavior::Timeout);
-    let _ = pool.resolve(&query).await;
-    let _ = pool.resolve(&query).await;
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+    let _ = pool.resolve(&query, deadline).await;
+    let _ = pool.resolve(&query, deadline).await;
 
     // Advance clock past initial cooldown
     clock.advance(Duration::from_secs(35));
 
     // Upstream still fails: trial query fails
-    let _ = pool.resolve(&query).await;
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+    let _ = pool.resolve(&query, deadline).await;
 
     // Must be Open again with re-armed cooldown
     let views = pool.snapshot();
@@ -357,7 +382,8 @@ async fn test_half_open_failure_rearms_cooldown_end_to_end() {
 
     // Advance only 10s: still within new cooldown -> fails immediately
     clock.advance(Duration::from_secs(10));
-    let err = pool.resolve(&query).await.unwrap_err();
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+    let err = pool.resolve(&query, deadline).await.unwrap_err();
     assert!(matches!(err, PoolError::AllUpstreamsDown));
 
     // Advance past new cooldown (remaining 25s)
@@ -365,7 +391,11 @@ async fn test_half_open_failure_rearms_cooldown_end_to_end() {
     up.set_behavior(UpstreamBehavior::Normal);
 
     // Trial succeeds and circuit closes
-    let resp = pool.resolve(&query).await.expect("recovery succeeds");
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+    let resp = pool
+        .resolve(&query, deadline)
+        .await
+        .expect("recovery succeeds");
     assert_eq!(resp.answered_by, UpstreamId::new("up"));
     assert_eq!(pool.snapshot()[0].circuit, CircuitState::Closed);
 }
@@ -386,6 +416,7 @@ async fn test_all_down_returns_definite_error() {
     );
 
     let query = make_test_question("alldown.test.");
-    let err = pool.resolve(&query).await.unwrap_err();
+    let deadline = clock.now_monotonic() + Duration::from_secs(5);
+    let err = pool.resolve(&query, deadline).await.unwrap_err();
     assert!(matches!(err, PoolError::Exhausted { .. }));
 }

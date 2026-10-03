@@ -76,6 +76,16 @@ impl PoolConfig {
         Self::from_raw(raw)
     }
 
+    /// Parses and validates a `PoolConfig` from a TOML value.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError`] on invalid syntax, empty pool, EDNS buffer size below floor,
+    /// or recursor canary that does not require descent.
+    pub fn from_toml_value(val: toml::Value) -> Result<Self, ConfigError> {
+        let raw: RawPoolConfig = val.try_into().map_err(ConfigError::from)?;
+        Self::from_raw(raw)
+    }
+
     fn from_raw(raw: RawPoolConfig) -> Result<Self, ConfigError> {
         if raw.members.is_empty() {
             return Err(ConfigError::EmptyPool);
