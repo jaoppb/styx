@@ -210,6 +210,7 @@ class ListenerShared {
   +TaskTracker tasks
   +CancellationToken abort
   +Duration query_timeout
+  +MaxResponseSize udp_payload_size_default
 }
 
 class Transport {
@@ -224,7 +225,9 @@ class RequestContext {
   +Transport transport
   +Instant received_at
   +MaxResponseSize max_response_size
-  +new(Message, ClientId, Transport, MaxResponseSize, Instant) RequestContext
+  +MaxResponseSize server_payload_size
+  +new(Message, ClientId, Transport, MaxResponseSize, MaxResponseSize, Instant) RequestContext
+  +derive_max_response_size(Transport, Message, MaxResponseSize) MaxResponseSize
   +has_edns() bool
 }
 
@@ -1052,7 +1055,8 @@ Added by the issue 64 amendment.
 2. **`Transport`**: `Udp` | `Tcp`. Extended in phase 7 for DoT/DoH; **never for QUIC —
    DoQ (RFC 9250) is a v1 non-goal, inbound and outbound.**
 3. **`RequestContext`**: decoded query, `ClientId`, `Transport`, receipt instant (from the
-   injected `Clock` passed explicitly to `RequestContext::new`), and `max_response_size`.
+   injected `Clock` passed explicitly to `RequestContext::new`), `max_response_size`, and configured
+   `server_payload_size`.
    EDNS OPT presence is queried via `has_edns(&self) -> bool` derived from `query.opt`,
    rather than maintaining a duplicate boolean flag. Response outcome is deliberately not
    stored in `RequestContext` to maintain clean separation of request and response concerns.
@@ -1066,10 +1070,10 @@ Added by the issue 64 amendment.
    "unbounded". `fits(usize) -> bool` is the one checked comparison
    `ResponseWriter::truncate_if_needed` (Operation 10) routes every size check through,
    rather than scattering bare `<` comparisons across the listeners.
-5. **`max_response_size` derivation**: EDNS(0) advertised UDP payload size when OPT is
-   present (clamped to at least 512 per RFC 6891 Section 6.2.3), 512 when absent, and
-   effectively unbounded on TCP subject to the 16-bit length prefix — the three
-   `MaxResponseSize` constructors above, one per branch.
+5. **`max_response_size` derivation**: `derive_max_response_size(transport, query, server_payload_size)`
+   derives `min(client_advertised, server_payload_size)` when OPT is present on UDP (with client
+   advertised clamped to at least 512 per RFC 6891 Section 6.2.3), 512 when absent, and `tcp_ceiling()`
+   on TCP. *(Amendment, issue 29: caps UDP response at server configured payload size).*
 6. **Constraint**: **no EDNS Client Subnet option is ever read or emitted.** ECS (RFC
    7871) is a deliberate v1 non-goal because it leaks client topology.
 
@@ -1191,11 +1195,14 @@ Added by the issue 64 amendment.
      checked-arithmetic tax of `arithmetic_side_effects = deny` and `indexing_slicing =
      deny` is paid once.
 2. **`write(message, ctx) -> Result<Vec<u8>, EncodeError>`**
-   - Logic: apply `truncate_if_needed` with `ctx.max_response_size` on UDP; encode via
-     `styx-proto`'s `Encoder` and return `encoder.buf` directly, never through
-     `Message::encode` or `frame_tcp`. On TCP, encode with a `MAX_TCP_MESSAGE_LEN` budget
-     and return the **unframed** body; the caller frames it on the wire through
-     `write_framed` (Operation 12, item 6). *(Amendment, issue 41.)*
+   - Logic: normalize the EDNS OPT pseudo-record against `ctx.server_payload_size` (strip OPT
+     if query had no EDNS per RFC 6891 §6.1.1, or ensure response OPT advertises the server's
+     configured payload size if query included EDNS); apply `truncate_if_needed` with
+     `ctx.max_response_size` on UDP; encode via `styx-proto`'s `Encoder` and return `encoder.buf`
+     directly, never through `Message::encode` or `frame_tcp`. On TCP, encode with a
+     `MAX_TCP_MESSAGE_LEN` budget and return the **unframed** body; the caller frames it on the
+     wire through `write_framed` (Operation 12, item 6). *(Amendments: issue 41 for unframed TCP,
+     issue 29 for OPT normalization).*
    - The doc comment states that TCP output carries no length prefix.
    - A unit test pins it: the TCP output's first two octets are the header ID, not a
      length, and its length equals the encoded size.

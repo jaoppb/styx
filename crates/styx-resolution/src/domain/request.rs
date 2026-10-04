@@ -104,6 +104,8 @@ pub struct RequestContext {
     pub received_at: Instant,
     /// Computed response size ceiling for truncation decisions.
     pub max_response_size: MaxResponseSize,
+    /// Configured server advertised UDP payload size.
+    pub server_payload_size: MaxResponseSize,
 }
 
 impl RequestContext {
@@ -114,6 +116,7 @@ impl RequestContext {
         client: ClientId,
         transport: Transport,
         max_response_size: MaxResponseSize,
+        server_payload_size: MaxResponseSize,
         received_at: Instant,
     ) -> Self {
         Self {
@@ -122,6 +125,7 @@ impl RequestContext {
             transport,
             received_at,
             max_response_size,
+            server_payload_size,
         }
     }
 
@@ -138,18 +142,80 @@ impl RequestContext {
         self
     }
 
-    /// Automatically derives the appropriate `MaxResponseSize` for the given transport and query.
+    /// Automatically derives the appropriate `MaxResponseSize` for the given transport, query, and server payload ceiling.
     #[must_use]
-    pub fn derive_max_response_size(transport: Transport, query: &Message) -> MaxResponseSize {
+    pub fn derive_max_response_size(
+        transport: Transport,
+        query: &Message,
+        server_payload_size: MaxResponseSize,
+    ) -> MaxResponseSize {
         match transport {
             Transport::Tcp => MaxResponseSize::tcp_ceiling(),
             Transport::Udp => {
                 if let Some(opt) = &query.opt {
-                    MaxResponseSize::from_edns_advertised(opt.udp_payload_size())
+                    let client_advertised =
+                        MaxResponseSize::from_edns_advertised(opt.udp_payload_size());
+                    client_advertised.min(server_payload_size)
                 } else {
                     MaxResponseSize::classic()
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use styx_proto::{Header, Message, Opcode, Opt};
+
+    use super::*;
+
+    #[test]
+    fn derive_max_response_size_caps_at_server_payload() {
+        let mut query = Message::new(Header::new_query(1, Opcode::Query, false));
+        query.opt = Some(Opt::new(4096, 0, 0, false, Vec::new()));
+        let server_payload = MaxResponseSize::from_edns_advertised(1232);
+
+        let size = RequestContext::derive_max_response_size(Transport::Udp, &query, server_payload);
+        assert_eq!(size.as_u16(), 1232);
+    }
+
+    #[test]
+    fn derive_max_response_size_respects_smaller_client_payload() {
+        let mut query = Message::new(Header::new_query(1, Opcode::Query, false));
+        query.opt = Some(Opt::new(1024, 0, 0, false, Vec::new()));
+        let server_payload = MaxResponseSize::from_edns_advertised(1232);
+
+        let size = RequestContext::derive_max_response_size(Transport::Udp, &query, server_payload);
+        assert_eq!(size.as_u16(), 1024);
+    }
+
+    #[test]
+    fn derive_max_response_size_clamps_small_client_to_512() {
+        let mut query = Message::new(Header::new_query(1, Opcode::Query, false));
+        query.opt = Some(Opt::new(256, 0, 0, false, Vec::new()));
+        let server_payload = MaxResponseSize::from_edns_advertised(1232);
+
+        let size = RequestContext::derive_max_response_size(Transport::Udp, &query, server_payload);
+        assert_eq!(size.as_u16(), 512);
+    }
+
+    #[test]
+    fn derive_max_response_size_without_edns_returns_classic() {
+        let query = Message::new(Header::new_query(1, Opcode::Query, false));
+        let server_payload = MaxResponseSize::from_edns_advertised(1232);
+
+        let size = RequestContext::derive_max_response_size(Transport::Udp, &query, server_payload);
+        assert_eq!(size, MaxResponseSize::classic());
+    }
+
+    #[test]
+    fn derive_max_response_size_on_tcp_returns_tcp_ceiling() {
+        let mut query = Message::new(Header::new_query(1, Opcode::Query, false));
+        query.opt = Some(Opt::new(1232, 0, 0, false, Vec::new()));
+        let server_payload = MaxResponseSize::from_edns_advertised(1232);
+
+        let size = RequestContext::derive_max_response_size(Transport::Tcp, &query, server_payload);
+        assert_eq!(size, MaxResponseSize::tcp_ceiling());
     }
 }

@@ -48,6 +48,8 @@ impl TerminalHandler for LargeAnswerTerminal {
 
         let count = if question.qname.to_string().starts_with("medium") {
             5
+        } else if question.qname.to_string().starts_with("fits") {
+            12
         } else {
             25
         };
@@ -181,19 +183,62 @@ async fn test_udp_truncation_and_tcp_fallback() {
     assert!(!tcp_resp.header.truncated, "TCP must not truncate");
     assert!(!tcp_resp.answers.is_empty(), "TCP delivers full answers");
 
-    // 3. UDP with advertised EDNS buffer size 4096: fits without TC
+    // 3. UDP with advertised EDNS buffer size 4096:
+    // Exceeds the server's default 1232 ceiling (~1500+ B), so TC is set
     let mut edns_query = query.clone();
     edns_query.opt = Some(Opt::new(4096, 0, 0, false, Vec::new()));
     let edns_resp = client
         .query_udp(server.udp_addr(), &edns_query)
         .await
         .expect("edns query");
-    assert!(!edns_resp.header.truncated, "EDNS(0) 4096 must avoid TC");
-    assert!(!edns_resp.answers.is_empty());
+    assert!(
+        edns_resp.header.truncated,
+        "EDNS response exceeding 1232 server ceiling must set TC"
+    );
+    assert_eq!(
+        edns_resp.opt.as_ref().map(|o| o.udp_payload_size()),
+        Some(1232),
+        "Response OPT must advertise the server ceiling of 1232"
+    );
 
-    // 4. UDP with advertised EDNS buffer size below 512 (e.g. 100):
+    // 3b. UDP with payload ~870 B fitting within 1232: delivers answers without TC
+    let mut fits_edns_query = make_query("fits.example.com.", RecordType::TXT);
+    fits_edns_query.opt = Some(Opt::new(4096, 0, 0, false, Vec::new()));
+    let fits_edns_resp = client
+        .query_udp(server.udp_addr(), &fits_edns_query)
+        .await
+        .expect("fits edns query");
+    assert!(
+        !fits_edns_resp.header.truncated,
+        "Payload under 1232 server ceiling must avoid TC"
+    );
+    assert_eq!(
+        fits_edns_resp.opt.as_ref().map(|o| o.udp_payload_size()),
+        Some(1232),
+        "Response OPT must advertise 1232"
+    );
+    assert!(!fits_edns_resp.answers.is_empty());
+
+    server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn test_edns_small_buffer_clamped_to_512() {
+    let mut server = TestServer::boot_with_terminal(
+        Arc::new(styx_resolution::NoLocalRecords::new()),
+        Arc::new(styx_resolution::AllowAllFilter::new()),
+        Arc::new(styx_resolution::DiscardObserver::new()),
+        Arc::new(LargeAnswerTerminal),
+    )
+    .await
+    .expect("boot server");
+
+    let client = DnsClient::new();
+    let query = make_query("large.example.com.", RecordType::TXT);
+
+    // UDP with advertised EDNS buffer size below 512 (e.g. 100):
     // Per RFC 6891 Section 6.2.3, values below 512 are clamped to 512.
-    // 4a. A response exceeding 512 bytes still sets TC.
+    // A response exceeding 512 bytes still sets TC.
     let mut small_edns_query = query.clone();
     small_edns_query.opt = Some(Opt::new(100, 0, 0, false, Vec::new()));
     let small_edns_resp = client
@@ -205,7 +250,7 @@ async fn test_udp_truncation_and_tcp_fallback() {
         "Small advertised EDNS clamped to 512 still forces TC when payload > 512"
     );
 
-    // 4b. A response of ~390 bytes (> 100 but < 512) is NOT truncated because 100 is clamped to 512.
+    // A response of ~390 bytes (> 100 but < 512) is NOT truncated because 100 is clamped to 512.
     let mut medium_edns_query = make_query("medium.example.com.", RecordType::TXT);
     medium_edns_query.opt = Some(Opt::new(100, 0, 0, false, Vec::new()));
     let medium_edns_resp = client
@@ -277,6 +322,35 @@ async fn test_malformed_inputs_yield_explicit_rcodes() {
         .await
         .expect("query");
     assert_eq!(valid_resp.header.rcode, ResponseCode::REFUSED);
+
+    server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn test_edns_payload_ceiling_and_opt_advertising() {
+    let mut server = TestServer::boot_ephemeral().await.expect("boot server");
+    let client = DnsClient::new();
+
+    // Query advertising 65,535 B gets response OPT advertising 1232 B
+    let mut query = make_query("example.com.", RecordType::A);
+    query.opt = Some(Opt::new(65535, 0, 0, false, Vec::new()));
+    let resp = client
+        .query_udp(server.udp_addr(), &query)
+        .await
+        .expect("edns query");
+    let opt = resp.opt.expect("response must include OPT");
+    assert_eq!(opt.udp_payload_size(), 1232);
+
+    // Query without EDNS receives response without OPT
+    let plain_query = make_query("example.com.", RecordType::A);
+    let plain_resp = client
+        .query_udp(server.udp_addr(), &plain_query)
+        .await
+        .expect("plain query");
+    assert!(
+        plain_resp.opt.is_none(),
+        "Response must not include OPT when query had none"
+    );
 
     server.shutdown().await.expect("shutdown");
 }

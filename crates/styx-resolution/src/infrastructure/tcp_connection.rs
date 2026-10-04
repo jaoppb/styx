@@ -347,7 +347,14 @@ where
 
         let client = ClientId::from_socket_addr(self.peer);
         let max_size = MaxResponseSize::tcp_ceiling();
-        let ctx = RequestContext::new(query, client, Transport::Tcp, max_size, self.received_at);
+        let ctx = RequestContext::new(
+            query,
+            client,
+            Transport::Tcp,
+            max_size,
+            self.shared.udp_payload_size_default,
+            self.received_at,
+        );
         let pipeline = &self.shared.pipeline;
         let response = match pipeline
             .handle_within(&ctx, self.shared.query_timeout)
@@ -374,6 +381,7 @@ where
             client,
             Transport::Tcp,
             MaxResponseSize::tcp_ceiling(),
+            self.shared.udp_payload_size_default,
             self.received_at,
         );
         self.encode(resp, &ctx)
