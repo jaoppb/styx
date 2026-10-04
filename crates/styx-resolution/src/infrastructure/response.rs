@@ -1,7 +1,7 @@
 //! DNS response serialization and wire truncation handling.
 
 use styx_proto::application::Encoder;
-use styx_proto::{EncodeError, Message, MAX_TCP_MESSAGE_LEN};
+use styx_proto::{EncodeError, Message, Opt, MAX_TCP_MESSAGE_LEN};
 
 use crate::domain::request::{MaxResponseSize, RequestContext, Transport};
 
@@ -57,6 +57,8 @@ impl ResponseWriter {
 
     /// Serializes a response message for transmission over the context's transport.
     ///
+    /// The response's EDNS OPT record is normalized to the server's configured payload size
+    /// if the query included EDNS, or stripped if the query did not include EDNS (RFC 6891 §6.1.1).
     /// On UDP, truncation is applied against `ctx.max_response_size`.
     /// On TCP, the body is returned without a length prefix; the caller frames it on the
     /// wire through [`crate::infrastructure::tcp_frame::write_framed`].
@@ -64,6 +66,7 @@ impl ResponseWriter {
     /// # Errors
     /// Returns [`EncodeError`] on wire formatting failure or overflow.
     pub fn write(&self, message: Message, ctx: &RequestContext) -> Result<Vec<u8>, EncodeError> {
+        let message = Self::normalize_opt(message, ctx);
         match ctx.transport {
             Transport::Udp => {
                 let budget = usize::from(ctx.max_response_size.as_u16());
@@ -82,6 +85,20 @@ impl ResponseWriter {
                 Ok(encoder.buf)
             }
         }
+    }
+
+    fn normalize_opt(mut message: Message, ctx: &RequestContext) -> Message {
+        if ctx.query.opt.is_some() {
+            let server_size = ctx.server_payload_size.as_u16();
+            if let Some(opt) = message.opt.as_mut() {
+                opt.set_udp_payload_size(server_size);
+            } else {
+                message.opt = Some(Opt::new(server_size, 0, 0, false, Vec::new()));
+            }
+        } else {
+            message.opt = None;
+        }
+        message
     }
 
     fn encode_truncated_udp(mut message: Message, budget: usize) -> Result<Vec<u8>, EncodeError> {
@@ -118,6 +135,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::time::Instant;
 
+    use styx_proto::application::Decoder;
     use styx_proto::{Header, Opcode};
 
     use super::*;
@@ -132,6 +150,7 @@ mod tests {
             client,
             Transport::Tcp,
             MaxResponseSize::tcp_ceiling(),
+            MaxResponseSize::from_edns_advertised(1232),
             Instant::now(),
         );
 
@@ -143,5 +162,82 @@ mod tests {
         let mut encoder = Encoder::new(MAX_TCP_MESSAGE_LEN);
         encoder.encode_message(&query).expect("encode");
         assert_eq!(body, encoder.buf);
+    }
+
+    #[test]
+    fn response_opt_advertises_server_payload_size() {
+        let mut query = Message::new(Header::new_query(1, Opcode::Query, true));
+        query.opt = Some(Opt::new(65535, 0, 0, false, Vec::new()));
+        let client = ClientId::from_socket_addr(SocketAddr::from(([127, 0, 0, 1], 5353)));
+        let server_payload = MaxResponseSize::from_edns_advertised(1232);
+        let ctx = RequestContext::new(
+            query.clone(),
+            client,
+            Transport::Udp,
+            server_payload,
+            server_payload,
+            Instant::now(),
+        );
+
+        let mut response = Message::new(Header::new_query(1, Opcode::Query, false));
+        // Upstream response or terminal had client's advertised size
+        response.opt = Some(Opt::new(65535, 0, 0, false, Vec::new()));
+
+        let bytes = ResponseWriter::new().write(response, &ctx).expect("write");
+        let decoded = Decoder::new(&bytes).decode_message().expect("decode");
+
+        let opt = decoded.opt.expect("opt present");
+        assert_eq!(opt.udp_payload_size(), 1232);
+    }
+
+    #[test]
+    fn response_opt_is_stripped_when_query_has_no_opt() {
+        let query = Message::new(Header::new_query(1, Opcode::Query, true));
+        let client = ClientId::from_socket_addr(SocketAddr::from(([127, 0, 0, 1], 5353)));
+        let server_payload = MaxResponseSize::from_edns_advertised(1232);
+        let ctx = RequestContext::new(
+            query,
+            client,
+            Transport::Udp,
+            MaxResponseSize::classic(),
+            server_payload,
+            Instant::now(),
+        );
+
+        let mut response = Message::new(Header::new_query(1, Opcode::Query, false));
+        // Upstream responded with an OPT
+        response.opt = Some(Opt::new(4096, 0, 0, false, Vec::new()));
+
+        let bytes = ResponseWriter::new().write(response, &ctx).expect("write");
+        let decoded = Decoder::new(&bytes).decode_message().expect("decode");
+
+        assert!(
+            decoded.opt.is_none(),
+            "OPT must be stripped when query had no EDNS"
+        );
+    }
+
+    #[test]
+    fn response_creates_opt_when_query_has_opt_and_response_had_none() {
+        let mut query = Message::new(Header::new_query(1, Opcode::Query, true));
+        query.opt = Some(Opt::new(4096, 0, 0, false, Vec::new()));
+        let client = ClientId::from_socket_addr(SocketAddr::from(([127, 0, 0, 1], 5353)));
+        let server_payload = MaxResponseSize::from_edns_advertised(1232);
+        let ctx = RequestContext::new(
+            query.clone(),
+            client,
+            Transport::Udp,
+            server_payload,
+            server_payload,
+            Instant::now(),
+        );
+
+        let response = Message::new(Header::new_query(1, Opcode::Query, false));
+
+        let bytes = ResponseWriter::new().write(response, &ctx).expect("write");
+        let decoded = Decoder::new(&bytes).decode_message().expect("decode");
+
+        let opt = decoded.opt.expect("opt generated");
+        assert_eq!(opt.udp_payload_size(), 1232);
     }
 }

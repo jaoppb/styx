@@ -59,6 +59,18 @@ impl Opt {
         self.udp_payload_size
     }
 
+    /// Returns a copy of the [`Opt`] record with the UDP payload size updated.
+    #[must_use]
+    pub fn with_udp_payload_size(mut self, size: u16) -> Self {
+        self.udp_payload_size = size;
+        self
+    }
+
+    /// Sets the sender's UDP payload size.
+    pub fn set_udp_payload_size(&mut self, size: u16) {
+        self.udp_payload_size = size;
+    }
+
     /// Upper 8 bits of the 12-bit extended RCODE (RFC 6891 §6.1.3).
     #[must_use]
     pub fn extended_rcode(&self) -> u8 {

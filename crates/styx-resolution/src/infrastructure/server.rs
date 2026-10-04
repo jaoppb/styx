@@ -220,6 +220,7 @@ where
             tasks: TaskTracker::new(),
             abort: CancellationToken::new(),
             query_timeout: config.query_timeout,
+            udp_payload_size_default: config.udp_payload_size_default,
         };
         let connections = ConnectionBudget::new(limits.max_tcp_connections());
         let mut local_addrs = Vec::new();

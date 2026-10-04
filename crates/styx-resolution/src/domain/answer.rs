@@ -213,8 +213,9 @@ impl ForgedAnswer {
         message.answers = answers;
 
         // Preserve EDNS OPT skeleton if the client requested EDNS
-        if let Some(client_opt) = &ctx.query.opt {
-            let opt = styx_proto::Opt::new(client_opt.udp_payload_size(), 0, 0, false, Vec::new());
+        if ctx.query.opt.is_some() {
+            let opt =
+                styx_proto::Opt::new(ctx.server_payload_size.as_u16(), 0, 0, false, Vec::new());
             message.opt = Some(opt);
         }
 

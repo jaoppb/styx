@@ -50,8 +50,9 @@ impl TerminalHandler for RefusedTerminal {
         response.header.recursion_available = true;
         response.header.recursion_desired = ctx.query.header.recursion_desired;
 
-        if let Some(opt) = &ctx.query.opt {
-            let resp_opt = styx_proto::Opt::new(opt.udp_payload_size(), 0, 0, false, Vec::new());
+        if ctx.query.opt.is_some() {
+            let resp_opt =
+                styx_proto::Opt::new(ctx.server_payload_size.as_u16(), 0, 0, false, Vec::new());
             response.opt = Some(resp_opt);
         }
 

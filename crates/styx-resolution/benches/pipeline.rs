@@ -92,7 +92,14 @@ fn make_context(query: Message, transport: Transport, max_size: MaxResponseSize)
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
         12345,
     ));
-    RequestContext::new(query, client, transport, max_size, Instant::now())
+    RequestContext::new(
+        query,
+        client,
+        transport,
+        max_size,
+        MaxResponseSize::from_edns_advertised(1232),
+        Instant::now(),
+    )
 }
 
 fn report_alloc(label: &str, mut f: impl FnMut()) {
