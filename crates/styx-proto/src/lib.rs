@@ -17,7 +17,7 @@ pub mod infrastructure;
 pub use application::canonical::{canonical_name_cmp, canonical_rr_cmp, with_original_ttl};
 pub use domain::edns::{EdnsOption, Opt, DEFAULT_EDNS_UDP_PAYLOAD_SIZE};
 pub use domain::error::{DecodeError, EncodeError, NameError};
-pub use domain::header::{Header, MessageKind, Opcode, ResponseCode};
+pub use domain::header::{Header, MessageKind, Opcode, ResponseCode, ResponseCodeParts};
 pub use domain::message::Message;
 pub use domain::name::{Label, LabelRef, Name, MAX_LABEL_LEN, MAX_NAME_LEN};
 pub use domain::question::Question;
