@@ -644,10 +644,10 @@ trust anchor rollover. Write them where the reasoning is freshest.
   and neither substitutes for the other.
 - **Write it in phase 0, not when the first feature crate needs it.** Every rule it states
   — ports as traits, generics over `dyn`, `thiserror` at boundaries, checked arithmetic,
-  no synchronous I/O in `domain`/`application`, `tracing` over `println!` — is already
-  decided above; `AGENTS.md` is where those decisions become the guidance a later phase's
-  generation reads before it writes a line of code, the same role Approach and Norms play
-  inside this canvas.
+  no synchronous I/O in `domain`/`application`, `tracing` over `println!`, no tuples on
+  public interfaces — is already decided above; `AGENTS.md` is where those decisions
+  become the guidance a later phase's generation reads before it writes a line of code,
+  the same role Approach and Norms play inside this canvas.
 - **Fold in a Rust-adapted Object Calisthenics ruleset**, because the original nine rules
   target Java-shaped OOP and several do not survive translation unchanged. Record which
   do, how, and — as importantly — which are consciously dropped or downgraded, so a later
@@ -1502,7 +1502,9 @@ the counterpart to, and before the `justfile` that invokes it.*
      `infrastructure` or the `styx` binary; `thiserror` enums at every fallible boundary,
      `anyhow` reserved for the composition root; no `unwrap`/`expect`/`panic!` outside
      tests; checked arithmetic and no indexing outside an audited primitive; no
-     synchronous I/O in `domain` or `application`; `tracing` over `println!`. Link each
+     synchronous I/O in `domain` or `application`; `tracing` over `println!`; no tuples
+     on public interfaces (bare tuples restricted to internal functions and private
+     helpers; standard library traits like `Iterator::size_hint` exempted). Link each
      to the ADR that explains it where one exists, rather than re-deriving the rationale.
    - **Workspace layout and module structure section**: add a top-level section between
      Repository conventions and Object Calisthenics displaying a concise visual directory
@@ -1531,9 +1533,9 @@ the counterpart to, and before the `justfile` that invokes it.*
      that enforces it. **Review only**: wrapping primitives that carry domain rules,
      first-class collections, full words, the "one dot per line" guidance, the half of
      the setter rule that `partial_pub_fields` cannot see, the convention against
-     `Box<dyn Error>` on a public boundary, and preferring generics over dynamic dispatch
-     (`dyn`). The section says plainly that generated code can drift from the review-only
-     list without turning the gate red.
+     `Box<dyn Error>` on a public boundary, preferring generics over dynamic dispatch
+     (`dyn`), and no tuples on public interfaces. The section says plainly that generated
+     code can drift from the review-only list without turning the gate red.
    - **Object Calisthenics section**: where a rule is now gated, the rule's own
      paragraph states the number, so a reader learns the limit where they learn the rule.
 3. **Constraints**: no code blocks of any language except the fenced `text` block for the
@@ -1673,6 +1675,14 @@ the counterpart to, and before the `justfile` that invokes it.*
     modules to guide agents without requiring full-codebase searches. When a phase adds
     a new crate or significantly reorganizes module layout, updating this section in
     `AGENTS.md` is a required deliverable of that phase.
+
+21. **No tuples on public interfaces.** Bare tuple types `(A, B)` must not appear on
+    public interfaces (port traits, public functions, public structs, or exported type
+    aliases). Tuples hide domain semantics, lack named fields, and make signature
+    evolution breaking. Define a named domain struct or newtype instead. Tuples are
+    reserved strictly for internal function bodies, private helper methods, and fixed
+    standard library trait implementations (e.g. `Iterator::size_hint`). Reviewed in
+    code review, not lint-gated.
 
 ---
 
@@ -1843,10 +1853,10 @@ the counterpart to, and before the `justfile` that invokes it.*
   under `rumdl.toml` like every other hand-written document. It does not restate ADR
   content; it references the ADRs it depends on by path.
 - `AGENTS.md`'s Enforcement section lists the mechanically enforced rules and the
-  review-only rules separately — including preferring generics over `dyn` and the ban on
-  `Box<dyn Error>` on public boundaries. Every threshold it states matches `clippy.toml`
-  and `xtask`. A document that names a number the gate does not enforce is the prose form
-  of an inert config.
+  review-only rules separately — including preferring generics over `dyn`, no tuples on
+  public interfaces, and the ban on `Box<dyn Error>` on public boundaries. Every threshold
+  it states matches `clippy.toml` and `xtask`. A document that names a number the gate
+  does not enforce is the prose form of an inert config.
 - `AGENTS.md` contains the `Workspace layout and module structure` section with a concise
   visual tree of all currently active crates (`styx`, `styx-proto`, `styx-resolution`,
   `styx-filtering`, `xtask`), layer modules and core responsibilities; subsequent phases
@@ -1897,10 +1907,10 @@ the counterpart to, and before the `justfile` that invokes it.*
 - **`AGENTS.md`'s Object Calisthenics and convention sections are only partly mechanically
   enforced.** Nesting depth, function length, module length and mixed field visibility are
   gated (Approach §10). No lint checks "wrap this primitive", first-class collections,
-  full words, or preferring generics over `dyn` the way clippy checks `.unwrap()`.
-  Compliance with those is a review discipline. A later phase's generated code can drift
-  from them without turning the gate red, and catching that drift depends on review, not on
-  `just gate`.
+  full words, preferring generics over `dyn`, or avoiding tuples on public interfaces the
+  way clippy checks `.unwrap()`. Compliance with those is a review discipline. A later
+  phase's generated code can drift from them without turning the gate red, and catching
+  that drift depends on review, not on `just gate`.
 - **The gated shape rules are proxies, not the rules themselves.** `excessive_nesting`
   counts `mod`, `impl` and `fn` blocks as well as control flow. `too_many_lines`
   measures length, not cohesion. The module-size cap counts lines, not concepts: a
