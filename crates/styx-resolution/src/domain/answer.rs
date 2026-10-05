@@ -237,6 +237,15 @@ impl ForgedAnswer {
     }
 }
 
+/// Wire message and audit outcome parts decomposed from a resolution response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionResponseParts {
+    /// The answered DNS wire message.
+    pub message: Message,
+    /// The final resolution decision outcome.
+    pub outcome: ResolutionOutcome,
+}
+
 /// A completed DNS resolution response paired with its audit outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolutionResponse {
@@ -265,7 +274,31 @@ impl ResolutionResponse {
 
     /// Decomposes the response into its wire message and outcome.
     #[must_use]
-    pub fn into_parts(self) -> (Message, ResolutionOutcome) {
-        (self.message, self.outcome)
+    pub fn into_parts(self) -> ResolutionResponseParts {
+        ResolutionResponseParts {
+            message: self.message,
+            outcome: self.outcome,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolution_response_into_parts_returns_expected_fields() {
+        let msg = Message::new(Header::new_query(42, styx_proto::Opcode::Query, false));
+        let outcome = ResolutionOutcome::Error {
+            rcode: ResponseCode::SERVFAIL,
+        };
+        let response = ResolutionResponse::new(msg.clone(), outcome.clone());
+
+        assert_eq!(*response.message(), msg);
+        assert_eq!(*response.outcome(), outcome);
+
+        let parts = response.into_parts();
+        assert_eq!(parts.message, msg);
+        assert_eq!(parts.outcome, outcome);
     }
 }
