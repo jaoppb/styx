@@ -19,7 +19,8 @@ pub use application::{
     ProbeScheduler, RaceAll, RefusedTerminal, RoundRobin, TerminalHandler, UpstreamPool, Weighted,
 };
 pub use domain::answer::{
-    AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse, ResolvedSource,
+    AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse,
+    ResolutionResponseParts, ResolvedSource,
 };
 pub use domain::cache::{
     Admission, AdmissionOutcome, AdmittedCount, AnswerCache, Bailiwick, CacheCapacity, CacheEntry,
