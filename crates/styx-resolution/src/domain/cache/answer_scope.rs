@@ -25,6 +25,7 @@ struct DnameRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AnswerScope {
     zone: CanonicalName,
+    chain_end: CanonicalName,
     alias_targets: HashSet<CanonicalName>,
     dname_owners: HashSet<CanonicalName>,
 }
@@ -44,6 +45,7 @@ impl AnswerScope {
         let dnames = dname_records(answers);
         let mut scope = Self {
             zone,
+            chain_end: qname.clone(),
             alias_targets: HashSet::new(),
             dname_owners: HashSet::new(),
         };
@@ -55,7 +57,13 @@ impl AnswerScope {
             scope.admit_matching_dnames(&link, target, &dnames);
             link = target.clone();
         }
+        scope.chain_end = link;
         scope
+    }
+
+    /// The name the alias chain ends at: the qname when it has no alias.
+    pub(crate) const fn chain_end(&self) -> &CanonicalName {
+        &self.chain_end
     }
 
     /// Admits each DNAME that explains the CNAME `link -> target`: RFC 6672 §3.1

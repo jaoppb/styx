@@ -5,6 +5,7 @@ pub mod answer_scope;
 pub mod bailiwick;
 pub mod bytes;
 pub mod capacity;
+pub mod chain_denial;
 pub mod dnssec;
 pub mod entry;
 pub mod error;
