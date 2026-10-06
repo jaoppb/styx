@@ -27,3 +27,7 @@ As defined in [`AGENTS.md`](../../AGENTS.md):
 | [0013](0013-failure-classification-isolating-authoritative-answers.md) | Upstream fault isolation from authoritative negative answers | Phase 3 — Upstream pool and Do53 forwarder | 2026-09-27 | Accepted |
 | [0014](0014-passive-ewma-and-circuit-breaker.md) | Passive integer EWMA latency tracking and three-state circuit breaker | Phase 3 — Upstream pool and Do53 forwarder | 2026-09-27 | Accepted |
 | [0015](0015-probe-silence-on-healthy-upstreams.md) | Background probe scheduler with absolute silence on healthy upstreams | Phase 3 — Upstream pool and Do53 forwarder | 2026-09-27 | Accepted |
+| [0016](0016-answer-cache-global-key-and-egress-filtering.md) | Answer cache global key and egress filtering | Phase 4 — Answer cache | 2026-09-27 | Accepted |
+| [0017](0017-admission-time-bailiwick-validation-and-forgery-refusal.md) | Admission-time bailiwick validation and forgery refusal | Phase 4 — Answer cache | 2026-09-27 | Accepted |
+| [0018](0018-sharded-in-memory-concurrency-and-checked-heapbytes-accounting.md) | Sharded in-memory concurrency and checked heapbytes accounting | Phase 4 — Answer cache | 2026-09-27 | Accepted |
+| [0019](0019-rfc2308-negative-caching-with-soa-ttl.md) | RFC 2308 negative caching with SOA TTL | Phase 4 — Answer cache | 2026-09-27 | Accepted |

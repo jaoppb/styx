@@ -29,15 +29,15 @@ divergent telemetry hooks, and fragmented health and failover orchestration.
 both forwarding and recursive resolution backends.**
 
 - **Port definition**: `styx_core::domain::upstream::Upstream` specifies:
-  - `fn id(&self) -> &UpstreamId`: identifies the upstream instance for metrics,
+  - `fn id(&self) -> UpstreamId`: identifies the upstream instance for metrics,
     logging, and health state mapping.
   - `fn kind(&self) -> UpstreamKind`: distinguishes `UpstreamKind::Forwarder`
     from `UpstreamKind::Recursor`.
-  - `async fn resolve(&self, query: &Message, cx: &RequestContext) -> Result<UpstreamResponse, UpstreamError>`:
-    executes resolution and returns the response message along with measured
-    round-trip latency (`Duration`).
-- **Generic pool orchestration**: `UpstreamPool<U: Upstream, ...>` manages
-  selection strategies, concurrency fanout, circuit breaking, and passive health
+  - `fn resolve(&self, query: &Question, deadline: Instant) -> impl Future<Output = Result<UpstreamResponse, UpstreamError>> + Send`:
+    resolves the question against the upstream before an absolute monotonic deadline,
+    returning an `UpstreamResponse` along with measured latency and transport metadata.
+- **Generic pool orchestration**: `UpstreamPool<S: SelectionStrategy, U: Upstream, C: Clock>`
+  manages selection strategies, concurrency fanout, circuit breaking, and passive health
   tracking uniformly across any implementation of `Upstream`.
 - **Implementation decoupling**: `Do53Forwarder` implements `Upstream` using
   standard UDP/TCP sockets in Phase 3; Phase 5 implements `Upstream` for the

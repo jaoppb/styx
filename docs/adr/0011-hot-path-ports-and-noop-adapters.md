@@ -43,7 +43,11 @@ adapters, wired via generic static dispatch.**
   - `NoLocalRecords`: unconditionally returns no match.
   - `DiscardObserver`: drops query telemetry events without overhead.
 - **Static dispatch**: The resolution pipeline is generic over its ports:
-  `Pipeline<C: Clock, F: FilterPolicy, L: LocalRecords, O: QueryObserver, U: Upstream, T: TerminalHandler>`.
+  `Pipeline<L: LocalRecords, F: FilterPolicy, O: QueryObserver, C: Clock, T: TerminalHandler = RefusedTerminal>`.
+  Upstream resolution is decoupled from `Pipeline` itself; queries reaching the end
+  of the pipeline delegate to `T: TerminalHandler`. In production, the composition root
+  wires `CacheStage` (wrapping the answer cache and upstream pool) as `T`, while standalone
+  resolution defaults to `RefusedTerminal`.
 - **Composition root**: `crates/styx/src/main.rs` instantiates the default no-op
   adapters and injects them by value into `Pipeline` at boot time. Later phases
   substitute concrete implementations without modifying the resolution crate.
