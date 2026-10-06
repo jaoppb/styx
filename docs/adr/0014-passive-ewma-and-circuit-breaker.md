@@ -33,22 +33,24 @@ integer EWMA, coupled with a three-state saturating circuit breaker.**
     Weighted Moving Average with decay $\alpha = \frac{1}{8}$ (RFC 6298 TCP
     standard).
   - Calculations use strictly checked integer arithmetic and bitwise shifts:
-    `new_srtt = old_srtt - (old_srtt >> 3) + (sample_rtt >> 3)`.
-  - Floating-point arithmetic is forbidden; calculations operate on whole
-    microseconds.
+    `new_srtt = (7 * old_srtt + sample_rtt) >> 3`.
+  - Floating-point arithmetic is forbidden; calculations operate on nanoseconds
+    via `Duration::from_nanos`.
   - Cold-start handling: the very first successful query sample initializes
     the SRTT baseline directly without requiring smoothing warm-up.
 - **Three-state saturating circuit breaker (`CircuitState`)**:
+  - Governed by `CircuitConfig { failure_threshold, open_cooldown, half_open_successes }`.
   - `Closed`: Upstream is healthy and accepts regular traffic. Every
     `UpstreamFault` increments a saturating consecutive failure counter.
   - `Open`: Tripped when consecutive failures reach `failure_threshold`
     (default 3). The pool immediately bypasses this upstream for a configured
-    cool-down duration (`cool_off_duration`, default 30s), eliminating timeout
+    cool-down duration (`open_cooldown`, default 30s), eliminating timeout
     stalls for client queries.
   - `HalfOpen`: Entered after the cool-down expires. Permits a single probe query
-    or trial request to evaluate upstream recovery. Success transitions the
-    breaker to `Closed` (resetting the failure count); failure immediately trips
-    the breaker back to `Open` for another cool-down period.
+    or trial request at a time (`in_flight: true`). Consecutive successful trials
+    must reach `half_open_successes` (default 2) to transition the breaker back
+    to `Closed` (resetting the failure count); any trial failure immediately
+    re-arms `Open { since: now }` for another cool-down period.
 
 ## Consequences
 

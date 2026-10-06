@@ -49,8 +49,10 @@ restricting background probing to recovery and standby states.**
   dedicated supervised background task (`ProbeScheduler`). In-flight probes are
   deduplicated per upstream, ensuring at most one probe is outstanding at any
   moment.
-- **Canary query shape**: Probes send lightweight root domain (`.`) `NS` queries
-  or configured canary domains.
+- **Canary query shape**: Configured via `CanaryConfig`. Default canaries depend
+  on upstream kind: forwarders use `probe.canary.invalid.` with type `A` (2-second
+  timeout), whereas recursors use `root-canary.iana.org.` with type `NS` (5-second
+  timeout). Individual pool members may override these with custom canary domains.
 
 ## Consequences
 

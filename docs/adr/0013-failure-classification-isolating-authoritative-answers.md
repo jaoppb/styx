@@ -33,7 +33,7 @@ a trivial denial-of-service vector against the resolver.
 **Explicitly classify upstream outcomes using `FailureClass`, distinguishing
 `UpstreamFault` from `AnswerFault`.**
 
-- **Classification types**: `styx_resolution::domain::upstream::FailureClass`
+- **Classification types**: `styx_core::domain::upstream::FailureClass`
   partitions errors into:
   - `FailureClass::UpstreamFault`: Network I/O errors, timeouts, connection
     refusals, upstream `REFUSED` responses (declining service), malformed wire
