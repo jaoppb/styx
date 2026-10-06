@@ -51,6 +51,12 @@ this document revises.
   whole house. The lint helps; the real mitigation — a `catch_unwind` boundary around the
   web layer and a supervised task model — does not arrive until Phase 12, so this rule
   carries the whole weight of panic safety until then.
+- **Work shared between callers belongs to a task, not to the first caller.** When several
+  callers wait on one piece of work — an outbound exchange, a priming query — the first
+  caller hands it to a detached task that records its own results and removes its own
+  bookkeeping, and every caller waits under its own deadline. A caller that is cancelled
+  or times out then strands no one, leaks no entry and cannot make a shared result count
+  once per waiter. See `styx-recursion`'s `application::single_flight`.
 - **No indexing, no unchecked arithmetic.** `indexing_slicing` and `arithmetic_side_effects`
   are denied workspace-wide. Route every raw offset computation through one audited,
   bounds-checked primitive per crate — `styx-proto`'s `application::cursor::Cursor` is the
@@ -112,8 +118,8 @@ styx/
 │   ├── styx-recursion/         # Iterative recursor behind the Upstream port
 │   │   ├── src/
 │   │   │   ├── domain/         # Descent, minimisation, classification, topology, ports
-│   │   │   ├── application/    # Recursor, descent driver, selection, single-flight,
-│   │   │   │                   # priming, diagnostics assembly, [recursion] config
+│   │   │   ├── application/    # Recursor, descent driver, exchange task, selection,
+│   │   │   │                   # single-flight, priming, diagnostics assembly, [recursion] config
 │   │   │   └── infrastructure/ # In-memory infra cache, Do53 transport, root hints, sinks
 │   │   └── differential/       # unbound config and corpus for `just differential`
 │   └── styx-filtering/         # Filtering & blocklist policy engine (skeleton)
