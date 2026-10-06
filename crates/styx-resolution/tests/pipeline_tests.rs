@@ -9,12 +9,12 @@ use std::time::Duration;
 
 use harness::{DnsClient, TestServer};
 use styx_proto::{
-    Header, Message, Name, Opcode, Question, RData, RecordClass, RecordType, ResourceRecord,
-    ResponseCode, Ttl,
+    Header, Message, MessageKind, Name, Opcode, Question, RData, RecordClass, RecordType,
+    ResourceRecord, ResponseCode, Ttl,
 };
 use styx_resolution::{
-    AnswerSource, ClientId, FilterPolicy, FilterVerdict, LocalRecords, QueryDetail, QueryObserver,
-    ResolutionOutcome,
+    AnswerSource, ClientId, FilterPolicy, FilterVerdict, LocalRecords, Pipeline, PipelineError,
+    QueryDetail, QueryObserver, RequestContext, ResolutionOutcome,
 };
 
 fn make_query(name: &str, rtype: RecordType) -> Message {
@@ -292,4 +292,30 @@ async fn test_observer_records_every_query_path() {
     );
 
     server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn test_pipeline_rejects_inbound_response() {
+    let pipeline = Pipeline::new(
+        Arc::new(styx_resolution::NoLocalRecords::new()),
+        Arc::new(styx_resolution::AllowAllFilter::new()),
+        Arc::new(CountingObserver::new()),
+        Arc::new(styx_core::infrastructure::SystemClock::new()),
+    );
+
+    let mut response_msg = make_query("example.com.", RecordType::A);
+    response_msg.header.kind = MessageKind::Response;
+
+    let peer = "127.0.0.1:12345".parse().expect("parse addr");
+    let ctx = RequestContext::new(
+        response_msg,
+        ClientId::from_socket_addr(peer),
+        styx_resolution::Transport::Udp,
+        styx_resolution::MaxResponseSize::classic(),
+        styx_resolution::MaxResponseSize::classic(),
+        std::time::Instant::now(),
+    );
+
+    let result = pipeline.handle_within(&ctx, Duration::from_secs(1)).await;
+    assert_eq!(result, Err(PipelineError::InboundResponse));
 }

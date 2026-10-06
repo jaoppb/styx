@@ -25,6 +25,10 @@ pub enum PipelineError {
     #[error("multiple questions in single query")]
     MultipleQuestions,
 
+    /// The incoming message is a response (QR = 1) rather than a query.
+    #[error("inbound message has response QR bit set")]
+    InboundResponse,
+
     /// Internal resolver error.
     #[error("internal server error: {0}")]
     Internal(String),
@@ -46,7 +50,9 @@ impl PipelineError {
     #[must_use]
     pub fn response_code(&self) -> ResponseCode {
         match self {
-            Self::MalformedQuery | Self::MultipleQuestions => ResponseCode::FORMERR,
+            Self::MalformedQuery | Self::MultipleQuestions | Self::InboundResponse => {
+                ResponseCode::FORMERR
+            }
             Self::UnsupportedOpcode(_) | Self::UnsupportedClass(_) => ResponseCode::NOTIMP,
             Self::Internal(_) | Self::Pool(_) => ResponseCode::SERVFAIL,
             Self::NotResolvable => ResponseCode::REFUSED,

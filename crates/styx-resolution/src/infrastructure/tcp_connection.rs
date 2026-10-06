@@ -345,6 +345,11 @@ where
             }
         };
 
+        if query.header.kind == MessageKind::Response {
+            tracing::debug!(peer = %self.peer, "silently dropping inbound TCP response (QR=1)");
+            return None;
+        }
+
         let client = ClientId::from_socket_addr(self.peer);
         let max_size = MaxResponseSize::tcp_ceiling();
         let ctx = RequestContext::new(
@@ -361,12 +366,17 @@ where
             .await
         {
             Ok(msg) => msg,
+            Err(crate::domain::error::PipelineError::InboundResponse) => return None,
             Err(err) => error_response(&ctx, err.response_code()),
         };
         self.encode(response, &ctx)
     }
 
     fn formerr(&self, bytes: &[u8]) -> Option<Vec<u8>> {
+        if bytes.get(2).is_some_and(|&b| (b & 0x80) != 0) {
+            tracing::debug!(peer = %self.peer, "silently dropping malformed TCP response (QR=1)");
+            return None;
+        }
         let (Some(&b0), Some(&b1)) = (bytes.first(), bytes.get(1)) else {
             return None;
         };
