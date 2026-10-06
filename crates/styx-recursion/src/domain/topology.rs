@@ -100,12 +100,19 @@ impl NsSet {
         }
     }
 
-    /// The next nameserver name with no address whose lookup has not been attempted.
+    /// The next nameserver name with no usable address whose lookup has not been
+    /// attempted. An address is usable unless it is IPv6 and `use_ipv6` is off, so a
+    /// nameserver with only AAAA glue still gets an A lookup on an IPv4-only host.
     #[must_use]
-    pub fn next_unresolved(&self) -> Option<Name> {
+    pub fn next_unresolved(&self, use_ipv6: bool) -> Option<Name> {
         self.members
             .iter()
-            .filter(|member| member.addresses.is_empty())
+            .filter(|member| {
+                member
+                    .addresses
+                    .iter()
+                    .all(|address| address.is_ipv6() && !use_ipv6)
+            })
             .map(|member| member.name.clone())
             .find(|name| {
                 !self

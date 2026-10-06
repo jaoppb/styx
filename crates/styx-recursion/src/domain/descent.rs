@@ -98,6 +98,7 @@ pub struct Descent {
     events: Vec<DescentEvent>,
     outstanding: Option<Outstanding>,
     last_error: Option<RecursionError>,
+    use_ipv6: bool,
 }
 
 impl Descent {
@@ -116,7 +117,16 @@ impl Descent {
             events: Vec::new(),
             outstanding: None,
             last_error: None,
+            use_ipv6: true,
         }
+    }
+
+    /// Sets whether IPv6 nameserver addresses count as usable when deciding that a
+    /// nameserver still needs an address lookup.
+    #[must_use]
+    pub const fn with_use_ipv6(mut self, use_ipv6: bool) -> Self {
+        self.use_ipv6 = use_ipv6;
+        self
     }
 
     /// The cut being asked.
@@ -154,7 +164,7 @@ impl Descent {
         if !self.cut.nameservers.untried().is_empty() {
             return DescentAction::Query(QueryTarget::AnyServer);
         }
-        if let Some(name) = self.cut.nameservers.next_unresolved() {
+        if let Some(name) = self.cut.nameservers.next_unresolved(self.use_ipv6) {
             self.cut.nameservers.mark_lookup_attempted(&name);
             return DescentAction::ResolveGlue(name);
         }

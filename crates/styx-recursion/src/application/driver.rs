@@ -88,7 +88,8 @@ where
     ) -> Result<Message, RecursionError> {
         let now = self.ports.clock.now_monotonic();
         let cut = self.start_cut(&question.qname, question.qtype, now);
-        let mut descent = Descent::new(question, cut, self.settings.limits.max_cname_chain());
+        let mut descent = Descent::new(question, cut, self.settings.limits.max_cname_chain())
+            .with_use_ipv6(self.settings.use_ipv6);
         let mut action = descent.next_action();
         loop {
             self.apply_events(&mut descent, context);

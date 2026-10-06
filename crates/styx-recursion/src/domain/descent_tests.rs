@@ -320,3 +320,33 @@ fn a_positive_answer_carries_no_authority_section() {
     };
     assert!(response.authorities.is_empty());
 }
+
+fn aaaa_only_cut() -> ZoneCut {
+    let member = Nameserver {
+        name: name("ns1.example.net."),
+        addresses: vec![IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)],
+        glue_origin: GlueOrigin::InBailiwickGlue,
+    };
+    ZoneCut::new(name("example.net."), NsSet::new(vec![member]))
+}
+
+#[test]
+fn an_aaaa_only_nameserver_is_looked_up_when_ipv6_is_off() {
+    let question = Question::new(name("www.example.net."), RecordType::A, RecordClass::In);
+    let mut descent = Descent::new(question, aaaa_only_cut(), 8).with_use_ipv6(false);
+    descent.skip_server(NameserverAddr::new(IpAddr::V6(
+        std::net::Ipv6Addr::LOCALHOST,
+    )));
+
+    assert_eq!(
+        descent.next_action(),
+        DescentAction::ResolveGlue(name("ns1.example.net."))
+    );
+}
+
+#[test]
+fn an_aaaa_only_nameserver_needs_no_lookup_when_ipv6_is_on() {
+    let set = aaaa_only_cut().nameservers;
+    assert_eq!(set.next_unresolved(true), None);
+    assert_eq!(set.next_unresolved(false), Some(name("ns1.example.net.")));
+}
