@@ -1122,6 +1122,9 @@ dependencies = [
  "anyhow",
  "rustix",
  "styx-core",
+ "styx-net",
+ "styx-proto",
+ "styx-recursion",
  "styx-resolution",
  "tokio",
  "tokio-util",
@@ -1142,6 +1145,17 @@ name = "styx-filtering"
 version = "0.1.0"
 
 [[package]]
+name = "styx-net"
+version = "0.1.0"
+dependencies = [
+ "rand",
+ "styx-core",
+ "styx-proto",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "styx-proto"
 version = "0.1.0"
 dependencies = [
@@ -1153,22 +1167,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "styx-recursion"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "styx-core",
+ "styx-net",
+ "styx-proto",
+ "styx-testkit",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "styx-resolution"
 version = "0.1.0"
 dependencies = [
  "criterion",
  "hickory-proto",
- "rand",
  "serde",
  "socket2",
  "stats_alloc",
  "styx-core",
+ "styx-net",
  "styx-proto",
+ "styx-testkit",
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "styx-testkit"
+version = "0.1.0"
+dependencies = [
+ "hickory-proto",
+ "styx-core",
+ "styx-proto",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -1666,6 +1708,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
+ "styx-core",
+ "styx-net",
+ "styx-proto",
+ "styx-recursion",
+ "tokio",
 ]
 
 [[package]]

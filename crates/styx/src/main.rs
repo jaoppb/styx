@@ -10,27 +10,36 @@
 //! pipeline, and graceful shutdown. The Leptos SSR handler is wired in
 //! Phase 11.
 
+mod upstream;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
-use styx_core::{SystemClock, UpstreamId};
+use styx_core::{SystemClock, UpstreamId, UpstreamKind};
+use styx_net::Do53Client;
+use styx_recursion::application::config::RecursionConfig;
+use styx_recursion::application::recursor::{Recursor, RecursorPorts, RecursorSettings};
+use styx_recursion::domain::root_hints::RootHints;
+use styx_recursion::infrastructure::do53_transport::{Do53Transport, DNS_PORT};
+use styx_recursion::infrastructure::infra_cache::MemoryInfraCache;
+use styx_recursion::infrastructure::sinks::{DiagnosticsStore, DiscardChainMaterial};
 use styx_resolution::{
     AllowAllFilter, CacheStage, CanaryConfig, ConfiguredStrategy, DiscardObserver, Do53Forwarder,
     NoLocalRecords, Pipeline, PoolConfig, PoolMember, ProbePolicy, ProbeScheduler, Server,
-    ServerConfig, ShardedAnswerCache, UpstreamPool,
+    ServerConfig, ShardedAnswerCache, UpstreamConfig, UpstreamPool,
 };
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
+use upstream::{PoolUpstream, ProductionRecursor};
 
 /// Log filter used when `RUST_LOG` is unset or unusable.
 const DEFAULT_LOG_FILTER: LevelFilter = LevelFilter::INFO;
 
-type ConcretePool = UpstreamPool<ConfiguredStrategy, Do53Forwarder<SystemClock>, SystemClock>;
+type ConcretePool = UpstreamPool<ConfiguredStrategy, PoolUpstream, SystemClock>;
 type ConcreteCache = ShardedAnswerCache<SystemClock>;
-type ConcreteStage =
-    CacheStage<ConcreteCache, ConfiguredStrategy, Do53Forwarder<SystemClock>, SystemClock>;
+type ConcreteStage = CacheStage<ConcreteCache, ConfiguredStrategy, PoolUpstream, SystemClock>;
 type ConcretePipeline =
     Pipeline<NoLocalRecords, AllowAllFilter, DiscardObserver, SystemClock, ConcreteStage>;
 
@@ -46,14 +55,18 @@ async fn main() -> anyhow::Result<()> {
         "styx starting"
     );
 
-    let config = load_config().await?;
+    let (config, recursion) = load_config().await?;
     let pool_config = config
         .upstream
         .as_ref()
         .context("missing [upstream] configuration")?;
 
     let clock = Arc::new(SystemClock::new());
-    let pool = build_pool(pool_config, clock.clone());
+    let recursion = match recursion {
+        Some(recursion) => Some(RecursionWiring::load(recursion).await?),
+        None => None,
+    };
+    let pool = build_pool(pool_config, recursion.as_ref(), &clock)?;
     let pipeline = build_pipeline(pool.clone(), clock.clone(), config.query_timeout);
 
     let probe_cancel = CancellationToken::new();
@@ -84,32 +97,105 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_pool(pool_config: &PoolConfig, clock: Arc<SystemClock>) -> Arc<ConcretePool> {
-    let mut members = Vec::with_capacity(pool_config.members.len());
-    for member_cfg in &pool_config.members {
-        let id = UpstreamId::new(member_cfg.name.as_str());
-        let forwarder = Do53Forwarder::new(
+/// The `[recursion]` settings with their root hints loaded, and the diagnostics
+/// store the admin/web layer will read (Phase 11).
+struct RecursionWiring {
+    config: RecursionConfig,
+    hints: RootHints,
+    diagnostics: Arc<DiagnosticsStore>,
+}
+
+impl RecursionWiring {
+    /// Loads the root hints the section names. A missing or unparseable file is a
+    /// startup error, like any other invalid configuration: failing loudly beats a
+    /// pool that silently lost its recursor.
+    async fn load(config: RecursionConfig) -> anyhow::Result<Self> {
+        let hints = RootHints::from_config_path(&config.root_hints)
+            .await
+            .context("failed to load root hints for the recursor")?;
+        Ok(Self {
+            config,
+            hints,
+            diagnostics: Arc::new(DiagnosticsStore::new()),
+        })
+    }
+
+    fn recursor(&self, id: UpstreamId, clock: &Arc<SystemClock>) -> ProductionRecursor {
+        let client = Do53Client::new(
+            self.config.udp_timeout,
+            self.config.tcp_timeout,
+            Arc::clone(clock),
+        );
+        Recursor::new(
+            id,
+            RecursorSettings {
+                limits: self.config.limits,
+                use_ipv6: self.config.use_ipv6,
+            },
+            &self.hints,
+            RecursorPorts {
+                clock: Arc::clone(clock),
+                transport: Arc::new(Do53Transport::new(client, DNS_PORT)),
+                diagnostics: Arc::clone(&self.diagnostics),
+                chain_material: Arc::new(DiscardChainMaterial),
+                infra: Arc::new(MemoryInfraCache::new(self.config.capacity)),
+            },
+        )
+    }
+}
+
+fn build_upstream(
+    member_cfg: &UpstreamConfig,
+    id: &UpstreamId,
+    recursion: Option<&RecursionWiring>,
+    clock: &Arc<SystemClock>,
+) -> anyhow::Result<PoolUpstream> {
+    match member_cfg.kind {
+        UpstreamKind::Forwarder => Ok(PoolUpstream::Forwarder(Do53Forwarder::new(
             id.clone(),
             member_cfg.addr,
             member_cfg.edns_buffer,
             member_cfg.timeouts.udp,
             member_cfg.timeouts.tcp,
-            clock.clone(),
-        );
+            Arc::clone(clock),
+        ))),
+        UpstreamKind::Recursor => {
+            let Some(recursion) = recursion else {
+                bail!(
+                    "pool member '{}' is a recursor, but the file has no [recursion] section",
+                    member_cfg.name
+                );
+            };
+            Ok(PoolUpstream::Recursor(Arc::new(
+                recursion.recursor(id.clone(), clock),
+            )))
+        }
+    }
+}
+
+fn build_pool(
+    pool_config: &PoolConfig,
+    recursion: Option<&RecursionWiring>,
+    clock: &Arc<SystemClock>,
+) -> anyhow::Result<Arc<ConcretePool>> {
+    let mut members = Vec::with_capacity(pool_config.members.len());
+    for member_cfg in &pool_config.members {
+        let id = UpstreamId::new(member_cfg.name.as_str());
+        let upstream = build_upstream(member_cfg, &id, recursion, clock)?;
         let canary = member_cfg
             .canary
             .clone()
             .unwrap_or_else(|| CanaryConfig::for_kind(member_cfg.kind));
-        members.push(PoolMember::new(id, forwarder, member_cfg.weight, canary));
+        members.push(PoolMember::new(id, upstream, member_cfg.weight, canary));
     }
     let strategy = ConfiguredStrategy::from_name(pool_config.strategy);
-    Arc::new(UpstreamPool::new(
+    Ok(Arc::new(UpstreamPool::new(
         members,
         strategy,
-        clock,
+        Arc::clone(clock),
         pool_config.circuit.clone(),
         ProbePolicy::new(pool_config.probe.clone()),
-    ))
+    )))
 }
 
 fn build_pipeline(
@@ -130,30 +216,29 @@ fn build_pipeline(
     )
 }
 
-async fn load_config() -> anyhow::Result<ServerConfig> {
-    if let Some(path) = std::env::args().nth(1) {
-        let config = ServerConfig::from_toml(&path)
-            .await
-            .with_context(|| format!("failed to read config from {path}"))?;
-        if config.upstream.is_none() {
-            bail!("configuration file '{path}' is missing required [upstream] section");
+/// Reads the TOML file once and parses both sections it owns: the server and pool
+/// (`styx-resolution`) and the optional `[recursion]` section (`styx-recursion`).
+async fn load_config() -> anyhow::Result<(ServerConfig, Option<RecursionConfig>)> {
+    let path = match std::env::args().nth(1) {
+        Some(path) => path,
+        None if tokio::fs::try_exists("styx.toml").await.unwrap_or_default() => {
+            "styx.toml".to_string()
         }
-        return Ok(config);
+        None => bail!(
+            "no configuration file found; please create 'styx.toml' or specify a configuration file path with [upstream] section"
+        ),
+    };
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .with_context(|| format!("failed to read config from {path}"))?;
+    let config = ServerConfig::from_toml_str(&content)
+        .with_context(|| format!("failed to parse config from {path}"))?;
+    if config.upstream.is_none() {
+        bail!("configuration file '{path}' is missing required [upstream] section");
     }
-
-    let has_default_toml = tokio::fs::try_exists("styx.toml").await.unwrap_or_default();
-
-    if has_default_toml {
-        let config = ServerConfig::from_toml("styx.toml")
-            .await
-            .context("failed to read default styx.toml config")?;
-        if config.upstream.is_none() {
-            bail!("default 'styx.toml' is missing required [upstream] section");
-        }
-        return Ok(config);
-    }
-
-    bail!("no configuration file found; please create 'styx.toml' or specify a configuration file path with [upstream] section")
+    let recursion = RecursionConfig::from_toml_str(&content)
+        .with_context(|| format!("failed to parse [recursion] from {path}"))?;
+    Ok((config, recursion))
 }
 
 /// Raises the `RLIMIT_NOFILE` soft limit to the hard limit before any socket is bound.

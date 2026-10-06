@@ -5,12 +5,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "styx repository gates that read the resolved dependency graph."
+description = "styx repository gates, and the per-phase differential run."
 publish = false
 
 [dependencies]
 anyhow.workspace = true
 cargo_metadata.workspace = true
+tokio.workspace = true
+styx-core = { path = "../crates/styx-core" }
+styx-net = { path = "../crates/styx-net" }
+styx-proto = { path = "../crates/styx-proto" }
+styx-recursion = { path = "../crates/styx-recursion" }
 
 [lints]
 workspace = true

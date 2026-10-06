@@ -300,10 +300,11 @@ impl Admission {
         outcome: &mut AdmissionOutcome,
     ) -> Vec<CachedRRset> {
         let raw_rrsets = self.group_records(&message.answers);
+        let scope = bailiwick.answer_scope(&message.answers);
         let mut admitted = Vec::new();
 
         for raw in raw_rrsets {
-            if !bailiwick.permits(&raw.owner) {
+            if !scope.permits(&raw.owner) {
                 outcome.rejected.push(RejectedRecord {
                     owner: raw.owner,
                     rtype: raw.rtype,

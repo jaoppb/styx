@@ -1,0 +1,25 @@
+[package]
+name = "styx-recursion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "styx recursion feature crate: an iterative resolver behind the Upstream port."
+
+[dependencies]
+styx-proto = { path = "../styx-proto" }
+styx-core = { path = "../styx-core" }
+styx-net = { path = "../styx-net" }
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+serde.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+styx-core = { path = "../styx-core", features = ["test-support"] }
+styx-testkit = { path = "../styx-testkit" }
+
+[lints]
+workspace = true

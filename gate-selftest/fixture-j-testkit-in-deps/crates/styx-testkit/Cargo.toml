@@ -1,0 +1,9 @@
+[package]
+name = "styx-testkit"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Permitted: the test-support crate links the oracle on a normal edge.
+[dependencies]
+hickory-proto = { path = "../../vendor-stub/hickory-proto" }

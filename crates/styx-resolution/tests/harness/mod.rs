@@ -1,17 +1,15 @@
 //! Test harness module exports.
+//!
+//! The fake servers and the DNS client come from `styx-testkit`, shared with every
+//! crate that tests DNS over real sockets. Only [`TestServer`] lives here, because
+//! it boots this crate's own `Server`.
 
 #![allow(unused_imports, dead_code)]
 
-pub mod client;
-pub mod clock;
-pub mod commandable;
-pub mod error;
-pub mod fake;
 pub mod server;
 
-pub use client::DnsClient;
-pub use clock::TestClock;
-pub use commandable::{CommandableUpstream, UpstreamBehavior};
-pub use error::HarnessError;
-pub use fake::{FakeNameServer, FakeRole, ZoneScript};
 pub use server::{ServerSettings, TestServer};
+pub use styx_testkit::{
+    CommandableUpstream, DnsClient, FakeNameServer, FakeRole, HarnessError, TestClock,
+    UpstreamBehavior, ZoneScript,
+};

@@ -13,10 +13,10 @@ use styx_proto::{
     ResponseCode, Ttl,
 };
 use styx_resolution::{
-    Admission, AllowAllFilter, AnswerCache, AnswerSource, Bailiwick, CacheCapacity, CacheKey,
-    CacheStage, CircuitConfig, DiscardObserver, Do53Forwarder, EdnsBufferSize, HeapBytes, Lookup,
-    NoLocalRecords, OrderedFailover, PoolMember, ProbeConfig, ProbePolicy, ShardedAnswerCache,
-    TtlPolicy, UpstreamPool,
+    Admission, AllowAllFilter, AnswerCache, AnswerSource, Bailiwick, CacheCapacity, CacheEntry,
+    CacheKey, CacheStage, CircuitConfig, DiscardObserver, Do53Forwarder, EdnsBufferSize, HeapBytes,
+    Lookup, NoLocalRecords, OrderedFailover, PoolMember, PositiveEntry, ProbeConfig, ProbePolicy,
+    RejectReason, ShardedAnswerCache, TtlPolicy, UpstreamPool,
 };
 
 fn make_query(name: &str, rtype: RecordType) -> Message {
@@ -295,4 +295,67 @@ async fn test_concurrent_admissions_safety() {
     assert_eq!(purged.count(), stats.entries);
     assert_eq!(cache.stats().entries, 0);
     assert_eq!(cache.stats().bytes, HeapBytes::zero());
+}
+
+/// ADR 0017: an answer record reached through an in-bailiwick CNAME chain is
+/// admissible, so a cross-zone chain is cached whole — while an unrelated record
+/// appended to the same answer section is still rejected.
+#[test]
+fn test_cross_zone_cname_chain_is_admitted_whole() {
+    let clock = TestClock::new();
+    let admission = Admission::new(TtlPolicy::default());
+    let qname = Name::from_ascii("www.example.com.").expect("qname");
+    let target = Name::from_ascii("x.cdn.net.").expect("target");
+    let question = Question::new(qname.clone(), RecordType::A, RecordClass::In);
+
+    let mut msg = Message::response_to(0x2000, question.clone());
+    msg.answers.push(ResourceRecord::new(
+        qname,
+        RecordType::CNAME,
+        RecordClass::In,
+        Ttl::from_secs(300),
+        RData::Cname(target.clone()),
+    ));
+    msg.answers.push(ResourceRecord::new(
+        target,
+        RecordType::A,
+        RecordClass::In,
+        Ttl::from_secs(300),
+        RData::A(Ipv4Addr::new(192, 0, 2, 7)),
+    ));
+    msg.answers.push(ResourceRecord::new(
+        Name::from_ascii("evil.example.").expect("evil"),
+        RecordType::A,
+        RecordClass::In,
+        Ttl::from_secs(300),
+        RData::A(Ipv4Addr::new(6, 6, 6, 6)),
+    ));
+
+    let bailiwick = Bailiwick::of_response(&question, &msg);
+    let outcome = admission.evaluate(
+        &bailiwick,
+        &msg,
+        AnswerSource::Recursion,
+        clock.now_monotonic(),
+    );
+
+    assert_eq!(outcome.admitted.len(), 1, "one composite entry");
+    let Some(CacheEntry::Positive(PositiveEntry::Message(cached))) = outcome.admitted.first()
+    else {
+        panic!(
+            "expected a composite message entry, got {:?}",
+            outcome.admitted
+        );
+    };
+    let owners: Vec<String> = cached
+        .answer()
+        .iter()
+        .map(|rrset| rrset.owner().to_string())
+        .collect();
+    assert_eq!(owners, ["www.example.com.", "x.cdn.net."]);
+
+    assert_eq!(outcome.rejected.len(), 1);
+    let rejected = outcome.rejected.first().expect("one rejection");
+    assert_eq!(rejected.reason, RejectReason::OutOfBailiwick);
+    assert_eq!(rejected.owner.to_string(), "evil.example.");
 }

@@ -17,7 +17,7 @@ use styx_proto::{
     Header, Message, Name, Opcode, Question, RData, RecordClass, RecordType, ResourceRecord,
     ResponseCode, Ttl,
 };
-use styx_resolution::infrastructure::tcp_frame::write_framed;
+use styx_resolution::infrastructure::write_framed;
 use styx_resolution::{
     AllowAllFilter, ClientId, DiscardObserver, Do53Forwarder, EdnsBufferSize, FilterPolicy,
     FilterVerdict, LocalRecords, MaxResponseSize, NoLocalRecords, Pipeline, RequestContext,

@@ -24,7 +24,7 @@ use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 use crate::infrastructure::admission::{ListenerShared, QueryPermit};
 use crate::infrastructure::response::ResponseWriter;
-use crate::infrastructure::tcp_frame::write_framed;
+use styx_net::write_framed;
 
 /// The outstanding queries of one connection, counted by semaphore slots.
 ///

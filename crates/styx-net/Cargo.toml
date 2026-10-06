@@ -1,0 +1,21 @@
+[package]
+name = "styx-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "styx shared foundation: the outbound Do53 client exchange."
+
+[dependencies]
+styx-proto = { path = "../styx-proto" }
+styx-core = { path = "../styx-core" }
+thiserror.workspace = true
+tokio.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+styx-core = { path = "../styx-core", features = ["test-support"] }
+
+[lints]
+workspace = true

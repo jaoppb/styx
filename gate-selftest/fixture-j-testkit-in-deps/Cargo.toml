@@ -1,0 +1,10 @@
+# Fixture J — the test-support crate escaping into shipping code.
+#
+# `styx-testkit` legitimately links `hickory-proto` on a normal edge: it IS the
+# oracle's carrier, and the gate does not walk from it. What must be rejected is
+# a shipping crate reaching it through a normal edge, which would carry the
+# oracle into the binary one hop removed. Every crate here is a local stub, so
+# the self-test stays offline.
+[workspace]
+resolver = "2"
+members = ["crates/styx-resolution", "crates/styx-testkit", "vendor-stub/hickory-proto"]

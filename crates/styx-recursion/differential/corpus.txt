@@ -1,0 +1,66 @@
+# The differential corpus: names with stable delegation structure, so that a
+# disagreement is notable rather than routine. One "name TYPE" per line.
+#
+# Every disagreement must be triaged to a named cause before the phase is done.
+# "DNS moved" is a cause only once the movement itself has been confirmed.
+
+# Root and TLD infrastructure: the most stable names on the internet.
+a.root-servers.net. A
+a.root-servers.net. AAAA
+k.root-servers.net. A
+m.root-servers.net. AAAA
+a.gtld-servers.net. A
+com. NS
+org. NS
+net. NS
+arpa. NS
+
+# Long-lived, rarely changed zones.
+example.com. NS
+example.net. NS
+example.org. NS
+example.com. A
+example.org. AAAA
+iana.org. NS
+nlnetlabs.nl. NS
+isc.org. NS
+
+# Negative answers: NXDOMAIN below an existing zone, NODATA for an existing name,
+# and NXDOMAIN under a nonexistent TLD (answered by the root).
+does-not-exist-zz9.example.com. A
+example.com. HINFO
+nonexistent-tld-zz9. A
+
+# Reverse lookup through in-addr.arpa.
+1.0.0.127.in-addr.arpa. PTR
+
+# DS questions, answered by the parent side of each delegation.
+com. DS
+nl. DS
+org. DS
+example.com. DS
+nlnetlabs.nl. DS
+isc.org. DS
+
+# Mail exchangers: stable records in stable zones.
+isc.org. MX
+nlnetlabs.nl. MX
+iana.org. MX
+example.com. MX
+
+# Delegations to out-of-zone nameservers, which must be looked up separately.
+github.com. NS
+wikipedia.org. NS
+kernel.org. NS
+debian.org. NS
+archlinux.org. NS
+rust-lang.org. NS
+ietf.org. NS
+mozilla.org. NS
+
+# TXT, and a signed-but-broken zone (no validator yet, so both must answer).
+example.com. TXT
+dnssec-failed.org. NS
+
+# A name below an empty non-terminal under the reverse tree.
+in-addr.arpa. NS

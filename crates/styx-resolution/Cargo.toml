@@ -10,6 +10,7 @@ description = "styx resolution feature crate."
 [dependencies]
 styx-proto = { path = "../styx-proto" }
 styx-core = { path = "../styx-core" }
+styx-net = { path = "../styx-net" }
 thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
@@ -17,11 +18,11 @@ tokio-util.workspace = true
 socket2.workspace = true
 serde.workspace = true
 toml.workspace = true
-rand.workspace = true
 
 [dev-dependencies]
 styx-core = { path = "../styx-core", features = ["test-support"] }
 hickory-proto.workspace = true
+styx-testkit = { path = "../styx-testkit" }
 criterion.workspace = true
 stats_alloc.workspace = true
 
