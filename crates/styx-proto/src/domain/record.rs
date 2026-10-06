@@ -21,6 +21,8 @@ impl RecordType {
     pub const NS: Self = Self { value: 2 };
     /// Canonical name for an alias (RFC 1035).
     pub const CNAME: Self = Self { value: 5 };
+    /// Delegation name: aliases a whole subtree (RFC 6672).
+    pub const DNAME: Self = Self { value: 39 };
     /// Start of a zone of authority (RFC 1035).
     pub const SOA: Self = Self { value: 6 };
     /// Domain name pointer (RFC 1035).

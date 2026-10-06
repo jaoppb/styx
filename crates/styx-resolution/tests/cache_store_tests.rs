@@ -359,3 +359,54 @@ fn test_cross_zone_cname_chain_is_admitted_whole() {
     assert_eq!(rejected.reason, RejectReason::OutOfBailiwick);
     assert_eq!(rejected.owner.to_string(), "evil.example.");
 }
+
+/// A CNAME inside the zone that is not a link of the chain from the qname must not
+/// let a record for an arbitrary foreign name into the cache.
+#[test]
+fn test_in_zone_cname_off_the_chain_cannot_poison_a_foreign_name() {
+    let clock = TestClock::new();
+    let admission = Admission::new(TtlPolicy::default());
+    let qname = Name::from_ascii("www.example.com.").expect("qname");
+    let question = Question::new(qname.clone(), RecordType::A, RecordClass::In);
+    let record = |owner: &str, rdata: RData| {
+        ResourceRecord::new(
+            Name::from_ascii(owner).expect("owner"),
+            rdata.rtype(),
+            RecordClass::In,
+            Ttl::from_secs(300),
+            rdata,
+        )
+    };
+
+    let mut msg = Message::response_to(0x2001, question.clone());
+    msg.answers.push(record(
+        "www.example.com.",
+        RData::A(Ipv4Addr::new(192, 0, 2, 7)),
+    ));
+    msg.answers.push(record(
+        "x.example.com.",
+        RData::Cname(Name::from_ascii("www.bank.com.").expect("target")),
+    ));
+    msg.answers.push(record(
+        "www.bank.com.",
+        RData::A(Ipv4Addr::new(203, 0, 113, 66)),
+    ));
+    msg.authorities.push(record(
+        "example.com.",
+        RData::Ns(Name::from_ascii("ns.example.com.").expect("ns")),
+    ));
+
+    let bailiwick = Bailiwick::of_response(&question, &msg);
+    let outcome = admission.evaluate(
+        &bailiwick,
+        &msg,
+        AnswerSource::Recursion,
+        clock.now_monotonic(),
+    );
+
+    assert!(outcome
+        .rejected
+        .iter()
+        .any(|rejected| rejected.owner.to_string() == "www.bank.com."
+            && rejected.reason == RejectReason::OutOfBailiwick));
+}

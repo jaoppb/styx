@@ -300,11 +300,15 @@ impl Admission {
         outcome: &mut AdmissionOutcome,
     ) -> Vec<CachedRRset> {
         let raw_rrsets = self.group_records(&message.answers);
-        let scope = bailiwick.answer_scope(&message.answers);
+        let qname = message.questions.first().map_or_else(
+            || bailiwick.zone().clone(),
+            |question| CanonicalName::canonicalize(&question.qname),
+        );
+        let scope = bailiwick.answer_scope(&qname, &message.answers);
         let mut admitted = Vec::new();
 
         for raw in raw_rrsets {
-            if !scope.permits(&raw.owner) {
+            if !scope.permits(&raw.owner, raw.rtype) {
                 outcome.rejected.push(RejectedRecord {
                     owner: raw.owner,
                     rtype: raw.rtype,

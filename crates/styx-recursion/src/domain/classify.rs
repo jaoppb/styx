@@ -8,11 +8,10 @@ use styx_proto::{
 
 use crate::domain::bailiwick::is_in_bailiwick;
 use crate::domain::error::RecursionError;
-use crate::domain::names::{parse_uncompressed_name, substitute_suffix};
 use crate::domain::topology::Delegation;
 
 /// The DNAME record type (RFC 6672), which `styx-proto` carries as unknown RDATA.
-pub const DNAME: RecordType = RecordType::from_u16(39);
+pub const DNAME: RecordType = RecordType::DNAME;
 
 /// Which alias produced a redirection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,10 +228,10 @@ fn dname_link(
     let RData::Unknown(rdata) = &dname.rdata else {
         return ResponseKind::Malformed;
     };
-    let Some(dname_target) = parse_uncompressed_name(rdata.octets()) else {
+    let Some(dname_target) = Name::from_uncompressed_wire(rdata.octets()) else {
         return ResponseKind::Malformed;
     };
-    let Some(target) = substitute_suffix(&sent.qname, &dname.owner, &dname_target) else {
+    let Some(target) = sent.qname.substitute_suffix(&dname.owner, &dname_target) else {
         return ResponseKind::Malformed;
     };
     let synthesized = message
