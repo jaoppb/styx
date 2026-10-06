@@ -80,6 +80,7 @@ fn config() -> ServerConfig {
         query_timeout: Duration::from_secs(2),
         limits: ConcurrencyLimits::default_limits()
             .with_udp_sockets_per_addr(default_socket_count()),
+        supervisor: styx_resolution::SupervisorBackoffPolicy::default(),
     }
 }
 

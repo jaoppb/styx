@@ -26,6 +26,10 @@ use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::MaxResponseSize;
 use crate::infrastructure::admission::{ConnectionBudget, ListenerShared, QueryBudget};
+use crate::infrastructure::supervisor::{
+    spawn_listener_supervisor, SupervisorBackoffPolicy, DEFAULT_HEALTHY_THRESHOLD_SECS,
+    DEFAULT_INITIAL_BACKOFF_MS, DEFAULT_MAX_BACKOFF_SECS,
+};
 use crate::infrastructure::tcp::{TcpListener, DEFAULT_TCP_IDLE_TIMEOUT};
 use crate::infrastructure::udp::UdpListener;
 use crate::infrastructure::udp_socket::default_socket_count;
@@ -35,6 +39,13 @@ const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 2;
 
 fn default_listen_addrs() -> Vec<SocketAddr> {
     vec![SocketAddr::from(([127, 0, 0, 1], 53))]
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawSupervisorConfig {
+    initial_backoff_ms: Option<u64>,
+    max_backoff_secs: Option<u64>,
+    healthy_threshold_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +62,8 @@ struct RawConfig {
     max_in_flight_queries: Option<usize>,
     #[serde(default)]
     max_tcp_connections: Option<usize>,
+    #[serde(default)]
+    supervisor: Option<RawSupervisorConfig>,
 }
 
 const fn default_udp_size() -> u16 {
@@ -78,6 +91,8 @@ pub struct ServerConfig {
     pub query_timeout: Duration,
     /// Caps on concurrent listener work.
     pub limits: ConcurrencyLimits,
+    /// Policy controlling supervisor retry backoff and healthy run reset.
+    pub supervisor: SupervisorBackoffPolicy,
 }
 
 impl ServerConfig {
@@ -99,6 +114,7 @@ impl ServerConfig {
         if raw.listen_addrs.is_empty() {
             return Err(ConfigError::Invalid("listen_addrs cannot be empty".into()));
         }
+        let supervisor = parse_supervisor_policy(raw.supervisor)?;
         Ok(Self {
             listen_addrs: raw.listen_addrs,
             udp_payload_size_default: MaxResponseSize::from_edns_advertised(
@@ -121,6 +137,7 @@ impl ServerConfig {
                 default_socket_count(),
                 TCP_WRITE_TIMEOUT,
             ),
+            supervisor,
         })
     }
 
@@ -159,6 +176,36 @@ fn non_zero_cap(
         Some(value) => NonZeroUsize::new(value)
             .ok_or_else(|| ConfigError::Invalid(format!("{key} must be greater than zero"))),
     }
+}
+
+fn parse_supervisor_policy(
+    raw: Option<RawSupervisorConfig>,
+) -> Result<SupervisorBackoffPolicy, ConfigError> {
+    let raw = raw.unwrap_or_default();
+    let initial_ms = raw.initial_backoff_ms.unwrap_or(DEFAULT_INITIAL_BACKOFF_MS);
+    let max_secs = raw.max_backoff_secs.unwrap_or(DEFAULT_MAX_BACKOFF_SECS);
+    let healthy_secs = raw
+        .healthy_threshold_secs
+        .unwrap_or(DEFAULT_HEALTHY_THRESHOLD_SECS);
+
+    if initial_ms == 0 {
+        return Err(ConfigError::Invalid(
+            "supervisor initial_backoff_ms must be greater than zero".into(),
+        ));
+    }
+    let initial_backoff = Duration::from_millis(initial_ms);
+    let max_backoff = Duration::from_secs(max_secs);
+    if initial_backoff > max_backoff {
+        return Err(ConfigError::Invalid(
+            "supervisor initial_backoff must not exceed max_backoff".into(),
+        ));
+    }
+    let healthy_threshold = Duration::from_secs(healthy_secs);
+    Ok(SupervisorBackoffPolicy::new(
+        initial_backoff,
+        max_backoff,
+        healthy_threshold,
+    ))
 }
 
 /// Supervised DNS server managing UDP and TCP listener tasks.
@@ -229,9 +276,19 @@ where
             local_addrs.push(tcp.bound_addr());
 
             for udp in udp_group {
-                listeners.push(Self::spawn_udp_supervisor(udp, cancel.clone()));
+                listeners.push(spawn_listener_supervisor(
+                    udp,
+                    Arc::clone(&clock),
+                    config.supervisor,
+                    cancel.clone(),
+                ));
             }
-            listeners.push(Self::spawn_tcp_supervisor(tcp, cancel.clone()));
+            listeners.push(spawn_listener_supervisor(
+                tcp,
+                Arc::clone(&clock),
+                config.supervisor,
+                cancel.clone(),
+            ));
         }
 
         Ok(Self {
@@ -307,88 +364,4 @@ impl<L, F, O, C, T> Server<L, F, O, C, T> {
 
         first_error.map_or(Ok(()), Err)
     }
-}
-
-impl<L, F, O, C, T> Server<L, F, O, C, T>
-where
-    L: LocalRecords + Send + Sync + 'static,
-    F: FilterPolicy + Send + Sync + 'static,
-    O: QueryObserver + Send + Sync + 'static,
-    C: Clock + Send + Sync + 'static,
-    T: TerminalHandler + Send + Sync + 'static,
-{
-    fn spawn_udp_supervisor(
-        udp: UdpListener<L, F, O, C, T>,
-        cancel: CancellationToken,
-    ) -> JoinHandle<Result<(), ListenerError>> {
-        tokio::spawn(run_udp_supervisor(udp, cancel))
-    }
-
-    fn spawn_tcp_supervisor(
-        tcp: TcpListener<L, F, O, C, T>,
-        cancel: CancellationToken,
-    ) -> JoinHandle<Result<(), ListenerError>> {
-        tokio::spawn(run_tcp_supervisor(tcp, cancel))
-    }
-}
-
-async fn run_udp_supervisor<L, F, O, C, T>(
-    udp: UdpListener<L, F, O, C, T>,
-    cancel: CancellationToken,
-) -> Result<(), ListenerError>
-where
-    L: LocalRecords + Send + Sync + 'static,
-    F: FilterPolicy + Send + Sync + 'static,
-    O: QueryObserver + Send + Sync + 'static,
-    C: Clock + Send + Sync + 'static,
-    T: TerminalHandler + Send + Sync + 'static,
-{
-    let mut backoff = Duration::from_millis(50);
-    while !cancel.is_cancelled() {
-        let Err(err) = udp.run(cancel.clone()).await else {
-            break;
-        };
-        if handle_listener_crash("UDP", err, &mut backoff, &cancel).await {
-            break;
-        }
-    }
-    Ok(())
-}
-
-async fn run_tcp_supervisor<L, F, O, C, T>(
-    tcp: TcpListener<L, F, O, C, T>,
-    cancel: CancellationToken,
-) -> Result<(), ListenerError>
-where
-    L: LocalRecords + Send + Sync + 'static,
-    F: FilterPolicy + Send + Sync + 'static,
-    O: QueryObserver + Send + Sync + 'static,
-    C: Clock + Send + Sync + 'static,
-    T: TerminalHandler + Send + Sync + 'static,
-{
-    let mut backoff = Duration::from_millis(50);
-    while !cancel.is_cancelled() {
-        let Err(err) = tcp.run(cancel.clone()).await else {
-            break;
-        };
-        if handle_listener_crash("TCP", err, &mut backoff, &cancel).await {
-            break;
-        }
-    }
-    Ok(())
-}
-
-async fn handle_listener_crash(
-    kind: &'static str,
-    err: ListenerError,
-    backoff: &mut Duration,
-    cancel: &CancellationToken,
-) -> bool {
-    if cancel.is_cancelled() {
-        return true;
-    }
-    tracing::error!(%err, "{kind} listener crashed; retrying after backoff");
-    tokio::time::sleep(*backoff).await;
-    *backoff = backoff.saturating_mul(2).min(Duration::from_secs(2));
-    cancel.is_cancelled()
 }
