@@ -195,6 +195,11 @@ where
             }
         };
 
+        if query.header.kind == MessageKind::Response {
+            tracing::debug!(%peer, "silently dropping inbound UDP response datagram (QR=1)");
+            return;
+        }
+
         let client = ClientId::from_socket_addr(peer);
         let max_size = RequestContext::derive_max_response_size(
             Transport::Udp,
@@ -212,6 +217,7 @@ where
 
         let response = match self.pipeline.handle_within(&ctx, self.query_timeout).await {
             Ok(resp) => resp,
+            Err(crate::domain::error::PipelineError::InboundResponse) => return,
             Err(err) => {
                 let mut resp = Message::new(Header::new_query(
                     ctx.query.header.id,
@@ -230,6 +236,10 @@ where
     }
 
     async fn try_send_formerr(&self, bytes: &[u8], peer: SocketAddr) {
+        if bytes.get(2).is_some_and(|&b| (b & 0x80) != 0) {
+            tracing::debug!(%peer, "silently dropping malformed UDP response datagram (QR=1)");
+            return;
+        }
         let (Some(&b0), Some(&b1)) = (bytes.first(), bytes.get(1)) else {
             return;
         };

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use styx_core::Clock;
-use styx_proto::{Message, Opcode, Question, RecordClass, ResponseCode, Ttl};
+use styx_proto::{Message, MessageKind, Opcode, Question, RecordClass, ResponseCode, Ttl};
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::domain::answer::{
@@ -108,6 +108,7 @@ where
     ) -> Result<Message, PipelineError> {
         let question = match self.validate_input(&ctx.query) {
             Ok(q) => q,
+            Err(PipelineError::InboundResponse) => return Err(PipelineError::InboundResponse),
             Err(err) => return self.handle_error(ctx, err),
         };
 
@@ -127,6 +128,9 @@ where
     }
 
     fn validate_input<'a>(&self, query: &'a Message) -> Result<&'a Question, PipelineError> {
+        if query.header.kind == MessageKind::Response {
+            return Err(PipelineError::InboundResponse);
+        }
         if query.questions.is_empty() {
             return Err(PipelineError::MalformedQuery);
         }
