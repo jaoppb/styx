@@ -5,7 +5,8 @@
 
 use std::future::Future;
 use std::io::ErrorKind;
-use std::time::Instant;
+use std::net::IpAddr;
+use std::time::{Duration, Instant};
 
 use styx_proto::{Message, Name, Question};
 
@@ -35,6 +36,9 @@ pub struct TransportReply {
     pub via_tcp: bool,
     /// What the exchange showed about the server's EDNS support.
     pub edns: EdnsObservation,
+    /// Packets-worth of exchanges the query cost: one per UDP or TCP attempt, so a
+    /// truncated reply or an EDNS retry makes it more than one.
+    pub wire_exchanges: u8,
 }
 
 /// Why no usable response came back from a nameserver.
@@ -50,6 +54,16 @@ pub enum TransportError {
     Truncated,
 }
 
+/// A failed query and what it cost on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransportFailure {
+    /// Why no usable response came back.
+    pub error: TransportError,
+    /// Exchanges spent before giving up. A failure whose TCP leg is not visible to
+    /// the transport counts as one more than it can prove, never fewer than one.
+    pub wire_exchanges: u8,
+}
+
 /// Sends one question to one nameserver. Implemented by the Do53 adapter, and by
 /// recording fakes in tests.
 pub trait Transport: Send + Sync {
@@ -60,7 +74,7 @@ pub trait Transport: Send + Sync {
         question: &Question,
         edns: EdnsCapability,
         deadline: Instant,
-    ) -> impl Future<Output = Result<TransportReply, TransportError>> + Send;
+    ) -> impl Future<Output = Result<TransportReply, TransportFailure>> + Send;
 }
 
 /// The infrastructure cache: delegations by zone, metrics by nameserver address.
@@ -84,6 +98,18 @@ pub trait InfraCache: Send + Sync {
 
     /// Folds one observation about `server` into its metrics.
     fn update_metrics(&self, server: NameserverAddr, event: MetricEvent, now: Instant);
+
+    /// Records addresses looked up separately for `nameserver` in the cached
+    /// delegation of `zone`, so later descents skip the lookup. The delegation's
+    /// own expiry still bounds them, and `lifetime` can only shorten it.
+    fn provide_addresses(
+        &self,
+        zone: &Name,
+        nameserver: &Name,
+        addresses: &[IpAddr],
+        lifetime: Duration,
+        now: Instant,
+    );
 
     /// Seeds the root NS set from root hints, unless a primed set is already held.
     fn prime_from(&self, hints: &RootHints, now: Instant);

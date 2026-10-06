@@ -1,35 +1,28 @@
 //! `Recursor`: runs descents, and is an ordinary pool member behind `Upstream`.
 
-use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use styx_core::{Clock, Upstream, UpstreamError, UpstreamId, UpstreamKind, UpstreamResponse};
-use styx_proto::{Message, Name, Question, RData, RecordClass, RecordType, ResponseCode, Ttl};
+use styx_proto::{Message, Question};
 
 use crate::application::diagnostics::DiagnosticsState;
 use crate::application::driver::DescentContext;
-use crate::application::priming::{PrimeOutcome, Priming};
+use crate::application::prime::PrimeJob;
+use crate::application::priming::Priming;
 use crate::application::single_flight::InFlight;
 use crate::domain::budget::DescentLimits;
-use crate::domain::error::{BudgetExceeded, RecursionError};
-use crate::domain::metrics::MetricEvent;
+use crate::domain::error::RecursionError;
 use crate::domain::ports::{ChainMaterialSink, DiagnosticsSink, InfraCache, Transport};
 use crate::domain::root_hints::RootHints;
-use crate::domain::topology::{Delegation, GlueOrigin, Nameserver};
-
-/// Root servers asked per priming attempt before giving up until the backoff ends.
-pub const PRIMING_ATTEMPTS: usize = 3;
-
-/// Longest a priming attempt may take, whatever the caller's deadline.
-pub const PRIMING_DEADLINE: Duration = Duration::from_secs(2);
-
-/// Shortest lifetime given to a primed root NS set, so a server returning a tiny
-/// TTL cannot make every descent re-prime.
-pub const PRIMING_MIN_TTL: Duration = Duration::from_secs(300);
 
 /// How often expired infrastructure-cache entries are swept.
 pub const EVICTION_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How long without a single reply from any nameserver before a failed descent is
+/// held against the recursor itself: past this, the network, not the name, is the
+/// likelier culprit.
+pub const NETWORK_SILENCE: Duration = Duration::from_secs(30);
 
 /// The recursor's collaborators, injected by the composition root.
 #[derive(Debug)]
@@ -55,6 +48,15 @@ pub struct RecursorSettings {
     pub use_ipv6: bool,
 }
 
+/// Why a descent failed, and whether the recursor heard anything from the network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescentFailure {
+    /// What ended the descent.
+    pub error: RecursionError,
+    /// No nameserver answered anything for [`NETWORK_SILENCE`] before the failure.
+    pub network_silent: bool,
+}
+
 /// An iterative resolver implementing `Upstream`.
 #[derive(Debug)]
 pub struct Recursor<C, T, D, M, I> {
@@ -62,18 +64,18 @@ pub struct Recursor<C, T, D, M, I> {
     pub(crate) settings: RecursorSettings,
     pub(crate) ports: RecursorPorts<C, T, D, M, I>,
     pub(crate) in_flight: InFlight,
-    pub(crate) priming: Priming,
-    pub(crate) stats: DiagnosticsState,
+    pub(crate) priming: Arc<Priming>,
+    pub(crate) stats: Arc<DiagnosticsState>,
     pub(crate) last_eviction: Mutex<Option<Instant>>,
 }
 
 impl<C, T, D, M, I> Recursor<C, T, D, M, I>
 where
     C: Clock,
-    T: Transport,
+    T: Transport + 'static,
     D: DiagnosticsSink,
     M: ChainMaterialSink,
-    I: InfraCache,
+    I: InfraCache + 'static,
 {
     /// Builds a recursor seeded from `hints`. Sends nothing: priming is lazy.
     #[must_use]
@@ -91,8 +93,8 @@ where
             settings,
             ports,
             in_flight: InFlight::new(),
-            priming: Priming::new(),
-            stats,
+            priming: Arc::new(Priming::new()),
+            stats: Arc::new(stats),
             last_eviction: Mutex::new(None),
         }
     }
@@ -107,12 +109,25 @@ where
         question: &Question,
         deadline: Instant,
     ) -> Result<Message, RecursionError> {
+        self.resolve_detailed(question, deadline)
+            .await
+            .map_err(|failure| failure.error)
+    }
+
+    /// Like [`Self::resolve_iteratively`], and says whether the network was silent
+    /// when the descent failed, which is what the pool needs to judge the recursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`DescentFailure`] that ended the descent.
+    pub async fn resolve_detailed(
+        &self,
+        question: &Question,
+        deadline: Instant,
+    ) -> Result<Message, DescentFailure> {
         let now = self.ports.clock.now_monotonic();
         self.maintain(now);
-        let prime_deadline = deadline.min(now.checked_add(PRIMING_DEADLINE).unwrap_or(now));
-        self.priming
-            .ensure(now, || self.prime_once(prime_deadline))
-            .await;
+        self.start_priming(now);
 
         let mut context = DescentContext::new(self.settings.limits, now, deadline);
         let result = self.descend(question.clone(), &mut context).await;
@@ -122,10 +137,29 @@ where
         }
         self.stats
             .record_descent(result.is_err(), context.fallbacks);
-        if let Some(snapshot) = self.stats.snapshot_if_due(self.ports.clock.now_monotonic()) {
+        let finished = self.ports.clock.now_monotonic();
+        if let Some(snapshot) = self.stats.snapshot_if_due(finished) {
             self.ports.diagnostics.publish(snapshot);
         }
-        result
+        result.map_err(|error| DescentFailure {
+            error,
+            network_silent: !self.stats.replied_within(finished, NETWORK_SILENCE),
+        })
+    }
+
+    /// Starts priming in a task of its own if it is due. The descent that triggered
+    /// it carries on with the hints and the cached root set, and the attempt has its
+    /// own deadline, so neither the descent's budget nor a short caller deadline can
+    /// spoil it.
+    fn start_priming(&self, now: Instant) {
+        let job = || PrimeJob {
+            clock: Arc::clone(&self.ports.clock),
+            transport: Arc::clone(&self.ports.transport),
+            infra: Arc::clone(&self.ports.infra),
+            stats: Arc::clone(&self.stats),
+            use_ipv6: self.settings.use_ipv6,
+        };
+        let _detached = self.priming.trigger(now, || job().run());
     }
 
     fn maintain(&self, now: Instant) {
@@ -140,66 +174,15 @@ where
         drop(last);
         self.ports.infra.evict_expired(now);
     }
-
-    /// One priming attempt: ask up to [`PRIMING_ATTEMPTS`] root servers for the
-    /// root NS set and install the first usable answer.
-    async fn prime_once(&self, deadline: Instant) -> PrimeOutcome {
-        let clock = &self.ports.clock;
-        let started = clock.now_monotonic();
-        let root = self
-            .ports
-            .infra
-            .closest_enclosing_cut(&Name::root(), started);
-        let question = Question::new(Name::root(), RecordType::NS, RecordClass::In);
-        let candidates = root
-            .nameservers
-            .untried()
-            .into_iter()
-            .filter(|server| self.settings.use_ipv6 || server.ip().is_ipv4())
-            .take(PRIMING_ATTEMPTS);
-        for server in candidates {
-            let sent_at = clock.now_monotonic();
-            let edns = self.ports.infra.metrics(server, sent_at).edns(sent_at);
-            let reply = self
-                .ports
-                .transport
-                .query(server, &question, edns, deadline)
-                .await;
-            let now = clock.now_monotonic();
-            let Ok(reply) = reply else {
-                self.stats.record_root_contact(server.ip(), None, now);
-                self.ports
-                    .infra
-                    .update_metrics(server, MetricEvent::Failure, now);
-                continue;
-            };
-            let rtt = now.saturating_duration_since(sent_at);
-            self.stats.record_root_contact(server.ip(), Some(rtt), now);
-            self.ports
-                .infra
-                .update_metrics(server, MetricEvent::Success(rtt), now);
-            let Some(delegation) = root_ns_set(&reply.message, now) else {
-                continue;
-            };
-            let lifetime = ttl_duration(delegation.ttl()).max(PRIMING_MIN_TTL);
-            self.stats.set_root_servers(delegation.nameservers());
-            self.stats.record_priming(now);
-            self.ports.infra.put_delegation(delegation);
-            tracing::debug!(%server, "root NS set primed");
-            return PrimeOutcome::Primed(now.checked_add(lifetime).unwrap_or(now));
-        }
-        tracing::warn!("priming failed: no root server answered; using root hints");
-        PrimeOutcome::Failed
-    }
 }
 
 impl<C, T, D, M, I> Upstream for Recursor<C, T, D, M, I>
 where
     C: Clock,
-    T: Transport,
+    T: Transport + 'static,
     D: DiagnosticsSink,
     M: ChainMaterialSink,
-    I: InfraCache,
+    I: InfraCache + 'static,
 {
     fn id(&self) -> UpstreamId {
         self.id.clone()
@@ -218,9 +201,9 @@ where
     ) -> Result<UpstreamResponse, UpstreamError> {
         let start = self.ports.clock.now_monotonic();
         let message = self
-            .resolve_iteratively(query, deadline)
+            .resolve_detailed(query, deadline)
             .await
-            .map_err(to_upstream_error)?;
+            .map_err(|failure| to_upstream_error(&failure))?;
         Ok(UpstreamResponse {
             message,
             answered_by: self.id.clone(),
@@ -237,80 +220,27 @@ where
 }
 
 /// The `Upstream` boundary: a descent failure becomes the pool's error, carrying no
-/// zone, server or client detail. Failures specific to one name — a lame or looping
-/// delegation, a spent budget — are answer faults that must not trip the circuit
-/// breaker; only an unreachable root or a timeout indicts the recursor itself.
+/// zone, server or client detail.
+///
+/// What indicts the recursor is whether the network answered at all, not which
+/// error ended this descent. A dead leaf zone, a lame or looping delegation, a
+/// server returning undecodable replies and a spent wall clock all belong to one
+/// name, and are answer faults that must not trip the circuit breaker — otherwise
+/// repeated queries for one broken domain would take every other name down with it.
+/// A recursor that has heard nothing from any nameserver, or whose root servers
+/// cannot be used, is the one that is broken: its failures are upstream faults,
+/// whatever form they take (a dead link burns the wall clock before it ever
+/// reports an unreachable root).
 #[must_use]
-pub fn to_upstream_error(error: RecursionError) -> UpstreamError {
-    match error {
-        RecursionError::Timeout | RecursionError::BudgetExceeded(BudgetExceeded::WallClock) => {
-            UpstreamError::Timeout
-        }
-        RecursionError::NoReachableNameserver { at_root } => UpstreamError::ServerFailure {
-            is_upstream: at_root,
-        },
-        RecursionError::Truncated => UpstreamError::Truncated,
-        RecursionError::Malformed => {
-            UpstreamError::Malformed("unusable response during descent".into())
-        }
-        RecursionError::BudgetExceeded(_)
-        | RecursionError::CnameLoop
-        | RecursionError::DelegationLoop
-        | RecursionError::OutOfBailiwick
-        | RecursionError::LameDelegation => UpstreamError::ServerFailure { is_upstream: false },
+pub fn to_upstream_error(failure: &DescentFailure) -> UpstreamError {
+    if failure.network_silent {
+        return UpstreamError::Timeout;
     }
-}
-
-/// The root NS set from a priming response: the root's NS records, with addresses
-/// from the additional section (the root may vouch for any name).
-fn root_ns_set(message: &Message, now: Instant) -> Option<Delegation> {
-    if message.header.rcode != ResponseCode::NOERROR {
-        return None;
+    let at_root = matches!(
+        failure.error,
+        RecursionError::NoReachableNameserver { at_root: true }
+    );
+    UpstreamError::ServerFailure {
+        is_upstream: at_root,
     }
-    let ns: Vec<_> = message
-        .answers
-        .iter()
-        .filter(|record| record.owner.is_root())
-        .filter_map(|record| match &record.rdata {
-            RData::Ns(target) => Some((target.clone(), record.ttl)),
-            _ => None,
-        })
-        .collect();
-    let ttl = ns.iter().map(|(_, ttl)| *ttl).min().unwrap_or(Ttl::ZERO);
-    let servers: Vec<Nameserver> = ns
-        .into_iter()
-        .map(|(name, _)| Nameserver {
-            addresses: addresses_of(message, &name),
-            name,
-            glue_origin: GlueOrigin::InBailiwickGlue,
-        })
-        .filter(|server| !server.addresses.is_empty())
-        .collect();
-    if servers.is_empty() {
-        return None;
-    }
-    Some(Delegation::new(
-        Name::root(),
-        Name::root(),
-        servers,
-        ttl,
-        now,
-    ))
-}
-
-fn addresses_of(message: &Message, name: &Name) -> Vec<IpAddr> {
-    message
-        .additionals
-        .iter()
-        .filter(|record| record.owner == *name)
-        .filter_map(|record| match record.rdata {
-            RData::A(address) => Some(IpAddr::V4(address)),
-            RData::Aaaa(address) => Some(IpAddr::V6(address)),
-            _ => None,
-        })
-        .collect()
-}
-
-fn ttl_duration(ttl: Ttl) -> Duration {
-    Duration::from_secs(u64::from(ttl.seconds()))
 }

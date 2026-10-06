@@ -147,6 +147,21 @@ impl DescentBudget {
         Ok(())
     }
 
+    /// Accounts for `extra` outbound exchanges beyond the one already charged: a TCP
+    /// retry after truncation, or a plain retry after an EDNS rejection. The packets
+    /// are already sent, so a descent that overspends is ended, not refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BudgetExceeded::OutboundQueries`] if the limit is now exceeded.
+    pub fn charge_extra(&mut self, extra: u8) -> Result<(), BudgetExceeded> {
+        self.queries_sent = self.queries_sent.saturating_add(u16::from(extra));
+        if self.queries_sent > self.limits.max_outbound_queries {
+            return Err(BudgetExceeded::OutboundQueries);
+        }
+        Ok(())
+    }
+
     /// Accounts for descending one zone cut.
     ///
     /// # Errors
@@ -224,6 +239,15 @@ mod tests {
         assert_eq!(budget.charge_query(), Err(BudgetExceeded::OutboundQueries));
         assert_eq!(budget.descend(), Ok(()));
         assert_eq!(budget.descend(), Err(BudgetExceeded::Depth));
+    }
+
+    #[test]
+    fn extra_wire_exchanges_count_against_the_query_limit() {
+        let mut budget = DescentBudget::new(limits(1, 4), Instant::now());
+        assert_eq!(budget.charge_query(), Ok(()));
+        assert_eq!(budget.charge_extra(3), Ok(()), "four packets of four");
+        assert_eq!(budget.charge_extra(1), Err(BudgetExceeded::OutboundQueries));
+        assert_eq!(budget.charge_query(), Err(BudgetExceeded::OutboundQueries));
     }
 
     #[test]

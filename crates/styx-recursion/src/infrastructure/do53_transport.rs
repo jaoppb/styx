@@ -9,7 +9,9 @@ use styx_net::{Do53Client, ExchangeError};
 use styx_proto::{Header, Message, Opcode, Opt, Question, ResponseCode};
 
 use crate::domain::metrics::EdnsCapability;
-use crate::domain::ports::{EdnsObservation, Transport, TransportError, TransportReply};
+use crate::domain::ports::{
+    EdnsObservation, Transport, TransportError, TransportFailure, TransportReply,
+};
 use crate::domain::topology::NameserverAddr;
 
 /// The port authoritative servers listen on.
@@ -36,13 +38,14 @@ impl<C: Clock> Do53Transport<C> {
         Self { client, port }
     }
 
+    /// One question to one server: UDP, and TCP if the reply was truncated.
     async fn send(
         &self,
         server: NameserverAddr,
         question: &Question,
         with_edns: bool,
         deadline: Instant,
-    ) -> Result<(Message, bool), TransportError> {
+    ) -> Result<Sent, TransportFailure> {
         let mut query = Message::new(Header::new_query(0, Opcode::Query, false));
         query.questions.push(question.clone());
         if with_edns {
@@ -52,8 +55,28 @@ impl<C: Clock> Do53Transport<C> {
             .client
             .exchange(SocketAddr::new(server.ip(), self.port), query, deadline)
             .await
-            .map_err(map_exchange_error)?;
-        Ok((exchanged.message, exchanged.via_tcp))
+            .map_err(failure_of)?;
+        Ok(Sent {
+            message: exchanged.message,
+            via_tcp: exchanged.via_tcp,
+        })
+    }
+}
+
+/// One answered exchange.
+struct Sent {
+    message: Message,
+    via_tcp: bool,
+}
+
+impl Sent {
+    /// Packets-worth of exchanges it took: UDP, plus TCP after a truncated reply.
+    const fn wire_exchanges(&self) -> u8 {
+        if self.via_tcp {
+            2
+        } else {
+            1
+        }
     }
 }
 
@@ -64,40 +87,54 @@ impl<C: Clock> Transport for Do53Transport<C> {
         question: &Question,
         edns: EdnsCapability,
         deadline: Instant,
-    ) -> Result<TransportReply, TransportError> {
+    ) -> Result<TransportReply, TransportFailure> {
         let with_edns = !matches!(edns, EdnsCapability::Intolerant(_));
-        let (message, via_tcp) = self.send(server, question, with_edns, deadline).await?;
+        let first = self.send(server, question, with_edns, deadline).await?;
         if !with_edns {
-            return Ok(TransportReply {
-                message,
-                via_tcp,
-                edns: EdnsObservation::Inconclusive,
-            });
+            return Ok(reply(first, EdnsObservation::Inconclusive, 0));
         }
-        if rejects_edns(&message) {
-            let (plain, via_tcp) = self.send(server, question, false, deadline).await?;
-            let edns = if rejects_edns(&plain) {
+        if rejects_edns(&first.message) {
+            let spent = first.wire_exchanges();
+            let plain = self
+                .send(server, question, false, deadline)
+                .await
+                .map_err(|failed| failed.after(spent))?;
+            let edns = if rejects_edns(&plain.message) {
                 EdnsObservation::Inconclusive
             } else {
                 EdnsObservation::Intolerant
             };
-            return Ok(TransportReply {
-                message: plain,
-                via_tcp,
-                edns,
-            });
+            return Ok(reply(plain, edns, spent));
         }
-        let edns = message
+        let edns = first
+            .message
             .opt
             .as_ref()
             .map_or(EdnsObservation::Inconclusive, |opt| {
                 EdnsObservation::Supported(opt.udp_payload_size())
             });
-        Ok(TransportReply {
-            message,
-            via_tcp,
-            edns,
-        })
+        Ok(reply(first, edns, 0))
+    }
+}
+
+/// The reply for `sent`, charged for it and for the `earlier` exchanges of the same
+/// query.
+fn reply(sent: Sent, edns: EdnsObservation, earlier: u8) -> TransportReply {
+    TransportReply {
+        wire_exchanges: earlier.saturating_add(sent.wire_exchanges()),
+        via_tcp: sent.via_tcp,
+        message: sent.message,
+        edns,
+    }
+}
+
+impl TransportFailure {
+    /// The same failure, charged for `earlier` exchanges already spent.
+    const fn after(self, earlier: u8) -> Self {
+        Self {
+            error: self.error,
+            wire_exchanges: earlier.saturating_add(self.wire_exchanges),
+        }
     }
 }
 
@@ -109,6 +146,21 @@ fn rejects_edns(message: &Message) -> bool {
             message.header.rcode,
             ResponseCode::FORMERR | ResponseCode::NOTIMP
         )
+}
+
+/// What a failed exchange cost. A truncated reply was retried over TCP, so it cost
+/// two; for every other failure the TCP leg, if reached, is not visible, so it is
+/// counted as one.
+fn failure_of(error: ExchangeError) -> TransportFailure {
+    let wire_exchanges = if matches!(error, ExchangeError::Truncated) {
+        2
+    } else {
+        1
+    };
+    TransportFailure {
+        error: map_exchange_error(error),
+        wire_exchanges,
+    }
 }
 
 fn map_exchange_error(error: ExchangeError) -> TransportError {

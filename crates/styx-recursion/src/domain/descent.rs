@@ -267,7 +267,6 @@ impl Descent {
             ResponseKind::ServerFailure => {
                 self.minimisation
                     .on_bad_response(BadResponse::ServerFailure, &outstanding.sent);
-                self.metric(server, MetricEvent::Failure);
                 self.leave(server, None)
             }
             ResponseKind::Lame => {
@@ -354,11 +353,10 @@ impl Descent {
     fn server_failed(&mut self, outstanding: &Outstanding, error: TransportError) -> DescentAction {
         self.minimisation
             .on_bad_response(BadResponse::ServerFailure, &outstanding.sent);
+        // The health metric for a failed exchange is recorded once, by the exchange
+        // itself: descents sharing it would each count the same lost packet.
         let recorded = match error {
-            TransportError::Timeout | TransportError::Unreachable(_) => {
-                self.metric(outstanding.server, MetricEvent::Failure);
-                None
-            }
+            TransportError::Timeout | TransportError::Unreachable(_) => None,
             TransportError::Malformed => Some(RecursionError::Malformed),
             TransportError::Truncated => Some(RecursionError::Truncated),
         };

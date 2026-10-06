@@ -5,6 +5,8 @@
 pub mod config;
 pub mod diagnostics;
 pub mod driver;
+pub mod exchange;
+pub mod prime;
 pub mod priming;
 pub mod recursor;
 pub mod selection;

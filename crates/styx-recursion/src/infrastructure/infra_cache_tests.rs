@@ -63,3 +63,52 @@ fn metrics_accumulate_per_server_and_idle_ones_are_dropped() {
     cache.evict_expired(now + METRICS_IDLE_EXPIRY);
     assert_eq!(cache.metrics(server, now).srtt().smoothed(), Duration::ZERO);
 }
+
+#[test]
+fn resolved_glue_is_kept_in_the_delegation_and_can_only_shorten_its_life() {
+    let now = Instant::now();
+    let cache = MemoryInfraCache::default();
+    let glueless = Nameserver {
+        name: name("ns.example.org."),
+        addresses: Vec::new(),
+        glue_origin: GlueOrigin::OutOfBailiwickDiscarded,
+    };
+    cache.put_delegation(Delegation::new(
+        name("org."),
+        name("example.org."),
+        vec![glueless],
+        Ttl::from_secs(600),
+        now,
+    ));
+    let found = [IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9))];
+
+    cache.provide_addresses(
+        &name("example.org."),
+        &name("ns.example.org."),
+        &found,
+        Duration::from_secs(120),
+        now,
+    );
+
+    let cut = cache.closest_enclosing_cut(&name("www.example.org."), now);
+    let member = cut.nameservers.members().first().unwrap();
+    assert_eq!(member.addresses, found);
+    assert_eq!(member.glue_origin, GlueOrigin::ResolvedSeparately);
+    let after = now + Duration::from_secs(121);
+    assert!(cache.get_delegation(&name("example.org."), after).is_none());
+
+    cache.put_delegation(delegation("example.net.", 60, now));
+    cache.provide_addresses(
+        &name("example.net."),
+        &name("ns.example.net."),
+        &found,
+        Duration::from_secs(3600),
+        now,
+    );
+    let almost = now + Duration::from_secs(59);
+    assert!(cache
+        .get_delegation(&name("example.net."), almost)
+        .is_some());
+    let past = now + Duration::from_secs(61);
+    assert!(cache.get_delegation(&name("example.net."), past).is_none());
+}

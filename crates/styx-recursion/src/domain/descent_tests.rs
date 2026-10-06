@@ -151,7 +151,7 @@ fn a_refusal_retries_the_same_server_in_full_and_success_writes_a_verdict() {
 }
 
 #[test]
-fn a_timeout_moves_on_and_never_writes_a_verdict() {
+fn a_timeout_moves_on_and_writes_neither_a_verdict_nor_a_health_metric() {
     let mut harness = Harness::new("www.example.com.", RecordType::A, cut(".", &[1, 2]));
     harness.send(addr(1));
     assert_eq!(
@@ -163,7 +163,11 @@ fn a_timeout_moves_on_and_never_writes_a_verdict() {
         vec![addr(2)]
     );
     let events = harness.metric_events();
-    assert_eq!(events, vec![MetricEvent::Failure]);
+    assert_eq!(
+        events,
+        Vec::<MetricEvent>::new(),
+        "the exchange records the failure once, not each descent that waited on it"
+    );
 }
 
 #[test]

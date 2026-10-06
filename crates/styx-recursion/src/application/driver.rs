@@ -9,24 +9,22 @@
 use std::future::Future;
 use std::net::IpAddr;
 use std::pin::Pin;
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use styx_core::Clock;
 use styx_proto::{Message, Name, Question, RData, RecordClass, RecordType};
 use tracing::Instrument;
 
+use crate::application::exchange::ExchangeJob;
 use crate::application::recursor::Recursor;
 use crate::application::selection::select_server;
-use crate::application::single_flight::OutboundKey;
+use crate::application::single_flight::{FlightResult, OutboundKey};
 use crate::domain::budget::{DescentBudget, DescentLimits};
 use crate::domain::chain_material::ChainMaterial;
 use crate::domain::descent::{Descent, DescentAction, DescentEvent, Observation, QueryTarget};
-use crate::domain::error::RecursionError;
-use crate::domain::metrics::MetricEvent;
-use crate::domain::ports::{
-    ChainMaterialSink, DiagnosticsSink, EdnsObservation, InfraCache, Transport, TransportError,
-    TransportReply,
-};
+use crate::domain::error::{BudgetExceeded, RecursionError};
+use crate::domain::ports::{ChainMaterialSink, DiagnosticsSink, InfraCache, Transport};
 use crate::domain::topology::NameserverAddr;
 
 /// How deeply glue lookups may nest. A nameserver whose address needs a lookup
@@ -58,6 +56,14 @@ impl DescentContext {
     }
 }
 
+/// Addresses a glue sub-descent found, and how long they may be trusted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedAddresses {
+    addresses: Vec<IpAddr>,
+    /// The shortest TTL among the address records.
+    lifetime: Duration,
+}
+
 /// A boxed descent future. Boxing is required, not chosen: a glue sub-descent is a
 /// descent, so the future is recursive and must have a known size.
 type DescentFuture<'a> = Pin<Box<dyn Future<Output = Result<Message, RecursionError>> + Send + 'a>>;
@@ -65,10 +71,10 @@ type DescentFuture<'a> = Pin<Box<dyn Future<Output = Result<Message, RecursionEr
 impl<C, T, D, M, I> Recursor<C, T, D, M, I>
 where
     C: Clock,
-    T: Transport,
+    T: Transport + 'static,
     D: DiagnosticsSink,
     M: ChainMaterialSink,
-    I: InfraCache,
+    I: InfraCache + 'static,
 {
     /// Runs one descent for `question` within `context`'s shared budget.
     pub(crate) fn descend<'a>(
@@ -158,7 +164,13 @@ where
         if let Err(exceeded) = context.budget.charge_query() {
             return DescentAction::Fail(RecursionError::BudgetExceeded(exceeded));
         }
-        let observation = self.send(descent, server, context.deadline, now).await;
+        let sent = self
+            .send(descent, server, context.deadline, now, &mut context.budget)
+            .await;
+        let observation = match sent {
+            Ok(observation) => observation,
+            Err(exceeded) => return DescentAction::Fail(RecursionError::BudgetExceeded(exceeded)),
+        };
         let finished = self.ports.clock.now_monotonic();
         descent.observe(observation, &mut context.budget, finished)
     }
@@ -177,13 +189,18 @@ where
     }
 
     /// Composes the question through minimisation and sends it, single-flighted.
+    ///
+    /// The exchange itself — sending, timing and recording the server's health —
+    /// belongs to a task of its own (see [`ExchangeJob`]); this descent only waits
+    /// for it, under its own deadline, and pays for the packets it cost.
     async fn send(
         &self,
         descent: &mut Descent,
         server: NameserverAddr,
         deadline: Instant,
         sent_at: Instant,
-    ) -> Observation {
+        budget: &mut DescentBudget,
+    ) -> Result<Observation, BudgetExceeded> {
         let metrics = self.ports.infra.metrics(server, sent_at);
         let sent = descent.compose(server, metrics.minimisation(sent_at));
         let zone = descent.current_cut().zone.clone();
@@ -198,58 +215,46 @@ where
             server,
             as_sent: sent.clone(),
         };
-        let transport = self.ports.transport.as_ref();
-        let (outcome, role) = self
+        let job = ExchangeJob {
+            clock: Arc::clone(&self.ports.clock),
+            transport: Arc::clone(&self.ports.transport),
+            infra: Arc::clone(&self.ports.infra),
+            stats: Arc::clone(&self.stats),
+            server,
+            sent,
+            zone,
+            edns: metrics.edns(sent_at),
+        };
+        let FlightResult { outcome, role } = self
             .in_flight
-            .exchange(key, || {
-                transport.query(server, &sent, metrics.edns(sent_at), deadline)
-            })
+            .exchange(key, deadline, move || job.run())
             .instrument(span.clone())
             .await;
-        let finished = self.ports.clock.now_monotonic();
-        let rtt = finished.saturating_duration_since(sent_at);
+        let rtt = self
+            .ports
+            .clock
+            .now_monotonic()
+            .saturating_duration_since(sent_at);
         tracing::debug!(parent: &span, ?role, answered = outcome.is_ok(), ?rtt, "exchange");
-        self.record_exchange(server, &zone, &outcome, rtt, finished);
-        match outcome {
-            Ok(reply) => Observation::Reply(reply.message),
-            Err(error) => Observation::Failed(error),
-        }
-    }
-
-    fn record_exchange(
-        &self,
-        server: NameserverAddr,
-        zone: &Name,
-        outcome: &Result<TransportReply, TransportError>,
-        rtt: std::time::Duration,
-        now: Instant,
-    ) {
-        let answered = outcome.is_ok();
-        if zone.is_root() {
-            self.stats
-                .record_root_contact(server.ip(), answered.then_some(rtt), now);
-        } else if zone.label_count() == 1 {
-            self.stats.record_tld_contact(zone, answered, now);
-        }
-        let Ok(reply) = outcome else {
-            return;
+        // The first exchange was charged before sending; every waiter pays for the
+        // rest, so each descent's bound holds on its own, whoever happened to lead.
+        let spent = match &outcome {
+            Ok(reply) => reply.wire_exchanges,
+            Err(failure) => failure.wire_exchanges,
         };
-        let infra = &self.ports.infra;
-        infra.update_metrics(server, MetricEvent::Success(rtt), now);
-        match reply.edns {
-            EdnsObservation::Supported(size) => {
-                infra.update_metrics(server, MetricEvent::EdnsSupported(size), now);
-            }
-            EdnsObservation::Intolerant => {
-                infra.update_metrics(server, MetricEvent::EdnsIntolerant, now);
-            }
-            EdnsObservation::Inconclusive => {}
-        }
+        budget.charge_extra(spent.saturating_sub(1))?;
+        Ok(match outcome {
+            Ok(reply) => Observation::Reply(reply.message),
+            Err(failure) => Observation::Failed(failure.error),
+        })
     }
 
     /// Looks up a glue-less nameserver's addresses with a sub-descent that spends
     /// from this descent's budget. A name already being looked up further up the
     /// stack is circular glue: it fails at once instead of looping.
+    ///
+    /// What the lookup finds is written back into the cached delegation, so the
+    /// next descent under the same zone does not repeat it.
     async fn glue_step(
         &self,
         descent: &mut Descent,
@@ -263,7 +268,7 @@ where
         }
         context.glue_stack.push(name.clone());
         let mut addresses = self.lookup_addresses(&name, RecordType::A, context).await;
-        if self.settings.use_ipv6 && matches!(&addresses, Ok(found) if found.is_empty()) {
+        if self.settings.use_ipv6 && matches!(&addresses, Ok(found) if found.addresses.is_empty()) {
             addresses = self
                 .lookup_addresses(&name, RecordType::AAAA, context)
                 .await;
@@ -271,7 +276,8 @@ where
         context.glue_stack.pop();
         match addresses {
             Ok(found) => {
-                descent.provide_glue(&name, &found);
+                self.remember_glue(descent, &name, &found);
+                descent.provide_glue(&name, &found.addresses);
                 descent.next_action()
             }
             Err(error @ (RecursionError::Timeout | RecursionError::BudgetExceeded(_))) => {
@@ -281,23 +287,44 @@ where
         }
     }
 
+    fn remember_glue(&self, descent: &Descent, name: &Name, found: &ResolvedAddresses) {
+        if found.addresses.is_empty() || found.lifetime.is_zero() {
+            return;
+        }
+        let now = self.ports.clock.now_monotonic();
+        self.ports.infra.provide_addresses(
+            &descent.current_cut().zone,
+            name,
+            &found.addresses,
+            found.lifetime,
+            now,
+        );
+    }
+
     async fn lookup_addresses(
         &self,
         name: &Name,
         qtype: RecordType,
         context: &mut DescentContext,
-    ) -> Result<Vec<IpAddr>, RecursionError> {
+    ) -> Result<ResolvedAddresses, RecursionError> {
         let question = Question::new(name.clone(), qtype, RecordClass::In);
         let message = self.descend(question, context).await?;
-        Ok(message
-            .answers
-            .iter()
-            .filter_map(|record| match record.rdata {
-                RData::A(address) => Some(IpAddr::V4(address)),
-                RData::Aaaa(address) => Some(IpAddr::V6(address)),
-                _ => None,
-            })
-            .collect())
+        let mut addresses = Vec::new();
+        let mut shortest: Option<u32> = None;
+        for record in &message.answers {
+            let address = match record.rdata {
+                RData::A(address) => IpAddr::V4(address),
+                RData::Aaaa(address) => IpAddr::V6(address),
+                _ => continue,
+            };
+            addresses.push(address);
+            let seconds = record.ttl.seconds();
+            shortest = Some(shortest.map_or(seconds, |current| current.min(seconds)));
+        }
+        Ok(ResolvedAddresses {
+            addresses,
+            lifetime: Duration::from_secs(u64::from(shortest.unwrap_or(0))),
+        })
     }
 
     fn apply_events(&self, descent: &mut Descent, context: &mut DescentContext) {

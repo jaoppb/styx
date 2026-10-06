@@ -25,6 +25,7 @@ struct State {
     descents_failed: u64,
     minimisation_fallbacks: u64,
     last_published: Option<Instant>,
+    last_reply: Option<Instant>,
 }
 
 /// The running totals and per-server observations behind the read model.
@@ -92,6 +93,20 @@ impl DiagnosticsState {
             last_contact: Some(now),
         };
         self.lock().tlds.insert(tld.clone(), entry);
+    }
+
+    /// Records that some nameserver answered something at `now`.
+    pub fn note_reply(&self, now: Instant) {
+        self.lock().last_reply = Some(now);
+    }
+
+    /// Whether any nameserver answered within `window` before `now`. A recursor for
+    /// which this is false has heard nothing from the network.
+    #[must_use]
+    pub fn replied_within(&self, now: Instant, window: Duration) -> bool {
+        self.lock()
+            .last_reply
+            .is_some_and(|at| now.saturating_duration_since(at) <= window)
     }
 
     /// Records a successful priming query.

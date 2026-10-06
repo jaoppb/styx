@@ -255,6 +255,24 @@ impl Delegation {
         })
     }
 
+    /// This delegation with `addresses` recorded for the nameserver called `name`,
+    /// which came from a separate lookup rather than from glue.
+    #[must_use]
+    pub fn with_addresses_for(mut self, name: &Name, addresses: &[IpAddr]) -> Self {
+        let members = self
+            .nameservers
+            .iter_mut()
+            .filter(|member| member.name.eq_ignore_case(name));
+        for member in members {
+            let new = addresses
+                .iter()
+                .filter(|address| !member.addresses.contains(address));
+            member.addresses.extend(new.copied().collect::<Vec<_>>());
+            member.glue_origin = GlueOrigin::ResolvedSeparately;
+        }
+        self
+    }
+
     /// The zone whose server gave the referral.
     #[must_use]
     pub const fn parent_zone(&self) -> &Name {

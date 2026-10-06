@@ -87,6 +87,15 @@ mod tests {
                 .or_insert_with(|| NameserverMetrics::new(now))
                 .apply(event, now);
         }
+        fn provide_addresses(
+            &self,
+            _zone: &Name,
+            _nameserver: &Name,
+            _addresses: &[IpAddr],
+            _lifetime: std::time::Duration,
+            _now: Instant,
+        ) {
+        }
         fn prime_from(&self, _hints: &RootHints, _now: Instant) {}
         fn evict_expired(&self, _now: Instant) {}
     }

@@ -1,6 +1,7 @@
 //! The in-memory infrastructure cache.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -140,6 +141,30 @@ impl InfraCache for MemoryInfraCache {
             .entry(server)
             .or_insert_with(|| NameserverMetrics::new(now))
             .apply(event, now);
+    }
+
+    fn provide_addresses(
+        &self,
+        zone: &Name,
+        nameserver: &Name,
+        addresses: &[IpAddr],
+        lifetime: Duration,
+        now: Instant,
+    ) {
+        let mut inner = self.lock();
+        let Some(stored) = inner
+            .delegations
+            .get_mut(zone)
+            .filter(|stored| stored.expires > now)
+        else {
+            return;
+        };
+        let shortened = now.checked_add(lifetime).unwrap_or(now);
+        stored.expires = stored.expires.min(shortened);
+        stored.delegation = stored
+            .delegation
+            .clone()
+            .with_addresses_for(nameserver, addresses);
     }
 
     fn prime_from(&self, hints: &RootHints, now: Instant) {
