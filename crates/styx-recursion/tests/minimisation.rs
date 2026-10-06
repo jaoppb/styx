@@ -132,11 +132,11 @@ async fn an_edns_intolerant_server_is_answered_without_edns_and_remembered() {
     let edns = network
         .infra
         .metrics(NameserverAddr::new(loopback(EXAMPLE)), now)
-        .edns();
-    assert_eq!(
+        .edns(now);
+    assert!(matches!(
         edns,
-        styx_recursion::domain::metrics::EdnsCapability::Intolerant
-    );
+        styx_recursion::domain::metrics::EdnsCapability::Intolerant(_)
+    ));
 }
 
 #[tokio::test]

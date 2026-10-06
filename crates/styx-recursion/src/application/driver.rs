@@ -202,7 +202,7 @@ where
         let (outcome, role) = self
             .in_flight
             .exchange(key, || {
-                transport.query(server, &sent, metrics.edns(), deadline)
+                transport.query(server, &sent, metrics.edns(sent_at), deadline)
             })
             .instrument(span.clone())
             .await;

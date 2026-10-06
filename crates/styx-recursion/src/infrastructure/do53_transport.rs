@@ -65,7 +65,7 @@ impl<C: Clock> Transport for Do53Transport<C> {
         edns: EdnsCapability,
         deadline: Instant,
     ) -> Result<TransportReply, TransportError> {
-        let with_edns = edns != EdnsCapability::Intolerant;
+        let with_edns = !matches!(edns, EdnsCapability::Intolerant(_));
         let (message, via_tcp) = self.send(server, question, with_edns, deadline).await?;
         if !with_edns {
             return Ok(TransportReply {

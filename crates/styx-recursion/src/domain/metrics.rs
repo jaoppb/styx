@@ -23,6 +23,15 @@ pub const BACKOFF_AFTER_FAILURES: u16 = 3;
 /// How long a server in backoff is skipped before it is tried again.
 pub const BACKOFF_WINDOW: Duration = Duration::from_secs(60);
 
+/// How long a server stays marked EDNS-intolerant before the next query tries EDNS
+/// again. One FORMERR can come from a middlebox or a transient fault, so the mark
+/// must not outlive the evidence (unbound's `infra-host-ttl` is the same 900 s).
+pub const EDNS_INTOLERANCE_TTL: Duration = Duration::from_secs(900);
+
+/// Most lame-zone marks kept per nameserver. A shared host can be lame for
+/// thousands of customer zones; the oldest-expiring marks are dropped first.
+pub const MAX_LAME_MARKS: usize = 64;
+
 /// A smoothed round-trip time: the RFC 6298 style EWMA, `srtt = 7/8 srtt + 1/8
 /// sample`, computed with checked, saturating arithmetic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -77,8 +86,9 @@ pub enum EdnsCapability {
     Unknown,
     /// Answered an EDNS query, advertising this payload size.
     Supported(u16),
-    /// Rejected EDNS: queries are sent without an OPT record.
-    Intolerant,
+    /// Rejected EDNS until the instant given: queries are sent without an OPT
+    /// record until then.
+    Intolerant(Instant),
 }
 
 /// Whether a server copes with minimised queries.
@@ -155,7 +165,10 @@ impl NameserverMetrics {
             MetricEvent::Success(rtt) => self.record_success(rtt),
             MetricEvent::Failure => self.record_failure(now),
             MetricEvent::EdnsSupported(size) => self.edns = EdnsCapability::Supported(size),
-            MetricEvent::EdnsIntolerant => self.edns = EdnsCapability::Intolerant,
+            MetricEvent::EdnsIntolerant => {
+                let until = now.checked_add(EDNS_INTOLERANCE_TTL).unwrap_or(now);
+                self.edns = EdnsCapability::Intolerant(until);
+            }
             MetricEvent::HandlesMinimised => {
                 if !matches!(
                     self.minimisation,
@@ -167,11 +180,27 @@ impl NameserverMetrics {
             MetricEvent::MishandlesMinimised(until) => {
                 self.minimisation = MinimisationVerdict::MishandlesMinimised(until);
             }
-            MetricEvent::LameFor(zone, until) => {
-                self.lame_for
-                    .retain(|mark| !mark.zone.eq_ignore_case(&zone));
-                self.lame_for.push(LameMark { zone, until });
-            }
+            MetricEvent::LameFor(zone, until) => self.mark_lame(zone, until, now),
+        }
+    }
+
+    /// Marks the server lame for `zone` until `until`, dropping expired marks and,
+    /// past [`MAX_LAME_MARKS`], the mark that expires soonest.
+    fn mark_lame(&mut self, zone: Name, until: Instant, now: Instant) {
+        self.lame_for
+            .retain(|mark| mark.until > now && !mark.zone.eq_ignore_case(&zone));
+        self.lame_for.push(LameMark { zone, until });
+        if self.lame_for.len() <= MAX_LAME_MARKS {
+            return;
+        }
+        let soonest = self
+            .lame_for
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, mark)| mark.until)
+            .map(|(index, _)| index);
+        if let Some(index) = soonest {
+            self.lame_for.swap_remove(index);
         }
     }
 
@@ -198,10 +227,20 @@ impl NameserverMetrics {
         self.srtt
     }
 
-    /// The EDNS capability last observed.
+    /// The EDNS capability as of `now`: an expired intolerance reads as unknown, so
+    /// the next query sends EDNS again.
     #[must_use]
-    pub const fn edns(&self) -> EdnsCapability {
-        self.edns
+    pub fn edns(&self, now: Instant) -> EdnsCapability {
+        match self.edns {
+            EdnsCapability::Intolerant(until) if until <= now => EdnsCapability::Unknown,
+            capability => capability,
+        }
+    }
+
+    /// How many lame-zone marks are held.
+    #[must_use]
+    pub fn lame_mark_count(&self) -> usize {
+        self.lame_for.len()
     }
 
     /// The minimisation verdict as of `now`: an expired verdict reads as unknown.
@@ -286,5 +325,37 @@ mod tests {
         assert!(!metrics.in_backoff(now + BACKOFF_WINDOW));
         metrics.apply(MetricEvent::Success(Duration::from_millis(5)), now);
         assert!(!metrics.in_backoff(now));
+    }
+
+    #[test]
+    fn edns_intolerance_expires_so_the_next_query_probes_again() {
+        let now = Instant::now();
+        let mut metrics = NameserverMetrics::new(now);
+        metrics.apply(MetricEvent::EdnsIntolerant, now);
+        assert!(matches!(metrics.edns(now), EdnsCapability::Intolerant(_)));
+        let later = now + EDNS_INTOLERANCE_TTL;
+        assert_eq!(metrics.edns(later), EdnsCapability::Unknown);
+    }
+
+    #[test]
+    fn lame_marks_are_bounded_and_expired_ones_are_dropped() {
+        let now = Instant::now();
+        let mut metrics = NameserverMetrics::new(now);
+        for index in 0..(MAX_LAME_MARKS + 20) {
+            let zone = Name::from_ascii(&format!("zone{index}.example.")).unwrap();
+            let until = now + Duration::from_secs(60 + index as u64);
+            metrics.apply(MetricEvent::LameFor(zone, until), now);
+        }
+        assert_eq!(metrics.lame_mark_count(), MAX_LAME_MARKS);
+        let latest = Name::from_ascii("zone83.example.").unwrap();
+        assert!(metrics.is_lame_for(&latest, now));
+
+        let expired_at = now + Duration::from_secs(10_000);
+        let fresh = Name::from_ascii("fresh.example.").unwrap();
+        metrics.apply(
+            MetricEvent::LameFor(fresh, expired_at + Duration::from_secs(60)),
+            expired_at,
+        );
+        assert_eq!(metrics.lame_mark_count(), 1);
     }
 }

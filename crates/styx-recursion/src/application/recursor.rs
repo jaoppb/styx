@@ -159,7 +159,7 @@ where
             .take(PRIMING_ATTEMPTS);
         for server in candidates {
             let sent_at = clock.now_monotonic();
-            let edns = self.ports.infra.metrics(server, sent_at).edns();
+            let edns = self.ports.infra.metrics(server, sent_at).edns(sent_at);
             let reply = self
                 .ports
                 .transport
