@@ -234,5 +234,5 @@ async fn a_query_without_a_question_is_refused_before_sending() {
         .exchange(SocketAddr::from(([127, 0, 0, 1], 9)), empty, deadline)
         .await
         .expect_err("no question");
-    assert!(matches!(error, ExchangeError::Encode(_)));
+    assert_eq!(error, ExchangeError::NoQuestion);
 }

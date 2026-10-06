@@ -2,7 +2,7 @@
 
 use std::io::ErrorKind;
 
-use styx_proto::Message;
+use styx_proto::{DecodeError, EncodeError, Message};
 use thiserror::Error;
 
 /// A response that passed the exchange's matching checks.
@@ -27,11 +27,15 @@ pub enum ExchangeError {
 
     /// The query message could not be encoded.
     #[error("dns query could not be encoded: {0}")]
-    Encode(String),
+    Encode(#[from] EncodeError),
+
+    /// The query message carried no question to match a response against.
+    #[error("dns query carries no question")]
+    NoQuestion,
 
     /// A TCP response did not decode as a DNS message.
     #[error("dns response malformed: {0}")]
-    Malformed(String),
+    Malformed(#[from] DecodeError),
 
     /// A TCP response's transaction ID or question did not match the query.
     ///

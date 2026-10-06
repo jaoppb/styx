@@ -81,7 +81,7 @@ impl<C: Clock> Do53Client<C> {
         query.header.id = expected_id;
         let bytes = encode(&query)?;
         let Some(question) = query.questions.first() else {
-            return Err(ExchangeError::Encode("query carries no question".into()));
+            return Err(ExchangeError::NoQuestion);
         };
         let expected = Expected {
             id: expected_id,
@@ -169,7 +169,7 @@ fn encode(query: &Message) -> Result<Vec<u8>, ExchangeError> {
     let mut encoder = Encoder::new(QUERY_ENCODE_BUDGET);
     encoder
         .encode_message(query)
-        .map_err(|error| ExchangeError::Encode(error.to_string()))?;
+        .map_err(ExchangeError::Encode)?;
     Ok(encoder.buf)
 }
 
@@ -218,8 +218,7 @@ async fn tcp_round_trip(
         .read_exact(&mut length_prefix)
         .await
         .map_err(|error| ExchangeError::Transport(error.kind()))?;
-    let length = read_tcp_frame_length(&length_prefix)
-        .map_err(|error| ExchangeError::Malformed(error.to_string()))?;
+    let length = read_tcp_frame_length(&length_prefix).map_err(ExchangeError::Malformed)?;
     let mut body = vec![0u8; usize::from(length)];
     stream
         .read_exact(&mut body)
@@ -228,7 +227,7 @@ async fn tcp_round_trip(
 
     let message = Decoder::new(&body)
         .decode_message()
-        .map_err(|error| ExchangeError::Malformed(error.to_string()))?;
+        .map_err(ExchangeError::Malformed)?;
     if !expected.matches(&message) {
         return Err(ExchangeError::Mismatched);
     }

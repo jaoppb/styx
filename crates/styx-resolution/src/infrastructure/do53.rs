@@ -82,6 +82,7 @@ impl<C: Clock> Do53Forwarder<C> {
             ExchangeError::Mismatched => UpstreamError::Mismatched,
             ExchangeError::Truncated => UpstreamError::Truncated,
             ExchangeError::Encode(_)
+            | ExchangeError::NoQuestion
             | ExchangeError::Malformed(_)
             | ExchangeError::OversizeFrame { .. } => UpstreamError::Malformed(error.to_string()),
         }

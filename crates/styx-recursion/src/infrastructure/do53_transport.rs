@@ -117,6 +117,7 @@ fn map_exchange_error(error: ExchangeError) -> TransportError {
         ExchangeError::Transport(kind) => TransportError::Unreachable(kind),
         ExchangeError::Truncated => TransportError::Truncated,
         ExchangeError::Encode(_)
+        | ExchangeError::NoQuestion
         | ExchangeError::Malformed(_)
         | ExchangeError::Mismatched
         | ExchangeError::OversizeFrame { .. } => TransportError::Malformed,
