@@ -23,7 +23,8 @@ pub enum MinimisationMode {
     /// Send one label below the zone cut.
     Relaxed,
     /// A server mishandled a minimised query: send the full qname for the rest of
-    /// this descent.
+    /// this zone cut. Crossing into a new cut or following an alias minimises again,
+    /// because the servers there have not mishandled anything.
     FellBackFullQname,
 }
 
@@ -110,7 +111,7 @@ impl MinimisationState {
     ///
     /// - **Refused** (FORMERR, NOTIMP, REFUSED) to a minimised question: the
     ///   server may simply not understand minimised queries, so retry the full
-    ///   qname at the same server and fall back for the rest of this descent. That
+    ///   qname at the same server and fall back for the rest of this zone cut. That
     ///   retry is also the experiment that proves (or not) that the server
     ///   mishandles minimisation — see [`Self::fallback_proved_mishandling`].
     /// - **Refused** after falling back, or **ServerFailure**: a health problem,
@@ -162,6 +163,7 @@ impl MinimisationState {
 
     /// The descent crossed into a new zone cut: minimise again from just below it.
     pub fn enter_cut(&mut self, cut_zone: &Name) {
+        self.mode = MinimisationMode::Relaxed;
         self.prefix_labels = cut_zone.label_count().saturating_add(1);
     }
 
@@ -171,7 +173,7 @@ impl MinimisationState {
         self.enter_cut(cut_zone);
     }
 
-    /// Sends the full qname for the remainder of this descent.
+    /// Sends the full qname for the remainder of this zone cut.
     pub fn fall_back_to_full_qname(&mut self) {
         self.mode = MinimisationMode::FellBackFullQname;
     }

@@ -122,3 +122,28 @@ fn a_ds_question_reaches_the_parent_zone_and_is_asked_there_in_full() {
         ("example.com.".into(), RecordType::DS)
     );
 }
+
+#[test]
+fn a_fallback_lasts_for_one_zone_cut_and_an_alias_minimises_again() {
+    let mut minimisation = state("www.example.com.", RecordType::A);
+    let sent = minimisation.next_question(&Name::root(), MinimisationVerdict::Unknown);
+    minimisation.on_bad_response(BadResponse::Refused, &sent);
+    assert_eq!(minimisation.mode(), MinimisationMode::FellBackFullQname);
+
+    minimisation.retarget(name("secret.tracker.net."), &Name::root());
+
+    assert_eq!(minimisation.mode(), MinimisationMode::Relaxed);
+    let (qname, qtype) = ask(&mut minimisation, ".");
+    assert_eq!((qname.as_str(), qtype), ("net.", RecordType::NS));
+}
+
+#[test]
+fn entering_a_new_cut_ends_a_fallback() {
+    let mut minimisation = state("www.example.com.", RecordType::A);
+    let sent = minimisation.next_question(&Name::root(), MinimisationVerdict::Unknown);
+    minimisation.on_bad_response(BadResponse::Refused, &sent);
+
+    minimisation.enter_cut(&name("com."));
+
+    assert_eq!(minimisation.mode(), MinimisationMode::Relaxed);
+}
