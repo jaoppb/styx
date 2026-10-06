@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::domain::edns::Opt;
 use crate::domain::error::EncodeError;
-use crate::domain::header::Header;
+use crate::domain::header::{Header, ResponseCodeParts};
 use crate::domain::message::Message;
 use crate::domain::name::Name;
 use crate::domain::question::Question;
@@ -131,7 +131,7 @@ impl Encoder {
         if hdr.checking_disabled {
             flags |= 0x0010;
         }
-        let (header_nibble, _) = hdr.rcode.split();
+        let ResponseCodeParts { header_nibble, .. } = hdr.rcode.split();
         flags |= u16::from(header_nibble & 0x0F);
 
         self.write_u16(flags)?;

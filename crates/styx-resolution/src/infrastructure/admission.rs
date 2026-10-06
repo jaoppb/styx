@@ -11,6 +11,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::application::terminal::RefusedTerminal;
 use crate::application::Pipeline;
+use crate::domain::request::MaxResponseSize;
 
 /// Minimum spacing between two rate-limited warnings from one listener.
 const WARN_INTERVAL: Duration = Duration::from_secs(1);
@@ -108,6 +109,8 @@ pub struct ListenerShared<L, F, O, C, T = RefusedTerminal> {
     pub abort: CancellationToken,
     /// Per-query deadline handed to [`Pipeline::handle_within`].
     pub query_timeout: Duration,
+    /// Configured default UDP payload size for EDNS.
+    pub udp_payload_size_default: MaxResponseSize,
 }
 
 impl<L, F, O, C, T> Clone for ListenerShared<L, F, O, C, T> {
@@ -119,6 +122,7 @@ impl<L, F, O, C, T> Clone for ListenerShared<L, F, O, C, T> {
             tasks: self.tasks.clone(),
             abort: self.abort.clone(),
             query_timeout: self.query_timeout,
+            udp_payload_size_default: self.udp_payload_size_default,
         }
     }
 }

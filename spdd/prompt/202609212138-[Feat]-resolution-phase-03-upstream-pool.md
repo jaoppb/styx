@@ -68,12 +68,19 @@ strategies, and a probe policy that fires only where passive health is structura
   named distinctly (`RecursionDiagnostics` vs `HealthState`)
   **so the two are never conflated**. Nothing in this phase may grow a diagnostics surface
   that Phase 5 would be tempted to fill.
+- **Enforce a global per-query deadline** *(amendment, issue 35)*: Real queries share a
+  single monotonic deadline derived from `query_timeout` across all sequential and fanout
+  attempts, and never use the canary timeout for real traffic.
+- **Wire the pool into the binary** *(amendment, issue 33)*: The `styx` binary configures
+  the upstream pool in TOML, dispatches selection strategies statically without `dyn`
+  via `ConfiguredStrategy`, wraps the pool and answer cache into the resolution pipeline
+  via a terminal stage (`PoolTerminal`/`CacheStage`), and supervises `ProbeScheduler`.
 
 **Boundary.** In scope: the port, the Do53 forwarder, `HealthState`, the pool, four
-strategies, the probe policy, and socket-level proof of all of it. Out of scope: the
-answer cache (Phase 4), recursion (Phase 5), DNSSEC (Phase 6), encrypted *inbound*
-transports (Phase 7), filtering (Phase 8), any database (Phase 9), the query-log pipeline
-(Phase 10), the UI (Phase 11).
+strategies, `ConfiguredStrategy`, the probe policy, terminal integration, binary
+wiring in `styx`, and socket-level proof of all of it. Out of scope: recursion
+(Phase 5), DNSSEC (Phase 6), encrypted *inbound* transports (Phase 7), filtering
+(Phase 8), any database (Phase 9), the query-log pipeline (Phase 10), the UI (Phase 11).
 
 ---
 
@@ -138,7 +145,7 @@ class UpstreamPool~S~ {
     -strategy S
     -clock ClockHandle
     -probe_policy ProbePolicy
-    +resolve(query) UpstreamResult
+    +resolve(query, deadline) UpstreamResult
     +snapshot() Vec~MemberView~
     +record(id, Outcome)
     +due_for_probe() Vec~UpstreamId~
@@ -208,6 +215,35 @@ class Weighted {
 
 class RaceAll {
     +select(candidates, now) Selection
+}
+
+class ConfiguredStrategy {
+    <<enum>>
+    OrderedFailover
+    RoundRobin
+    Weighted
+    RaceAll
+    +from_name(StrategyName) ConfiguredStrategy
+    +select(candidates, now) Selection
+}
+
+class PoolTerminal~S~ {
+    -pool Arc~UpstreamPool~
+    -clock ClockHandle
+    -query_timeout Duration
+    +handle_terminal(ctx) ResolutionResponse
+}
+
+class TerminalHandler {
+    <<trait, phase 2/4>>
+    +handle_terminal(ctx) ResolutionResponse
+}
+
+class ServerConfig {
+    +listen_addrs Vec~SocketAddr~
+    +query_timeout Duration
+    +upstream Option~PoolConfig~
+    +check_deadline_covers(PoolConfig)
 }
 
 class Selection {
@@ -296,6 +332,8 @@ SelectionStrategy <|.. OrderedFailover
 SelectionStrategy <|.. RoundRobin
 SelectionStrategy <|.. Weighted
 SelectionStrategy <|.. RaceAll
+SelectionStrategy <|.. ConfiguredStrategy : implements
+TerminalHandler <|.. PoolTerminal : implements
 Weighted ..> Weight : sums via checked_sum
 
 UpstreamPool "1" *-- "1..N" PoolMember : owns
@@ -312,6 +350,8 @@ UpstreamPool ..> ClockHandle : reads all time from
 ProbeScheduler "1" --> "1" UpstreamPool : drives
 ProbeScheduler "1" --> "1" ProbePolicy : consults
 ProbePolicy ..> MemberView : evaluates
+PoolTerminal --> UpstreamPool : resolves through
+ServerConfig ..> PoolConfig : validates and embeds
 Do53Forwarder ..> UpstreamError : fails with
 Do53Forwarder ..> EdnsBufferSize : advertises
 Do53Forwarder ..> FrameWriteError : frames TCP via write_framed (phase 2)
@@ -329,6 +369,14 @@ PoolConfig ..> ConfigError : fails with
 - `MemberView` is the **only** thing selection strategies see. Strategies are pure
   functions over a read-only projection plus the current time; they never touch an
   `Upstream` and never mutate health.
+- `ConfiguredStrategy` is an enum wrapping the four selection strategies, implementing
+  `SelectionStrategy` via static match dispatch so that strategy selection from TOML
+  involves zero dynamic dispatch (`dyn`), satisfying `AGENTS.md`.
+- `PoolTerminal` is a dedicated terminal handler struct that wraps an `Arc<UpstreamPool>`,
+  clock handle, and query timeout. It implements `TerminalHandler`, calculating the
+  per-query deadline and invoking `UpstreamPool::resolve(query, deadline)`.
+- `ServerConfig.upstream` embeds an optional `PoolConfig` parsed from TOML, ensuring the
+  resolution server startup validates timeout coverage via `check_deadline_covers`.
 - `RecursorAdapter` is shown for orientation only. It is **Phase 5's** work and lives in
   the `styx` binary crate (see Structure); nothing in Phase 3 implements it.
 - Nothing here is a `RecursionDiagnostics`. That is a separate read model with a
@@ -482,6 +530,26 @@ PoolConfig ..> ConfigError : fails with
   SERVFAIL/REFUSED, return a mismatched ID, go away, come back — and must count the
   queries they received, which is how `race` fan-out and probe silence are asserted.
 
+### 8. Global query deadline and binary wiring
+
+- **Global query deadline** *(amendment, issue 35)*: In sequential failover, candidate
+  attempts must not each receive a fresh deadline equal to their canary timeout. Real
+  queries receive an absolute monotonic `deadline` derived from `query_timeout` in the
+  pipeline terminal stage (`ctx.received_at + query_timeout`). All sequential and fanout
+  attempts share this single deadline. In sequential failover, if the deadline has elapsed
+  prior to admitting or dispatching a candidate member, the loop halts immediately and
+  returns `PoolError::Exhausted`.
+- **Terminal stage integration**: `PoolTerminal` bridges `UpstreamPool` into
+  `TerminalHandler`. On resolution queries, it calculates the shared deadline and invokes
+  `pool.resolve(query, deadline)`. When the answer cache is present, `CacheStage` wraps
+  `UpstreamPool` and similarly passes the deadline on cache misses and uncacheable queries.
+- **Binary composition root** *(amendment, issue 33)*: `crates/styx/src/main.rs` loads
+  `ServerConfig`, ensures the `[upstream]` table is configured, instantiates forwarders,
+  constructs `UpstreamPool<ConfiguredStrategy, Do53Forwarder<SystemClock>, SystemClock>`,
+  wraps it with `ShardedAnswerCache` in `CacheStage`, and wires it into the server
+  pipeline. `ProbeScheduler` is spawned as a supervised task under a `CancellationToken`
+  and cancelled promptly on server shutdown.
+
 ---
 
 ## Structure
@@ -519,12 +587,18 @@ styx-resolution/ (feature crate)
         pool.rs          # PoolError (thiserror)
     application/
       pool.rs            # UpstreamPool: dispatch, outcome recording, snapshot
-      strategies/        # OrderedFailover, RoundRobin, Weighted, RaceAll
+      strategies/        # OrderedFailover, RoundRobin, Weighted, RaceAll, ConfiguredStrategy
+      terminal.rs        # RefusedTerminal, PoolTerminal, TerminalHandler
       probe_scheduler.rs # ProbeScheduler background task
     infrastructure/
       do53.rs            # Do53Forwarder: UDP + TCP fallback
+      server.rs          # ServerConfig with optional [upstream] table
       udp.rs / tcp.rs    # transport details
       tcp_frame.rs       # write_framed, FrameWriteError — Phase 2, reused by do53
+
+styx/ (composition root)
+  src/
+    main.rs              # ServerConfig loading, pool & forwarder wiring, ProbeScheduler
 ```
 
 `health.rs`/`circuit.rs` and `config.rs`/`weight.rs`/`edns.rs` are each split by concept
@@ -543,15 +617,21 @@ different concept from the state machine it drives (`CircuitState`), and `Weight
    `styx_core`.
 2. `Do53Forwarder` in `infrastructure::do53` implements `styx_core::Upstream`.
 3. `SelectionStrategy` is a trait in `domain::selection`; `OrderedFailover`, `RoundRobin`,
-   `Weighted` and `RaceAll` in `application::strategies` each implement it.
-4. `UpstreamError` is a `thiserror` enum in `styx-core::domain::error`; `PoolError` is
+   `Weighted`, `RaceAll`, and `ConfiguredStrategy` in `application::strategies` each
+   implement it.
+4. `TerminalHandler` in `application::terminal` is implemented by `PoolTerminal` (direct
+   upstream pool resolution) and `CacheStage` (Phase 4 cache-backed resolution).
+5. `UpstreamError` is a `thiserror` enum in `styx-core::domain::error`; `PoolError` is
    defined in `domain::error::pool`. `require-thiserror` is an enforced lint.
-5. `HealthState` and `CircuitState` are plain `domain` types with no trait at all —
+6. `HealthState` and `CircuitState` are plain `domain` types with no trait at all —
    **there is no `HealthCheck` trait, by decision.**
-6. **Phase 5's recursor** implements `Upstream` from *outside* this crate. Because
+7. **Phase 5's recursor** implements `Upstream` from *outside* this crate. Because
    `Upstream` is defined in the shared foundation crate `styx-core`, `styx-recursion`
    implements `styx_core::Upstream` directly without depending on `styx-resolution`,
    cleanly preserving crate isolation without cross-feature coupling.
+8. The `styx` binary in `crates/styx/src/main.rs` is the composition root: it loads
+   `ServerConfig`, constructs `Do53Forwarder` instances, `UpstreamPool`, and
+   `ProbeScheduler`, wiring them into `Pipeline` via `CacheStage`.
 
 ### Dependencies
 
@@ -763,6 +843,19 @@ Ordered by dependency. Each task is independently completable and independently 
    level per the exit criteria. Every strategy returns `NoneAvailable` when the candidate
    list has no available member — never an empty `Sequential`.
 
+### 5b. Implement static strategy dispatch — `application::strategies::configured`
+
+1. **Responsibility**: wrap all four strategies into an enum implementing
+   `SelectionStrategy` without dynamic dispatch (`dyn`).
+2. **Enum**: `ConfiguredStrategy` with variants `OrderedFailover(OrderedFailover)`,
+   `RoundRobin(RoundRobin)`, `Race(RaceAll)`, `Weighted(Weighted)`.
+3. **Methods**:
+   - `fn from_name(name: StrategyName) -> Self` — maps configuration `StrategyName` into
+     the corresponding initialized strategy.
+   - `name(&self) -> StrategyName` and `select(&self, candidates: &[MemberView], now: Instant) -> Selection`
+     — delegate via match arms to inner strategy implementations.
+4. **Constraints**: pure static dispatch, no heap allocation, no `dyn` trait object.
+
 ### 6. Implement `UpstreamPool` — `application::pool`
 
 1. **Responsibility**: own the members and their health; select, dispatch, record, and
@@ -771,22 +864,26 @@ Ordered by dependency. Each task is independently completable and independently 
    `UpstreamPool<S: SelectionStrategy>`), `clock: ClockHandle`, `circuit: CircuitConfig`,
    `probe_policy: ProbePolicy`.
 3. **Methods**:
-   - `async fn resolve(&self, query: &Question) -> Result<UpstreamResponse, PoolError>` is
-     a short dispatcher, not the place the per-strategy logic lives: read `now` from the
+   - `async fn resolve(&self, query: &Question, deadline: Instant) -> Result<UpstreamResponse, PoolError>`
+     is a short dispatcher, not the place the per-strategy logic lives: read `now` from the
      clock, build `Vec<MemberView>`, call `strategy.select(&views, now)`, then a guard
      clause per `Selection` variant hands off to a named helper.
      - `NoneAvailable` → emit `tracing::warn!("all upstreams down in pool")`, return
        `PoolError::AllUpstreamsDown` immediately. Never hang, never panic.
-     - `Sequential(ids)` → `async fn try_sequential(&self, ids: &[UpstreamId], query: &Question) -> Result<UpstreamResponse, PoolError>`
-       opens `upstream_dispatch` span carrying member id and strategy, tries each id in
-       order with a per-attempt deadline, records elapsed time and outcome on the span via
-       `record_span_outcome`, records each attempt's outcome on the pool, returns the first
-       success, and returns `PoolError::Exhausted` carrying the last error if every id fails.
-     - `Fanout(ids)` → `async fn try_fanout(&self, ids: &[UpstreamId], query: &Question) -> Result<UpstreamResponse, PoolError>`
+     - `Sequential(ids)` → `async fn try_sequential(&self, ids: &[UpstreamId], query: &Question, deadline: Instant) -> Result<UpstreamResponse, PoolError>`
+       checks whether the deadline has elapsed before admitting or dispatching each member,
+       opens `upstream_dispatch` span carrying member id and strategy, dispatches with the
+       shared `deadline` (never resetting the attempt deadline to `canary.timeout`),
+       records elapsed time and outcome on the span via `record_span_outcome`, records each
+       attempt's outcome on the pool, returns the first success, and returns
+       `PoolError::Exhausted` carrying the last error if all available candidates fail or
+       time runs out.
+     - `Fanout(ids)` → `async fn try_fanout(&self, ids: &[UpstreamId], query: &Question, deadline: Instant) -> Result<UpstreamResponse, PoolError>`
        spawns concurrent tasks with `upstream_dispatch` span carrying member id and strategy,
-       delegating result collection to `collect_fanout_results`, which takes the first usable
-       response, records span and pool outcomes for **every** branch that completed, cancels
-       the remainder, and sets `raced_count` on the response.
+       sharing `deadline` across all candidate tasks, delegating result collection to
+       `collect_fanout_results`, which takes the first usable response, records span and
+       pool outcomes for **every** branch that completed, cancels the remainder, and sets
+       `raced_count` on the response.
      - Both helpers stamp `answered_by`, `kind` (from the answering member's `kind()`)
        and `elapsed`; `resolve` itself stamps none of them.
    - `fn record(&self, id: &UpstreamId, outcome: Outcome)` — look up the member, take its
@@ -809,6 +906,19 @@ Ordered by dependency. Each task is independently completable and independently 
      `excessive_nesting` thresholds (Phase 0 Norm 17) — `Sequential`'s per-attempt loop
      and `Fanout`'s concurrent-dispatch-and-cancel logic are each a full nesting budget
      on their own.
+
+### 6b. Implement `PoolTerminal` — `application::terminal`
+
+1. **Responsibility**: bridge `UpstreamPool` into the resolution pipeline as a standalone
+   `TerminalHandler`.
+2. **Fields**: `pool: Arc<UpstreamPool<S, U, C>>`, `clock: Arc<C>`, `query_timeout: Duration`.
+3. **Method**:
+   - `async fn handle_terminal(&self, ctx: &RequestContext) -> Result<ResolutionResponse, PipelineError>`
+     calculates `deadline = ctx.received_at + self.query_timeout`, resolves the query
+     via `self.pool.resolve(question, deadline)`, copies the incoming query ID to the
+     response message header, constructs a `ResolutionOutcome::Resolved`, and returns
+     a `ResolutionResponse`.
+4. **Constraints**: generic over strategy and upstream; no `dyn`.
 
 ### 7. Implement `ProbePolicy` and `CanaryConfig` — `domain::probe`
 
@@ -944,6 +1054,11 @@ Ordered by dependency. Each task is independently completable and independently 
      (`EdnsBufferTooLarge`); a recursor member's canary must be a descent-requiring name
      (`CanaryNotDescending`). Weights are accepted for every strategy and are simply
      unused outside `weighted` — that is not a validation failure.
+   - Server configuration embedding *(amendment, issue 33)*: `ServerConfig` in
+     `infrastructure::server` parses an optional `[upstream]` section from TOML into
+     `Option<PoolConfig>`. When present, `ServerConfig::check_deadline_covers(&pool)`
+     validates that `query_timeout` strictly exceeds every member timeout. The binary
+     requires `[upstream]` to be present at startup.
 
 ### 11. Build the fake upstreams and the socket-level suite — `tests/`
 
@@ -984,6 +1099,41 @@ Ordered by dependency. Each task is independently completable and independently 
      hang and no panic.
 4. **Constraint**: a CI check asserts `hickory-proto` appears in no normal or build
    dependency path.
+
+### 12. Wire binary composition root — `crates/styx/src/main.rs`
+
+1. **Responsibility**: configure, assemble, and supervise all resolution components at
+   startup without service locators or dynamic dispatch.
+2. **Steps**:
+   - `load_config()` loads `ServerConfig`, requiring the `[upstream]` table and returning
+     an error if missing.
+   - Instantiates `Do53Forwarder` for each configured member in `pool_config.members`.
+   - Constructs `ConfiguredStrategy::from_name(pool_config.strategy)`.
+   - Constructs `Arc<UpstreamPool<ConfiguredStrategy, Do53Forwarder<SystemClock>,`
+     `SystemClock>>`.
+   - Constructs `Arc<ShardedAnswerCache<SystemClock>>`.
+   - Constructs `CacheStage` wrapping cache, pool, clock, and `config.query_timeout`.
+   - Wires `Pipeline::new(...).with_terminal(cache_stage)`.
+   - Binds `Server::bind(config, pipeline, clock)`.
+   - Spawns `ProbeScheduler::new(pool.clone(), clock.clone(), pool_config.probe.tick)`
+     running under `probe_cancel.clone()`.
+   - On shutdown signal (SIGINT / Ctrl+C), cancels `probe_cancel` and awaits
+     `server.shutdown()`.
+3. **Constraints**: clean shutdown leaving zero orphaned tasks; all collaborator injection
+   is by value; `anyhow` is permitted only in `main.rs`.
+
+### 13. Upstream wiring and deadline integration tests — `tests/`
+
+1. **Responsibility**: prove binary-level configuration parsing, upstream resolution, and
+   deadline bounding at socket level in `tests/upstream_wiring_tests.rs`.
+2. **Tests**:
+   - `upstream_pool_toml_wiring_answers_query`: builds `Server` and `Pipeline` configured
+     via TOML string with an `[upstream]` table pointing to a fake upstream; sends a UDP
+     query and asserts a `NOERROR` response containing the fake's records.
+   - `global_query_timeout_bounds_failover`: configures sequential failover with multiple
+     slow upstreams and `query_timeout = 2 s`; asserts that resolution completes in less
+     than 2.2 s with `SERVFAIL` without waiting for each member's individual canary
+     timeout.
 
 ---
 
@@ -1155,6 +1305,17 @@ Scope, verbatim, from the same specification:
   defined behaviour with no division by zero.
 - **Cold start**: never-observed members are idle-beyond-window (so they get probed once)
   and optimistically available (so the pool serves traffic immediately).
+- **Global query deadline** *(amendment, issue 35)*: Real traffic resolution across
+  all failover attempts completes strictly within the deadline derived from
+  `query_timeout`. A pool with multiple failing or slow upstreams returns
+  `PoolError::Exhausted` within `query_timeout` plus scheduling jitter, never
+  multiplying delays by member count.
+- **Zero dynamic dispatch** *(amendment, issue 33)*: Strategy selection from
+  configuration dispatches via the monomorphic `ConfiguredStrategy` enum, maintaining
+  zero `dyn` trait objects on the hot path.
+- **Clean shutdown** *(amendment, issue 33)*: Cancelling `ProbeScheduler`'s cancellation
+  token on SIGINT ensures the background probing loop terminates promptly without leaked
+  tasks or panics.
 
 ### 4. Privacy constraints — recorded risk, carried forward in full
 

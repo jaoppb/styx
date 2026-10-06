@@ -81,6 +81,7 @@ fn config() -> ServerConfig {
         limits: ConcurrencyLimits::default_limits()
             .with_udp_sockets_per_addr(default_socket_count()),
         supervisor: styx_resolution::SupervisorBackoffPolicy::default(),
+        upstream: None,
     }
 }
 

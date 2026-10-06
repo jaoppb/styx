@@ -18,7 +18,7 @@ use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
-use crate::domain::request::{ClientId, RequestContext, Transport};
+use crate::domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 use crate::infrastructure::admission::{ListenerShared, QueryPermit, WarnLimiter};
 use crate::infrastructure::response::ResponseWriter;
 use crate::infrastructure::udp_socket::bind_reuseport_group;
@@ -150,6 +150,7 @@ where
             pipeline: Arc::clone(&self.shared.pipeline),
             clock: Arc::clone(&self.shared.clock),
             query_timeout: self.shared.query_timeout,
+            udp_payload_size_default: self.shared.udp_payload_size_default,
         };
         let bytes = slice.to_vec();
         let abort = self.shared.abort.clone();
@@ -170,6 +171,7 @@ struct DatagramResponder<L, F, O, C, T> {
     pipeline: Arc<Pipeline<L, F, O, C, T>>,
     clock: Arc<C>,
     query_timeout: Duration,
+    udp_payload_size_default: MaxResponseSize,
 }
 
 impl<L, F, O, C, T> DatagramResponder<L, F, O, C, T>
@@ -193,12 +195,29 @@ where
             }
         };
 
+        if query.header.kind == MessageKind::Response {
+            tracing::debug!(%peer, "silently dropping inbound UDP response datagram (QR=1)");
+            return;
+        }
+
         let client = ClientId::from_socket_addr(peer);
-        let max_size = RequestContext::derive_max_response_size(Transport::Udp, &query);
-        let ctx = RequestContext::new(query, client, Transport::Udp, max_size, received_at);
+        let max_size = RequestContext::derive_max_response_size(
+            Transport::Udp,
+            &query,
+            self.udp_payload_size_default,
+        );
+        let ctx = RequestContext::new(
+            query,
+            client,
+            Transport::Udp,
+            max_size,
+            self.udp_payload_size_default,
+            received_at,
+        );
 
         let response = match self.pipeline.handle_within(&ctx, self.query_timeout).await {
             Ok(resp) => resp,
+            Err(crate::domain::error::PipelineError::InboundResponse) => return,
             Err(err) => {
                 let mut resp = Message::new(Header::new_query(
                     ctx.query.header.id,
@@ -217,6 +236,10 @@ where
     }
 
     async fn try_send_formerr(&self, bytes: &[u8], peer: SocketAddr) {
+        if bytes.get(2).is_some_and(|&b| (b & 0x80) != 0) {
+            tracing::debug!(%peer, "silently dropping malformed UDP response datagram (QR=1)");
+            return;
+        }
         let (Some(&b0), Some(&b1)) = (bytes.first(), bytes.get(1)) else {
             return;
         };
@@ -228,7 +251,14 @@ where
         let received_at = self.clock.now_monotonic();
         let client = ClientId::from_socket_addr(peer);
         let max_size = crate::domain::request::MaxResponseSize::classic();
-        let ctx = RequestContext::new(resp.clone(), client, Transport::Udp, max_size, received_at);
+        let ctx = RequestContext::new(
+            resp.clone(),
+            client,
+            Transport::Udp,
+            max_size,
+            self.udp_payload_size_default,
+            received_at,
+        );
         if let Err(err) = self.send_message(resp, &ctx, peer).await {
             tracing::debug!(%peer, %err, "failed to send UDP formerr");
         }

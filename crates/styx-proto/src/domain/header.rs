@@ -129,9 +129,9 @@ impl ResponseCode {
         self.value
     }
 
-    /// Splits the 12-bit response code into (header_nibble, opt_upper_octet).
+    /// Splits the 12-bit response code into its component parts.
     #[must_use]
-    pub fn split(self) -> (u8, u8) {
+    pub fn split(self) -> ResponseCodeParts {
         let lower = match u8::try_from(self.value & 0x0F) {
             Ok(v) => v,
             Err(e) => {
@@ -146,7 +146,10 @@ impl ResponseCode {
                 0
             }
         };
-        (lower, upper)
+        ResponseCodeParts {
+            header_nibble: lower,
+            opt_upper_octet: upper,
+        }
     }
 }
 
@@ -168,6 +171,15 @@ impl fmt::Display for ResponseCode {
             other => write!(f, "RCODE({})", other.value()),
         }
     }
+}
+
+/// Component parts of a 12-bit DNS response code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponseCodeParts {
+    /// 4-bit header response code nibble.
+    pub header_nibble: u8,
+    /// 8-bit upper extended response code octet (from EDNS OPT).
+    pub opt_upper_octet: u8,
 }
 
 /// The 12-octet DNS message header (RFC 1035 §4.1.1).
@@ -218,5 +230,36 @@ impl Header {
     /// Required for blocked replies, local records, and any synthesized responses.
     pub fn clear_authentic_data(&mut self) {
         self.authentic_data = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_standard_rcode() {
+        let parts = ResponseCode::NXDOMAIN.split();
+        assert_eq!(parts.header_nibble, 3);
+        assert_eq!(parts.opt_upper_octet, 0);
+    }
+
+    #[test]
+    fn test_split_extended_rcode() {
+        let parts = ResponseCode::BADVERS_OR_BADSIG.split();
+        assert_eq!(parts.header_nibble, 0);
+        assert_eq!(parts.opt_upper_octet, 1);
+    }
+
+    #[test]
+    fn test_split_and_from_parts_roundtrip() {
+        let original = ResponseCode::from_parts(0x0E, 0xAB);
+        let parts = original.split();
+        assert_eq!(parts.header_nibble, 0x0E);
+        assert_eq!(parts.opt_upper_octet, 0xAB);
+        assert_eq!(
+            ResponseCode::from_parts(parts.header_nibble, parts.opt_upper_octet),
+            original
+        );
     }
 }

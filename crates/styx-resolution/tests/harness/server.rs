@@ -24,6 +24,8 @@ pub struct ServerSettings {
     pub tcp_idle_timeout: Duration,
     /// Supervisor retry backoff policy.
     pub supervisor: SupervisorBackoffPolicy,
+    /// Default advertised UDP payload size for EDNS.
+    pub udp_payload_size_default: MaxResponseSize,
 }
 
 impl Default for ServerSettings {
@@ -33,6 +35,7 @@ impl Default for ServerSettings {
             query_timeout: Duration::from_secs(2),
             tcp_idle_timeout: Duration::from_secs(5),
             supervisor: SupervisorBackoffPolicy::default(),
+            udp_payload_size_default: MaxResponseSize::from_edns_advertised(1232),
         }
     }
 }
@@ -157,11 +160,12 @@ where
     ) -> Result<Self, HarnessError> {
         let config = ServerConfig {
             listen_addrs: vec![SocketAddr::from(([127, 0, 0, 1], 0))],
-            udp_payload_size_default: MaxResponseSize::classic(),
+            udp_payload_size_default: settings.udp_payload_size_default,
             tcp_idle_timeout: settings.tcp_idle_timeout,
             query_timeout: settings.query_timeout,
             limits: settings.limits,
             supervisor: settings.supervisor,
+            upstream: None,
         };
 
         let server = Server::bind(config, Arc::new(pipeline), Arc::clone(&clock)).await?;

@@ -5,10 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use styx_core::Clock;
-use styx_proto::{Message, Opcode, Question, RecordClass, ResponseCode, Ttl};
+use styx_proto::{Message, MessageKind, Opcode, Question, RecordClass, ResponseCode, Ttl};
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
-use crate::domain::answer::{ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse};
+use crate::domain::answer::{
+    ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse, ResolutionResponseParts,
+};
 use crate::domain::error::PipelineError;
 use crate::domain::ports::filter::{FilterPolicy, FilterVerdict};
 use crate::domain::ports::local::LocalRecords;
@@ -106,6 +108,7 @@ where
     ) -> Result<Message, PipelineError> {
         let question = match self.validate_input(&ctx.query) {
             Ok(q) => q,
+            Err(PipelineError::InboundResponse) => return Err(PipelineError::InboundResponse),
             Err(err) => return self.handle_error(ctx, err),
         };
 
@@ -125,6 +128,9 @@ where
     }
 
     fn validate_input<'a>(&self, query: &'a Message) -> Result<&'a Question, PipelineError> {
+        if query.header.kind == MessageKind::Response {
+            return Err(PipelineError::InboundResponse);
+        }
         if query.questions.is_empty() {
             return Err(PipelineError::MalformedQuery);
         }
@@ -184,7 +190,7 @@ where
         };
         match result {
             Ok(terminal_response) => {
-                let (message, outcome) = terminal_response.into_parts();
+                let ResolutionResponseParts { message, outcome } = terminal_response.into_parts();
                 self.record_telemetry(ctx, question, &outcome);
                 Ok(message)
             }

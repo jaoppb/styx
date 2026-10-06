@@ -15,11 +15,12 @@ pub mod infrastructure;
 
 // Public re-exports for convenience
 pub use application::{
-    CacheStage, OrderedFailover, Pipeline, PoolMember, ProbeScheduler, RaceAll, RefusedTerminal,
-    RoundRobin, TerminalHandler, UpstreamPool, Weighted,
+    CacheStage, ConfiguredStrategy, OrderedFailover, Pipeline, PoolMember, PoolTerminal,
+    ProbeScheduler, RaceAll, RefusedTerminal, RoundRobin, TerminalHandler, UpstreamPool, Weighted,
 };
 pub use domain::answer::{
-    AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse, ResolvedSource,
+    AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse,
+    ResolutionResponseParts, ResolvedSource,
 };
 pub use domain::cache::{
     Admission, AdmissionOutcome, AdmittedCount, AnswerCache, Bailiwick, CacheCapacity, CacheEntry,

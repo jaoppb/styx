@@ -74,7 +74,13 @@ fn create_cache_stage_with_admission(
         },
         ProbePolicy::new(ProbeConfig::default()),
     ));
-    Arc::new(CacheStage::with_admission(cache, pool, admission, clock))
+    Arc::new(CacheStage::with_admission(
+        cache,
+        pool,
+        admission,
+        clock,
+        Duration::from_secs(2),
+    ))
 }
 
 fn create_cache_stage(

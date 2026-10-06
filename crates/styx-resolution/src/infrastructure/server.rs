@@ -64,6 +64,8 @@ struct RawConfig {
     max_tcp_connections: Option<usize>,
     #[serde(default)]
     supervisor: Option<RawSupervisorConfig>,
+    #[serde(default)]
+    upstream: Option<toml::Value>,
 }
 
 const fn default_udp_size() -> u16 {
@@ -93,6 +95,8 @@ pub struct ServerConfig {
     pub limits: ConcurrencyLimits,
     /// Policy controlling supervisor retry backoff and healthy run reset.
     pub supervisor: SupervisorBackoffPolicy,
+    /// Upstream pool configuration, if present in TOML.
+    pub upstream: Option<PoolConfig>,
 }
 
 impl ServerConfig {
@@ -114,8 +118,14 @@ impl ServerConfig {
         if raw.listen_addrs.is_empty() {
             return Err(ConfigError::Invalid("listen_addrs cannot be empty".into()));
         }
+
         let supervisor = parse_supervisor_policy(raw.supervisor)?;
-        Ok(Self {
+        let upstream = match raw.upstream {
+            Some(val) => Some(PoolConfig::from_toml_value(val)?),
+            None => None,
+        };
+
+        let config = Self {
             listen_addrs: raw.listen_addrs,
             udp_payload_size_default: MaxResponseSize::from_edns_advertised(
                 raw.udp_payload_size_default,
@@ -138,7 +148,14 @@ impl ServerConfig {
                 TCP_WRITE_TIMEOUT,
             ),
             supervisor,
-        })
+            upstream,
+        };
+
+        if let Some(pool) = &config.upstream {
+            config.check_deadline_covers(pool)?;
+        }
+
+        Ok(config)
     }
 
     /// Checks that `query_timeout` outlasts every pool member's own timeout, so the
@@ -250,6 +267,7 @@ where
             tasks: TaskTracker::new(),
             abort: CancellationToken::new(),
             query_timeout: config.query_timeout,
+            udp_payload_size_default: config.udp_payload_size_default,
         };
         let connections = ConnectionBudget::new(limits.max_tcp_connections());
         let mut local_addrs = Vec::new();

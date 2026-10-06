@@ -189,7 +189,11 @@ where
     /// # Errors
     /// Returns [`PoolError::AllUpstreamsDown`] if no members are available,
     /// or [`PoolError::Exhausted`] if all attempted members fail.
-    pub async fn resolve(&self, query: &Question) -> Result<UpstreamResponse, PoolError> {
+    pub async fn resolve(
+        &self,
+        query: &Question,
+        deadline: Instant,
+    ) -> Result<UpstreamResponse, PoolError> {
         let views = self.snapshot();
         let now = self.clock.now_monotonic();
         let selection = self.strategy.select(&views, now);
@@ -199,8 +203,8 @@ where
                 tracing::warn!("all upstreams down in pool");
                 Err(PoolError::AllUpstreamsDown)
             }
-            Selection::Sequential(ids) => self.try_sequential(&ids, query).await,
-            Selection::Fanout(ids) => self.try_fanout(&ids, query).await,
+            Selection::Sequential(ids) => self.try_sequential(&ids, query, deadline).await,
+            Selection::Fanout(ids) => self.try_fanout(&ids, query, deadline).await,
         }
     }
 
@@ -208,10 +212,15 @@ where
         &self,
         ids: &[UpstreamId],
         query: &Question,
+        deadline: Instant,
     ) -> Result<UpstreamResponse, PoolError> {
         let mut last_error = None;
 
         for id in ids {
+            if self.clock.now_monotonic() >= deadline {
+                break;
+            }
+
             if !self.try_admit(id) {
                 continue;
             }
@@ -220,7 +229,7 @@ where
                 continue;
             };
 
-            match self.dispatch_member(member, query).await {
+            match self.dispatch_member(member, query, deadline).await {
                 Ok(resp) => return Ok(resp),
                 Err(err) => last_error = Some(err),
             }
@@ -233,6 +242,7 @@ where
         &self,
         member: &PoolMember<U>,
         query: &Question,
+        deadline: Instant,
     ) -> Result<UpstreamResponse, UpstreamError> {
         let strategy = self.strategy.name();
         let span = tracing::info_span!(
@@ -244,7 +254,6 @@ where
         );
 
         let start = self.clock.now_monotonic();
-        let deadline = start.checked_add(member.canary.timeout).unwrap_or(start);
 
         let res = member
             .upstream
@@ -292,6 +301,7 @@ where
         &self,
         ids: &[UpstreamId],
         query: &Question,
+        deadline: Instant,
     ) -> Result<UpstreamResponse, PoolError> {
         let mut set = JoinSet::new();
         let raced_count = u8::try_from(ids.len()).unwrap_or(u8::MAX);
@@ -311,7 +321,6 @@ where
             let id_clone = member.id.clone();
             let kind = upstream.kind();
             let start = self.clock.now_monotonic();
-            let deadline = start.checked_add(member.canary.timeout).unwrap_or(start);
 
             let span = tracing::info_span!(
                 "upstream_dispatch",

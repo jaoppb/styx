@@ -48,6 +48,8 @@ impl TerminalHandler for LargeAnswerTerminal {
 
         let count = if question.qname.to_string().starts_with("medium") {
             5
+        } else if question.qname.to_string().starts_with("fits") {
+            12
         } else {
             25
         };
@@ -181,19 +183,62 @@ async fn test_udp_truncation_and_tcp_fallback() {
     assert!(!tcp_resp.header.truncated, "TCP must not truncate");
     assert!(!tcp_resp.answers.is_empty(), "TCP delivers full answers");
 
-    // 3. UDP with advertised EDNS buffer size 4096: fits without TC
+    // 3. UDP with advertised EDNS buffer size 4096:
+    // Exceeds the server's default 1232 ceiling (~1500+ B), so TC is set
     let mut edns_query = query.clone();
     edns_query.opt = Some(Opt::new(4096, 0, 0, false, Vec::new()));
     let edns_resp = client
         .query_udp(server.udp_addr(), &edns_query)
         .await
         .expect("edns query");
-    assert!(!edns_resp.header.truncated, "EDNS(0) 4096 must avoid TC");
-    assert!(!edns_resp.answers.is_empty());
+    assert!(
+        edns_resp.header.truncated,
+        "EDNS response exceeding 1232 server ceiling must set TC"
+    );
+    assert_eq!(
+        edns_resp.opt.as_ref().map(|o| o.udp_payload_size()),
+        Some(1232),
+        "Response OPT must advertise the server ceiling of 1232"
+    );
 
-    // 4. UDP with advertised EDNS buffer size below 512 (e.g. 100):
+    // 3b. UDP with payload ~870 B fitting within 1232: delivers answers without TC
+    let mut fits_edns_query = make_query("fits.example.com.", RecordType::TXT);
+    fits_edns_query.opt = Some(Opt::new(4096, 0, 0, false, Vec::new()));
+    let fits_edns_resp = client
+        .query_udp(server.udp_addr(), &fits_edns_query)
+        .await
+        .expect("fits edns query");
+    assert!(
+        !fits_edns_resp.header.truncated,
+        "Payload under 1232 server ceiling must avoid TC"
+    );
+    assert_eq!(
+        fits_edns_resp.opt.as_ref().map(|o| o.udp_payload_size()),
+        Some(1232),
+        "Response OPT must advertise 1232"
+    );
+    assert!(!fits_edns_resp.answers.is_empty());
+
+    server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn test_edns_small_buffer_clamped_to_512() {
+    let mut server = TestServer::boot_with_terminal(
+        Arc::new(styx_resolution::NoLocalRecords::new()),
+        Arc::new(styx_resolution::AllowAllFilter::new()),
+        Arc::new(styx_resolution::DiscardObserver::new()),
+        Arc::new(LargeAnswerTerminal),
+    )
+    .await
+    .expect("boot server");
+
+    let client = DnsClient::new();
+    let query = make_query("large.example.com.", RecordType::TXT);
+
+    // UDP with advertised EDNS buffer size below 512 (e.g. 100):
     // Per RFC 6891 Section 6.2.3, values below 512 are clamped to 512.
-    // 4a. A response exceeding 512 bytes still sets TC.
+    // A response exceeding 512 bytes still sets TC.
     let mut small_edns_query = query.clone();
     small_edns_query.opt = Some(Opt::new(100, 0, 0, false, Vec::new()));
     let small_edns_resp = client
@@ -205,7 +250,7 @@ async fn test_udp_truncation_and_tcp_fallback() {
         "Small advertised EDNS clamped to 512 still forces TC when payload > 512"
     );
 
-    // 4b. A response of ~390 bytes (> 100 but < 512) is NOT truncated because 100 is clamped to 512.
+    // A response of ~390 bytes (> 100 but < 512) is NOT truncated because 100 is clamped to 512.
     let mut medium_edns_query = make_query("medium.example.com.", RecordType::TXT);
     medium_edns_query.opt = Some(Opt::new(100, 0, 0, false, Vec::new()));
     let medium_edns_resp = client
@@ -277,6 +322,180 @@ async fn test_malformed_inputs_yield_explicit_rcodes() {
         .await
         .expect("query");
     assert_eq!(valid_resp.header.rcode, ResponseCode::REFUSED);
+
+    server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn test_edns_payload_ceiling_and_opt_advertising() {
+    let mut server = TestServer::boot_ephemeral().await.expect("boot server");
+    let client = DnsClient::new();
+
+    // Query advertising 65,535 B gets response OPT advertising 1232 B
+    let mut query = make_query("example.com.", RecordType::A);
+    query.opt = Some(Opt::new(65535, 0, 0, false, Vec::new()));
+    let resp = client
+        .query_udp(server.udp_addr(), &query)
+        .await
+        .expect("edns query");
+    let opt = resp.opt.expect("response must include OPT");
+    assert_eq!(opt.udp_payload_size(), 1232);
+
+    // Query without EDNS receives response without OPT
+    let plain_query = make_query("example.com.", RecordType::A);
+    let plain_resp = client
+        .query_udp(server.udp_addr(), &plain_query)
+        .await
+        .expect("plain query");
+    assert!(
+        plain_resp.opt.is_none(),
+        "Response must not include OPT when query had none"
+    );
+
+    server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn test_udp_qr_one_datagram_dropped_silently() {
+    let mut server = TestServer::boot_ephemeral().await.expect("boot server");
+    let mut response_msg = make_query("example.com.", RecordType::A);
+    response_msg.header.kind = MessageKind::Response;
+
+    let mut encoder = styx_proto::application::Encoder::new(512);
+    encoder.encode_message(&response_msg).expect("encode");
+
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    socket
+        .send_to(&encoder.buf, server.udp_addr())
+        .await
+        .expect("send");
+
+    let mut buf = [0u8; 512];
+    let recv_result = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        socket.recv_from(&mut buf),
+    )
+    .await;
+    assert!(
+        recv_result.is_err(),
+        "server must not respond to QR=1 datagram within 200 ms"
+    );
+
+    // Verify server remains responsive to legitimate queries
+    let client = DnsClient::new();
+    let valid_query = make_query("example.com.", RecordType::A);
+    let resp = client
+        .query_udp(server.udp_addr(), &valid_query)
+        .await
+        .expect("query");
+    assert_eq!(resp.header.kind, MessageKind::Response);
+    assert_eq!(resp.header.rcode, ResponseCode::REFUSED);
+
+    server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn test_tcp_qr_one_frame_dropped_silently() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut server = TestServer::boot_ephemeral().await.expect("boot server");
+    let mut stream = tokio::net::TcpStream::connect(server.tcp_addr())
+        .await
+        .expect("connect");
+
+    // 1. Send QR=1 response frame
+    let mut response_msg = make_query("example.com.", RecordType::A);
+    response_msg.header.kind = MessageKind::Response;
+    let mut encoder = styx_proto::application::Encoder::new(512);
+    encoder.encode_message(&response_msg).expect("encode");
+
+    let len_prefix = u16::try_from(encoder.buf.len())
+        .expect("len fits u16")
+        .to_be_bytes();
+    stream.write_all(&len_prefix).await.expect("write len");
+    stream.write_all(&encoder.buf).await.expect("write body");
+
+    // Verify no response is written within 200 ms
+    let mut prefix = [0u8; 2];
+    let read_result = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        stream.read_exact(&mut prefix),
+    )
+    .await;
+    assert!(
+        read_result.is_err(),
+        "server must not respond to TCP QR=1 frame within 200 ms"
+    );
+
+    // 2. Send legitimate query frame on the SAME connection
+    let valid_query = make_query("example.com.", RecordType::A);
+    let mut valid_enc = styx_proto::application::Encoder::new(512);
+    valid_enc.encode_message(&valid_query).expect("encode");
+    let valid_len = u16::try_from(valid_enc.buf.len())
+        .expect("len fits u16")
+        .to_be_bytes();
+    stream.write_all(&valid_len).await.expect("write len");
+    stream.write_all(&valid_enc.buf).await.expect("write body");
+
+    // Server answers legitimate query on the same connection
+    stream.read_exact(&mut prefix).await.expect("read prefix");
+    let body_len = usize::from(u16::from_be_bytes(prefix));
+    let mut body = vec![0u8; body_len];
+    stream.read_exact(&mut body).await.expect("read body");
+
+    let answered = Message::decode(&body).expect("decode");
+    assert_eq!(answered.header.id, 0x1000);
+    assert_eq!(answered.header.kind, MessageKind::Response);
+    assert_eq!(answered.header.rcode, ResponseCode::REFUSED);
+
+    server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn test_malformed_qr_one_dropped_silently() {
+    let mut server = TestServer::boot_ephemeral().await.expect("boot server");
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+
+    // Malformed packet with QR=1 (byte 2 has 0x80 set, truncated header)
+    let malformed_response = [0xbe, 0xef, 0x81, 0x80, 0xff];
+    socket
+        .send_to(&malformed_response, server.udp_addr())
+        .await
+        .expect("send");
+
+    let mut buf = [0u8; 512];
+    let recv_result = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        socket.recv_from(&mut buf),
+    )
+    .await;
+    assert!(
+        recv_result.is_err(),
+        "server must not respond (even with FORMERR) to malformed QR=1 packet within 200 ms"
+    );
+
+    // Malformed packet with QR=0 (byte 2 has 0x00, truncated header)
+    // Server DOES reply FORMERR for malformed queries
+    let malformed_query = [0xca, 0xfe, 0x01, 0x00, 0xff];
+    socket
+        .send_to(&malformed_query, server.udp_addr())
+        .await
+        .expect("send");
+
+    let (len, _) = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        socket.recv_from(&mut buf),
+    )
+    .await
+    .expect("receive FORMERR timeout")
+    .expect("recv");
+    let form_err_msg = Message::decode(&buf[..len]).expect("decode FORMERR");
+    assert_eq!(form_err_msg.header.id, 0xcafe);
+    assert_eq!(form_err_msg.header.rcode, ResponseCode::FORMERR);
 
     server.shutdown().await.expect("shutdown");
 }

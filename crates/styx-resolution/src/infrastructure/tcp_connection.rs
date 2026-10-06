@@ -345,21 +345,38 @@ where
             }
         };
 
+        if query.header.kind == MessageKind::Response {
+            tracing::debug!(peer = %self.peer, "silently dropping inbound TCP response (QR=1)");
+            return None;
+        }
+
         let client = ClientId::from_socket_addr(self.peer);
         let max_size = MaxResponseSize::tcp_ceiling();
-        let ctx = RequestContext::new(query, client, Transport::Tcp, max_size, self.received_at);
+        let ctx = RequestContext::new(
+            query,
+            client,
+            Transport::Tcp,
+            max_size,
+            self.shared.udp_payload_size_default,
+            self.received_at,
+        );
         let pipeline = &self.shared.pipeline;
         let response = match pipeline
             .handle_within(&ctx, self.shared.query_timeout)
             .await
         {
             Ok(msg) => msg,
+            Err(crate::domain::error::PipelineError::InboundResponse) => return None,
             Err(err) => error_response(&ctx, err.response_code()),
         };
         self.encode(response, &ctx)
     }
 
     fn formerr(&self, bytes: &[u8]) -> Option<Vec<u8>> {
+        if bytes.get(2).is_some_and(|&b| (b & 0x80) != 0) {
+            tracing::debug!(peer = %self.peer, "silently dropping malformed TCP response (QR=1)");
+            return None;
+        }
         let (Some(&b0), Some(&b1)) = (bytes.first(), bytes.get(1)) else {
             return None;
         };
@@ -374,6 +391,7 @@ where
             client,
             Transport::Tcp,
             MaxResponseSize::tcp_ceiling(),
+            self.shared.udp_payload_size_default,
             self.received_at,
         );
         self.encode(resp, &ctx)

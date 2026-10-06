@@ -213,8 +213,9 @@ impl ForgedAnswer {
         message.answers = answers;
 
         // Preserve EDNS OPT skeleton if the client requested EDNS
-        if let Some(client_opt) = &ctx.query.opt {
-            let opt = styx_proto::Opt::new(client_opt.udp_payload_size(), 0, 0, false, Vec::new());
+        if ctx.query.opt.is_some() {
+            let opt =
+                styx_proto::Opt::new(ctx.server_payload_size.as_u16(), 0, 0, false, Vec::new());
             message.opt = Some(opt);
         }
 
@@ -235,6 +236,15 @@ impl ForgedAnswer {
     pub fn into_response(self) -> Message {
         self.message
     }
+}
+
+/// Wire message and audit outcome parts decomposed from a resolution response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionResponseParts {
+    /// The answered DNS wire message.
+    pub message: Message,
+    /// The final resolution decision outcome.
+    pub outcome: ResolutionOutcome,
 }
 
 /// A completed DNS resolution response paired with its audit outcome.
@@ -265,7 +275,31 @@ impl ResolutionResponse {
 
     /// Decomposes the response into its wire message and outcome.
     #[must_use]
-    pub fn into_parts(self) -> (Message, ResolutionOutcome) {
-        (self.message, self.outcome)
+    pub fn into_parts(self) -> ResolutionResponseParts {
+        ResolutionResponseParts {
+            message: self.message,
+            outcome: self.outcome,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolution_response_into_parts_returns_expected_fields() {
+        let msg = Message::new(Header::new_query(42, styx_proto::Opcode::Query, false));
+        let outcome = ResolutionOutcome::Error {
+            rcode: ResponseCode::SERVFAIL,
+        };
+        let response = ResolutionResponse::new(msg.clone(), outcome.clone());
+
+        assert_eq!(*response.message(), msg);
+        assert_eq!(*response.outcome(), outcome);
+
+        let parts = response.into_parts();
+        assert_eq!(parts.message, msg);
+        assert_eq!(parts.outcome, outcome);
     }
 }

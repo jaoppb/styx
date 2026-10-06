@@ -60,6 +60,12 @@ this document revises.
   `fuzz/` in feature crates, running continuously in CI on a scheduled workflow and
   locally via `just fuzz`. Fuzzing is non-deterministic and requires the nightly
   compiler, so it is kept outside the hermetic per-push `gate`.
+- **No tuples on public interfaces.** Bare tuple types `(A, B)` must not appear on public
+  interfaces (port traits, public functions, public structs, or exported type aliases).
+  Tuples hide domain semantics, lack named fields, and make signature evolution breaking.
+  Define a named domain struct or newtype instead. Tuples are reserved strictly for internal
+  function bodies, private helper methods, and fixed standard library trait implementations
+  (e.g. `Iterator::size_hint`).
 
 ## Workspace layout and module structure
 
@@ -219,6 +225,7 @@ catching that drift is what review is for:
   still exposes a `&mut` accessor or an unvalidated setter.
 - No `Box<dyn Error>` on a public boundary.
 - Preferring generics over dynamic dispatch (`dyn`).
+- No tuples on public interfaces.
 
 **The amendment this section records**: Norms 3, 6 and 7 each claimed an arch-lint rule
 already enforced no-synchronous-I/O-by-layer, `tracing`-only logging and no-`anyhow`.

@@ -74,7 +74,7 @@ fn create_cache_stage(
         },
         ProbePolicy::new(ProbeConfig::default()),
     ));
-    Arc::new(CacheStage::new(cache, pool, clock))
+    Arc::new(CacheStage::new(cache, pool, clock, Duration::from_secs(2)))
 }
 
 #[tokio::test]

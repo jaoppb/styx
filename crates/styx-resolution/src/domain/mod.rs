@@ -24,7 +24,10 @@ pub mod request;
 pub mod selection;
 pub mod weight;
 
-pub use answer::{AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolvedSource};
+pub use answer::{
+    AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse,
+    ResolutionResponseParts, ResolvedSource,
+};
 pub use cache::{
     Admission, AdmissionOutcome, AdmittedCount, AnswerCache, Bailiwick, CacheCapacity, CacheEntry,
     CacheError, CacheKey, CacheStats, CanonicalName, Deadline, DenialKind, DnssecMetadata,
