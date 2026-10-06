@@ -7,7 +7,7 @@ use std::time::Duration;
 use styx_resolution::{
     AllowAllFilter, ConcurrencyLimits, DiscardObserver, FilterPolicy, LocalRecords,
     MaxResponseSize, NoLocalRecords, Pipeline, QueryObserver, RefusedTerminal, Server,
-    ServerConfig, TerminalHandler,
+    ServerConfig, SupervisorBackoffPolicy, TerminalHandler,
 };
 
 use super::clock::TestClock;
@@ -22,6 +22,8 @@ pub struct ServerSettings {
     pub query_timeout: Duration,
     /// TCP idle timeout.
     pub tcp_idle_timeout: Duration,
+    /// Supervisor retry backoff policy.
+    pub supervisor: SupervisorBackoffPolicy,
     /// Default advertised UDP payload size for EDNS.
     pub udp_payload_size_default: MaxResponseSize,
 }
@@ -32,6 +34,7 @@ impl Default for ServerSettings {
             limits: ConcurrencyLimits::default_limits(),
             query_timeout: Duration::from_secs(2),
             tcp_idle_timeout: Duration::from_secs(5),
+            supervisor: SupervisorBackoffPolicy::default(),
             udp_payload_size_default: MaxResponseSize::from_edns_advertised(1232),
         }
     }
@@ -161,6 +164,7 @@ where
             tcp_idle_timeout: settings.tcp_idle_timeout,
             query_timeout: settings.query_timeout,
             limits: settings.limits,
+            supervisor: settings.supervisor,
             upstream: None,
         };
 

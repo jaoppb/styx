@@ -15,6 +15,7 @@ pub mod local;
 pub mod observer;
 pub mod response;
 pub mod server;
+pub mod supervisor;
 pub mod tcp;
 pub mod tcp_connection;
 pub mod tcp_frame;
@@ -29,6 +30,10 @@ pub use local::NoLocalRecords;
 pub use observer::DiscardObserver;
 pub use response::ResponseWriter;
 pub use server::{Server, ServerConfig};
+pub use supervisor::{
+    run_listener_supervisor, SupervisedListener, SupervisorBackoff, SupervisorBackoffPolicy,
+    DEFAULT_HEALTHY_THRESHOLD, DEFAULT_INITIAL_BACKOFF, DEFAULT_MAX_BACKOFF,
+};
 pub use tcp::TcpListener;
 pub use tcp_connection::{ConnectionInFlight, InFlightSlot, OutboundFrame};
 pub use tcp_frame::{write_framed, FrameWriteError};

@@ -50,6 +50,10 @@ pub use infrastructure::local::NoLocalRecords;
 pub use infrastructure::observer::DiscardObserver;
 pub use infrastructure::response::ResponseWriter;
 pub use infrastructure::server::{Server, ServerConfig};
+pub use infrastructure::supervisor::{
+    run_listener_supervisor, SupervisedListener, SupervisorBackoff, SupervisorBackoffPolicy,
+    DEFAULT_HEALTHY_THRESHOLD, DEFAULT_INITIAL_BACKOFF, DEFAULT_MAX_BACKOFF,
+};
 pub use infrastructure::tcp::TcpListener;
 pub use infrastructure::udp::UdpListener;
 pub use infrastructure::udp_socket::default_socket_count;

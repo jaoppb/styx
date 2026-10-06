@@ -188,6 +188,7 @@ async fn test_pool_terminal_direct_resolution() {
         tcp_idle_timeout: Duration::from_secs(5),
         query_timeout: Duration::from_secs(2),
         limits: styx_resolution::ConcurrencyLimits::default_limits(),
+        supervisor: styx_resolution::SupervisorBackoffPolicy::default(),
         upstream: None,
     };
 
