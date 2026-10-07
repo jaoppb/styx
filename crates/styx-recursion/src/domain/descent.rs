@@ -16,7 +16,7 @@ use styx_proto::{
 use crate::domain::bailiwick::is_in_bailiwick;
 use crate::domain::budget::DescentBudget;
 use crate::domain::chain_material::{ChainMaterial, SignedReferral};
-use crate::domain::classify::{classify, AliasKind, AliasLink, ResponseKind};
+use crate::domain::classify::{classify, is_data_for, AliasKind, AliasLink, ResponseKind};
 use crate::domain::cname_chain::CnameChain;
 use crate::domain::error::RecursionError;
 use crate::domain::metrics::{MetricEvent, MinimisationVerdict};
@@ -257,12 +257,7 @@ impl Descent {
                 self.minimisation.advance_past_empty_non_terminal();
                 DescentAction::Query(QueryTarget::AnyServer)
             }
-            ResponseKind::NameError => {
-                let _ = self
-                    .minimisation
-                    .on_bad_response(BadResponse::NameError, &outstanding.sent);
-                DescentAction::Answer(self.build_answer(message, ResponseCode::NXDOMAIN))
-            }
+            ResponseKind::NameError => self.on_name_error(outstanding, message),
             ResponseKind::MinimisationRefused => self.on_refused(outstanding),
             ResponseKind::ServerFailure => {
                 self.minimisation
@@ -298,7 +293,7 @@ impl Descent {
             ds_records: delegation.ds_records().to_vec(),
         });
         if self.original.qtype == RecordType::DS && delegation.child_zone() == self.target() {
-            return DescentAction::Answer(self.ds_from_referral(&delegation));
+            return self.on_ds_referral(server, &delegation);
         }
         self.cut = delegation.to_cut();
         self.minimisation.enter_cut(&self.cut.zone);
@@ -333,6 +328,24 @@ impl Descent {
         self.minimisation
             .retarget(link.target.clone(), &self.cut.zone);
         DescentAction::FollowCname(link.target)
+    }
+
+    /// NXDOMAIN is final unless it came to the label just above the target: then
+    /// the full qname goes to the same server once, in case it mishandles empty
+    /// non-terminals, and the answer to that is the one believed.
+    fn on_name_error(&mut self, outstanding: &Outstanding, message: &Message) -> DescentAction {
+        let decision = self
+            .minimisation
+            .on_bad_response(BadResponse::NameError, &outstanding.sent);
+        match decision {
+            FallbackDecision::RetryFullQnameSameServer => {
+                self.events.push(DescentEvent::MinimisationFallback);
+                DescentAction::Query(QueryTarget::SameServer(outstanding.server))
+            }
+            FallbackDecision::TryNextServer | FallbackDecision::AcceptAsGenuine => {
+                DescentAction::Answer(self.build_answer(message, ResponseCode::NXDOMAIN))
+            }
+        }
     }
 
     fn on_refused(&mut self, outstanding: &Outstanding) -> DescentAction {
@@ -376,8 +389,23 @@ impl Descent {
         self.events.push(DescentEvent::Metric(server, event));
     }
 
-    /// A DS question answered by the parent's referral, which carries the DS RRset
-    /// (or, for an unsigned delegation, nothing: NODATA).
+    /// A DS question answered by a referral to the very zone asked about. When the
+    /// referral carries the DS RRset it is the answer. When it carries none the
+    /// server is not the parent: the real parent answers a DS question itself,
+    /// with an authoritative NODATA and its SOA (RFC 4035 section 3.1.4.1), so a
+    /// bare NOERROR built here would hand the cache and any validator an answer
+    /// with no proof and no negative TTL. Move on to another server instead.
+    fn on_ds_referral(&mut self, server: NameserverAddr, delegation: &Delegation) -> DescentAction {
+        let has_ds = delegation
+            .ds_records()
+            .iter()
+            .any(|record| matches!(record.rdata, RData::Ds(_)));
+        if !has_ds {
+            return self.leave(server, Some(RecursionError::LameDelegation));
+        }
+        DescentAction::Answer(self.ds_from_referral(delegation))
+    }
+
     fn ds_from_referral(&self, delegation: &Delegation) -> Message {
         let mut response = self.response_skeleton(ResponseCode::NOERROR);
         response.answers.extend(self.aliases.iter().cloned());
@@ -403,7 +431,7 @@ impl Descent {
         let records: Vec<ResourceRecord> = message
             .answers
             .iter()
-            .filter(|record| record.owner == *target && answers_type(record, qtype))
+            .filter(|record| record.owner == *target && is_data_for(record, qtype))
             .filter(|record| is_in_bailiwick(&self.cut.zone, &record.owner))
             .cloned()
             .collect();
@@ -430,11 +458,6 @@ impl Descent {
         response.questions.push(self.original.clone());
         response
     }
-}
-
-fn answers_type(record: &ResourceRecord, qtype: RecordType) -> bool {
-    record.rtype == qtype
-        || matches!(&record.rdata, RData::Rrsig(signature) if signature.type_covered() == qtype)
 }
 
 fn is_negative_proof(record: &ResourceRecord) -> bool {

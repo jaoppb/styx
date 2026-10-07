@@ -15,6 +15,17 @@ pub enum BudgetExceeded {
     WallClock,
 }
 
+impl BudgetExceeded {
+    /// Whether the bound belongs to one descent alone. A CNAME chain is followed
+    /// by one descent, so a glue sub-descent that overruns it has failed to resolve
+    /// that one name and nothing more. Depth, queries and time are spent from one
+    /// budget shared with the parent, which has no allowance left either.
+    #[must_use]
+    pub const fn is_local_to_descent(self) -> bool {
+        matches!(self, Self::CnameChain)
+    }
+}
+
 /// Why a descent failed.
 ///
 /// Converted to `UpstreamError` at the `Upstream` boundary and never seen beyond it.
@@ -78,4 +89,21 @@ pub enum ConfigError {
     /// The `[recursion]` TOML section did not parse.
     #[error("invalid [recursion] configuration: {0}")]
     Toml(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_cname_chain_bound_belongs_to_one_descent() {
+        assert!(BudgetExceeded::CnameChain.is_local_to_descent());
+        for shared in [
+            BudgetExceeded::Depth,
+            BudgetExceeded::OutboundQueries,
+            BudgetExceeded::WallClock,
+        ] {
+            assert!(!shared.is_local_to_descent());
+        }
+    }
 }

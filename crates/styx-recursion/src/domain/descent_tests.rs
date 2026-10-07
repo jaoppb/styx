@@ -354,3 +354,59 @@ fn an_aaaa_only_nameserver_needs_no_lookup_when_ipv6_is_on() {
     assert_eq!(set.next_unresolved(true), None);
     assert_eq!(set.next_unresolved(false), Some(name("ns1.example.net.")));
 }
+
+#[test]
+fn an_nxdomain_one_label_short_is_confirmed_with_the_full_name_before_it_is_believed() {
+    let mut harness = Harness::new("www.missing.com.", RecordType::A, cut("com.", &[2]));
+    let sent = harness.send(addr(2));
+    assert_eq!(sent.qname, name("missing.com."));
+    let nxdomain = reply(&sent, ResponseCode::NXDOMAIN, true);
+    assert_eq!(
+        harness.observe(Observation::Reply(nxdomain)),
+        DescentAction::Query(QueryTarget::SameServer(addr(2)))
+    );
+    assert!(harness
+        .descent
+        .drain_events()
+        .contains(&DescentEvent::MinimisationFallback));
+
+    let full = harness.send(addr(2));
+    assert_eq!(full.qname, name("www.missing.com."));
+    let nxdomain = reply(&full, ResponseCode::NXDOMAIN, true);
+    assert!(matches!(
+        harness.observe(Observation::Reply(nxdomain)),
+        DescentAction::Answer(response) if response.header.rcode == ResponseCode::NXDOMAIN
+    ));
+}
+
+#[test]
+fn a_ds_referral_without_a_ds_set_is_a_lame_parent_not_a_bare_noerror() {
+    let mut harness = Harness::new("example.com.", RecordType::DS, cut("com.", &[2, 3]));
+    let sent = harness.send(addr(2));
+    let action = harness.observe(Observation::Reply(referral(&sent, "example.com.", 4)));
+    assert_eq!(action, DescentAction::Query(QueryTarget::AnyServer));
+    assert_eq!(
+        harness.descent.current_cut().nameservers.untried(),
+        vec![addr(3)]
+    );
+}
+
+#[test]
+fn an_any_answer_keeps_every_record_of_the_name() {
+    let mut harness = Harness::new("example.com.", RecordType::ANY, cut("example.com.", &[3]));
+    let sent = harness.send(addr(3));
+    let mut answer = reply(&sent, ResponseCode::NOERROR, true);
+    answer.answers.push(record(
+        "example.com.",
+        RData::A(Ipv4Addr::new(192, 0, 2, 9)),
+    ));
+    answer.answers.push(record(
+        "example.com.",
+        RData::Mx(styx_proto::MxRdata::new(10, name("mail.example.com."))),
+    ));
+    let DescentAction::Answer(response) = harness.observe(Observation::Reply(answer)) else {
+        panic!("expected an answer");
+    };
+    assert_eq!(response.answers.len(), 2);
+    assert!(response.authorities.is_empty());
+}

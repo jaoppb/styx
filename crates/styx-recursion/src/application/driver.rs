@@ -40,6 +40,7 @@ pub(crate) struct DescentContext {
     pub(crate) glue_stack: Vec<Name>,
     pub(crate) material: ChainMaterial,
     pub(crate) fallbacks: u64,
+    pub(crate) used_tcp: bool,
 }
 
 impl DescentContext {
@@ -52,6 +53,7 @@ impl DescentContext {
             glue_stack: Vec::new(),
             material: ChainMaterial::default(),
             fallbacks: 0,
+            used_tcp: false,
         }
     }
 }
@@ -108,9 +110,11 @@ where
                 }
                 DescentAction::FollowCname(target) => self.follow(&mut descent, &target),
                 DescentAction::Answer(message) => {
-                    return finish(&mut descent, context, Ok(message))
+                    return self.finish(&mut descent, context, Ok(message));
                 }
-                DescentAction::Fail(error) => return finish(&mut descent, context, Err(error)),
+                DescentAction::Fail(error) => {
+                    return self.finish(&mut descent, context, Err(error));
+                }
             };
         }
     }
@@ -164,9 +168,7 @@ where
         if let Err(exceeded) = context.budget.charge_query() {
             return DescentAction::Fail(RecursionError::BudgetExceeded(exceeded));
         }
-        let sent = self
-            .send(descent, server, context.deadline, now, &mut context.budget)
-            .await;
+        let sent = self.send(descent, server, now, context).await;
         let observation = match sent {
             Ok(observation) => observation,
             Err(exceeded) => return DescentAction::Fail(RecursionError::BudgetExceeded(exceeded)),
@@ -197,9 +199,8 @@ where
         &self,
         descent: &mut Descent,
         server: NameserverAddr,
-        deadline: Instant,
         sent_at: Instant,
-        budget: &mut DescentBudget,
+        context: &mut DescentContext,
     ) -> Result<Observation, BudgetExceeded> {
         let metrics = self.ports.infra.metrics(server, sent_at);
         let sent = descent.compose(server, metrics.minimisation(sent_at));
@@ -227,7 +228,7 @@ where
         };
         let FlightResult { outcome, role } = self
             .in_flight
-            .exchange(key, deadline, move || job.run())
+            .exchange(key, context.deadline, move || job.run())
             .instrument(span.clone())
             .await;
         let rtt = self
@@ -242,9 +243,12 @@ where
             Ok(reply) => reply.wire_exchanges,
             Err(failure) => failure.wire_exchanges,
         };
-        budget.charge_extra(spent.saturating_sub(1))?;
+        context.budget.charge_extra(spent.saturating_sub(1))?;
         Ok(match outcome {
-            Ok(reply) => Observation::Reply(reply.message),
+            Ok(reply) => {
+                context.used_tcp |= reply.via_tcp;
+                Observation::Reply(reply.message)
+            }
             Err(failure) => Observation::Failed(failure.error),
         })
     }
@@ -280,9 +284,7 @@ where
                 descent.provide_glue(&name, &found.addresses);
                 descent.next_action()
             }
-            Err(error @ (RecursionError::Timeout | RecursionError::BudgetExceeded(_))) => {
-                DescentAction::Fail(error)
-            }
+            Err(error) if is_fatal_to_parent(&error) => DescentAction::Fail(error),
             Err(_) => descent.next_action(),
         }
     }
@@ -308,7 +310,14 @@ where
         context: &mut DescentContext,
     ) -> Result<ResolvedAddresses, RecursionError> {
         let question = Question::new(name.clone(), qtype, RecordClass::In);
-        let message = self.descend(question, context).await?;
+        // The nameserver's own zones are not the client's chain: their DS material
+        // and transport belong to no validation or answer the client asked for.
+        let outer_material = std::mem::take(&mut context.material);
+        let outer_used_tcp = std::mem::replace(&mut context.used_tcp, false);
+        let result = self.descend(question, context).await;
+        context.material = outer_material;
+        context.used_tcp = outer_used_tcp;
+        let message = result?;
         let mut addresses = Vec::new();
         let mut shortest: Option<u32> = None;
         for record in &message.answers {
@@ -343,15 +352,62 @@ where
     }
 }
 
-/// Ends a descent: keeps the chain material it collected and returns its result.
-fn finish(
-    descent: &mut Descent,
-    context: &mut DescentContext,
-    result: Result<Message, RecursionError>,
-) -> Result<Message, RecursionError> {
-    context.material.extend(descent.take_chain_material());
-    if let Err(error) = &result {
-        tracing::debug!(%error, "descent failed");
+/// Whether a glue sub-descent's failure ends the parent too: its own timeout or a
+/// bound the parent shares. A bound local to the sub-descent only means that one
+/// nameserver name cannot be resolved, and the zone's other servers may still be.
+fn is_fatal_to_parent(error: &RecursionError) -> bool {
+    match error {
+        RecursionError::Timeout => true,
+        RecursionError::BudgetExceeded(bound) => !bound.is_local_to_descent(),
+        _ => false,
     }
-    result
+}
+
+impl<C, T, D, M, I> Recursor<C, T, D, M, I>
+where
+    C: Clock,
+    T: Transport + 'static,
+    D: DiagnosticsSink,
+    M: ChainMaterialSink,
+    I: InfraCache + 'static,
+{
+    /// Ends a descent: applies the events its last step recorded — the loop only
+    /// drains them at the top of an iteration, which a final step never reaches —
+    /// keeps the chain material it collected, and returns its result.
+    fn finish(
+        &self,
+        descent: &mut Descent,
+        context: &mut DescentContext,
+        result: Result<Message, RecursionError>,
+    ) -> Result<Message, RecursionError> {
+        self.apply_events(descent, context);
+        context.material.extend(descent.take_chain_material());
+        if let Err(error) = &result {
+            tracing::debug!(%error, "descent failed");
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::error::BudgetExceeded;
+
+    #[test]
+    fn only_a_shared_bound_or_the_deadline_ends_the_parent_descent() {
+        assert!(is_fatal_to_parent(&RecursionError::Timeout));
+        for shared in [
+            BudgetExceeded::Depth,
+            BudgetExceeded::OutboundQueries,
+            BudgetExceeded::WallClock,
+        ] {
+            assert!(is_fatal_to_parent(&RecursionError::BudgetExceeded(shared)));
+        }
+        assert!(!is_fatal_to_parent(&RecursionError::BudgetExceeded(
+            BudgetExceeded::CnameChain
+        )));
+        assert!(!is_fatal_to_parent(&RecursionError::LameDelegation));
+        assert!(!is_fatal_to_parent(&RecursionError::CnameLoop));
+    }
 }

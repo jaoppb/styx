@@ -207,3 +207,50 @@ fn a_minimised_ns_answered_from_the_apex_is_a_delegation() {
         ResponseKind::Referral(_)
     ));
 }
+
+#[test]
+fn a_non_authoritative_nxdomain_is_lame_not_a_final_answer() {
+    let asked = question("missing.example.com.", RecordType::A);
+    let message = response(&asked, ResponseCode::NXDOMAIN, false);
+    assert_eq!(
+        kind("example.com.", &asked, false, &message),
+        ResponseKind::Lame
+    );
+
+    let message = response(&asked, ResponseCode::NXDOMAIN, true);
+    assert_eq!(
+        kind("example.com.", &asked, false, &message),
+        ResponseKind::NameError
+    );
+}
+
+#[test]
+fn a_cname_from_a_non_authoritative_server_is_not_followed() {
+    let asked = question("www.example.com.", RecordType::A);
+    for rcode in [ResponseCode::NOERROR, ResponseCode::NXDOMAIN] {
+        let mut message = response(&asked, rcode, false);
+        message.answers.push(record(
+            "www.example.com.",
+            RData::Cname(name("elsewhere.example.net.")),
+        ));
+        assert_eq!(
+            kind("example.com.", &asked, false, &message),
+            ResponseKind::Lame
+        );
+    }
+}
+
+#[test]
+fn an_any_question_is_answered_by_records_of_any_type() {
+    let asked = question("example.com.", RecordType::ANY);
+    let mut message = response(&asked, ResponseCode::NOERROR, true);
+    message.answers.push(record(
+        "example.com.",
+        RData::A(Ipv4Addr::new(192, 0, 2, 1)),
+    ));
+    assert_eq!(
+        kind("example.com.", &asked, false, &message),
+        ResponseKind::AuthoritativeAnswer
+    );
+    assert!(has_records_for(&message, &asked));
+}

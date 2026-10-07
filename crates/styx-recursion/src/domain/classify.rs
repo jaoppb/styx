@@ -79,16 +79,14 @@ pub fn classify(
     }
     match message.header.rcode {
         ResponseCode::NOERROR => {}
-        ResponseCode::NXDOMAIN => {
-            return alias_at(server_zone, sent, message).unwrap_or(ResponseKind::NameError);
-        }
+        ResponseCode::NXDOMAIN => return classify_name_error(server_zone, sent, message),
         ResponseCode::FORMERR | ResponseCode::NOTIMP | ResponseCode::REFUSED if intermediate => {
             return ResponseKind::MinimisationRefused;
         }
         _ => return ResponseKind::ServerFailure,
     }
     if let Some(alias) = alias_at(server_zone, sent, message) {
-        return alias;
+        return authoritative_or_lame(message, alias);
     }
     if has_records_for(message, sent) {
         if intermediate && sent.qtype == RecordType::NS {
@@ -113,11 +111,37 @@ pub fn classify(
     }
 }
 
+/// NXDOMAIN, or the alias an NXDOMAIN response carries: either is final for the
+/// name, so only an authoritative server may say it. A cache, or a server that was
+/// delegated a zone it does not serve, can return either and be believed by no one.
+fn classify_name_error(server_zone: &Name, sent: &Question, message: &Message) -> ResponseKind {
+    let kind = alias_at(server_zone, sent, message).unwrap_or(ResponseKind::NameError);
+    authoritative_or_lame(message, kind)
+}
+
+fn authoritative_or_lame(message: &Message, kind: ResponseKind) -> ResponseKind {
+    match kind {
+        ResponseKind::Alias(_) | ResponseKind::NameError if !message.header.authoritative => {
+            ResponseKind::Lame
+        }
+        other => other,
+    }
+}
+
 fn has_records_for(message: &Message, sent: &Question) -> bool {
     message
         .answers
         .iter()
-        .any(|record| record.owner == sent.qname && record.rtype == sent.qtype)
+        .any(|record| record.owner == sent.qname && is_data_for(record, sent.qtype))
+}
+
+/// Whether `record` is data for a question of type `qtype`: a record of that type,
+/// or a signature covering it. An ANY question is answered by every type, which is
+/// why equality alone would turn a full ANY answer into an empty one.
+pub(crate) fn is_data_for(record: &ResourceRecord, qtype: RecordType) -> bool {
+    qtype == RecordType::ANY
+        || record.rtype == qtype
+        || matches!(&record.rdata, RData::Rrsig(signature) if signature.type_covered() == qtype)
 }
 
 /// A referral in the authority section: NS records for a zone strictly below the

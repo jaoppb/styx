@@ -245,3 +245,110 @@ async fn servfail_writes_no_verdict() {
     );
     assert_eq!(verdict(&network, COM), MinimisationVerdict::Unknown);
 }
+
+#[tokio::test]
+async fn a_verdict_proven_by_the_final_step_is_still_written() {
+    let mut network = Network::new().await.expect("network");
+    network
+        .serve(ROOT, root_script().refer("com.", "ns.com.", ip(COM)))
+        .await
+        .expect("serve");
+    // com answers the client's own question itself, so the full-qname retry that
+    // proves the refusal wrong is the descent's last step.
+    let com = ZoneScript::new()
+        .rcode("example.com.", Some(RecordType::NS), ResponseCode::REFUSED)
+        .answer(
+            "www.example.com.",
+            RecordType::A,
+            vec![a("www.example.com.", 53)],
+        );
+    network.serve(COM, com).await.expect("serve");
+    let recursor = network
+        .recursor(DescentLimits::default())
+        .expect("recursor");
+
+    recursor
+        .resolve_iteratively(
+            &question("www.example.com.", RecordType::A),
+            network.deadline(),
+        )
+        .await
+        .expect("resolved after falling back");
+
+    assert!(matches!(
+        verdict(&network, COM),
+        MinimisationVerdict::MishandlesMinimised(_)
+    ));
+}
+
+#[tokio::test]
+async fn an_nxdomain_one_label_short_is_confirmed_with_the_full_name_once() {
+    let mut network = Network::new().await.expect("network");
+    network
+        .serve(ROOT, root_script().refer("com.", "ns.com.", ip(COM)))
+        .await
+        .expect("serve");
+    network.serve(COM, ZoneScript::new()).await.expect("serve");
+    let recursor = network
+        .recursor(DescentLimits::default())
+        .expect("recursor");
+
+    let response = recursor
+        .resolve_iteratively(
+            &question("www.missing.com.", RecordType::A),
+            network.deadline(),
+        )
+        .await
+        .expect("an answer");
+
+    assert_eq!(response.header.rcode, ResponseCode::NXDOMAIN);
+    assert_eq!(
+        network.asked(COM),
+        ["missing.com. NS", "www.missing.com. A"],
+        "one label more than the server had already seen, and no more"
+    );
+}
+
+#[tokio::test]
+async fn an_nxdomain_to_an_earlier_label_is_not_confirmed() {
+    let mut network = Network::new().await.expect("network");
+    network
+        .serve(ROOT, root_script().refer("com.", "ns.com.", ip(COM)))
+        .await
+        .expect("serve");
+    network.serve(COM, ZoneScript::new()).await.expect("serve");
+    let recursor = network
+        .recursor(DescentLimits::default())
+        .expect("recursor");
+
+    let response = recursor
+        .resolve_iteratively(
+            &question("a.b.c.missing.com.", RecordType::A),
+            network.deadline(),
+        )
+        .await
+        .expect("an answer");
+
+    assert_eq!(response.header.rcode, ResponseCode::NXDOMAIN);
+    assert_eq!(network.asked(COM), ["missing.com. NS"]);
+}
+
+#[tokio::test]
+async fn a_descent_that_used_tcp_reports_it() {
+    let network = network(example_and_other().truncate_udp())
+        .await
+        .expect("network");
+    let recursor = network
+        .recursor(DescentLimits::default())
+        .expect("recursor");
+
+    let resolution = recursor
+        .resolve_detailed(
+            &question("www.example.com.", RecordType::A),
+            network.deadline(),
+        )
+        .await
+        .expect("resolved");
+
+    assert!(resolution.via_tcp);
+}

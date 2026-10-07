@@ -117,13 +117,16 @@ impl MinimisationState {
     /// - **Refused** after falling back, or **ServerFailure**: a health problem,
     ///   not evidence about minimisation. Try another server; never write a
     ///   verdict, or one lost packet would downgrade privacy for a whole zone.
-    /// - **NameError** at an intermediate label: trusted (RFC 8020). NXDOMAIN
-    ///   means nothing exists below that name, and retrying in full would send
-    ///   every typo and random tracker subdomain in full to the parent zone — the
-    ///   leak minimisation exists to stop. The cost, a false NXDOMAIN from a
-    ///   never-seen server with broken empty-non-terminal handling, is accepted.
-    ///   A server already known to mishandle minimisation was asked in full, so
-    ///   its NXDOMAIN is final too.
+    /// - **NameError** at an intermediate label: trusted (RFC 8020), because
+    ///   NXDOMAIN means nothing exists below that name, and retrying in full would
+    ///   send every typo and random tracker subdomain in full to the parent zone —
+    ///   the leak minimisation exists to stop. The one exception is the label
+    ///   directly above the target: the server has already seen all but the first
+    ///   label, so the full-qname retry leaks one label and guards against a
+    ///   server with broken empty-non-terminal handling hiding a real name. An
+    ///   earlier label's false NXDOMAIN from a never-seen broken server is still
+    ///   accepted. A server already known to mishandle minimisation was asked in
+    ///   full, so its NXDOMAIN is final too.
     pub fn on_bad_response(&mut self, kind: BadResponse, sent: &Question) -> FallbackDecision {
         match kind {
             BadResponse::Refused if self.is_intermediate(sent) => {
@@ -135,8 +138,20 @@ impl MinimisationState {
                 self.awaiting_full_retry = false;
                 FallbackDecision::TryNextServer
             }
+            BadResponse::NameError if self.is_one_label_short(sent) => {
+                self.fall_back_to_full_qname();
+                self.awaiting_full_retry = true;
+                FallbackDecision::RetryFullQnameSameServer
+            }
             BadResponse::NameError => FallbackDecision::AcceptAsGenuine,
         }
+    }
+
+    /// Whether `sent` is a minimised question for the target minus its leftmost
+    /// label, so that resending the full qname reveals only that one label.
+    fn is_one_label_short(&self, sent: &Question) -> bool {
+        self.is_intermediate(sent)
+            && sent.qname.label_count().saturating_add(1) >= self.target.label_count()
     }
 
     /// Whether the full-qname retry that followed a refusal succeeded, which is the

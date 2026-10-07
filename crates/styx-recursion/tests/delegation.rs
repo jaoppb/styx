@@ -158,8 +158,9 @@ async fn out_of_bailiwick_glue_is_discarded_not_used() {
     );
     assert_eq!(
         network.asked(NET),
-        ["example.net. NS"],
-        "it was looked up instead"
+        ["example.net. NS", "ns.example.net. A"],
+        "it was looked up instead; the NXDOMAIN to the minimised question one label \
+         short of the target was confirmed with the full name"
     );
 }
 

@@ -11,6 +11,7 @@ use crate::application::diagnostics::DiagnosticsState;
 use crate::application::priming::PrimeOutcome;
 use crate::domain::metrics::MetricEvent;
 use crate::domain::ports::{InfraCache, Transport};
+use crate::domain::root_hints::RootHints;
 use crate::domain::topology::{Delegation, GlueOrigin, Nameserver};
 
 /// Root servers asked per priming attempt before giving up until the backoff ends.
@@ -30,6 +31,7 @@ pub(crate) struct PrimeJob<C, T, I> {
     pub(crate) infra: Arc<I>,
     pub(crate) stats: Arc<DiagnosticsState>,
     pub(crate) use_ipv6: bool,
+    pub(crate) hints: RootHints,
 }
 
 impl<C: Clock, T: Transport, I: InfraCache> PrimeJob<C, T, I> {
@@ -76,7 +78,8 @@ impl<C: Clock, T: Transport, I: InfraCache> PrimeJob<C, T, I> {
         self.stats.note_reply(now);
         self.infra
             .update_metrics(server, MetricEvent::Success(rtt), now);
-        let delegation = root_ns_set(&reply.message, now)?;
+        let live = root_ns_set(&reply.message, now)?;
+        let delegation = union_with_hints(live, &self.hints.to_delegation(now));
         let lifetime = ttl_duration(delegation.ttl()).max(PRIMING_MIN_TTL);
         self.stats.set_root_servers(delegation.nameservers());
         self.stats.record_priming(now);
@@ -90,8 +93,15 @@ impl<C: Clock, T: Transport, I: InfraCache> PrimeJob<C, T, I> {
 
 /// The root NS set from a priming response: the root's NS records, with addresses
 /// from the additional section (the root may vouch for any name).
+///
+/// Only an authoritative, complete answer counts: the root set is installed without
+/// an expiry, so a non-authoritative or truncated one — from a cache, a middlebox
+/// or a forger — must not be able to replace it.
 fn root_ns_set(message: &Message, now: Instant) -> Option<Delegation> {
-    if message.header.rcode != ResponseCode::NOERROR {
+    if message.header.rcode != ResponseCode::NOERROR
+        || !message.header.authoritative
+        || message.header.truncated
+    {
         return None;
     }
     let ns: Vec<_> = message
@@ -125,6 +135,30 @@ fn root_ns_set(message: &Message, now: Instant) -> Option<Delegation> {
     ))
 }
 
+/// The live root set with every hint server it lacks added back, and every hint
+/// address a live server lacks added to it. A live answer that names few servers,
+/// or only ones a forger controls, can then add to the root set but never shrink it
+/// below the hints; a server IANA retires lingers until the hints file is updated.
+fn union_with_hints(live: Delegation, hints: &Delegation) -> Delegation {
+    let mut nameservers = live.nameservers().to_vec();
+    for hinted in hints.nameservers() {
+        match nameservers
+            .iter_mut()
+            .find(|member| member.name.eq_ignore_case(&hinted.name))
+        {
+            Some(member) => member.add_addresses(&hinted.addresses),
+            None => nameservers.push(hinted.clone()),
+        }
+    }
+    Delegation::new(
+        Name::root(),
+        Name::root(),
+        nameservers,
+        live.ttl(),
+        live.learned_at(),
+    )
+}
+
 fn addresses_of(message: &Message, name: &Name) -> Vec<IpAddr> {
     message
         .additionals
@@ -141,3 +175,7 @@ fn addresses_of(message: &Message, name: &Name) -> Vec<IpAddr> {
 fn ttl_duration(ttl: Ttl) -> Duration {
     Duration::from_secs(u64::from(ttl.seconds()))
 }
+
+#[cfg(test)]
+#[path = "prime_tests.rs"]
+mod tests;

@@ -57,6 +57,18 @@ pub struct Nameserver {
     pub glue_origin: GlueOrigin,
 }
 
+impl Nameserver {
+    /// Adds the addresses it does not already have.
+    pub fn add_addresses(&mut self, addresses: &[IpAddr]) {
+        let missing: Vec<IpAddr> = addresses
+            .iter()
+            .filter(|address| !self.addresses.contains(address))
+            .copied()
+            .collect();
+        self.addresses.extend(missing);
+    }
+}
+
 /// The nameservers of one zone, with the per-descent record of which addresses have
 /// been tried and which names have had their addresses looked up.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

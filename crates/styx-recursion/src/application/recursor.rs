@@ -57,6 +57,15 @@ pub struct DescentFailure {
     pub network_silent: bool,
 }
 
+/// A resolved answer and how it was reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolution {
+    /// The response for the client's question.
+    pub message: Message,
+    /// Whether any reply the descent used arrived over TCP.
+    pub via_tcp: bool,
+}
+
 /// An iterative resolver implementing `Upstream`.
 #[derive(Debug)]
 pub struct Recursor<C, T, D, M, I> {
@@ -64,6 +73,7 @@ pub struct Recursor<C, T, D, M, I> {
     pub(crate) settings: RecursorSettings,
     pub(crate) ports: RecursorPorts<C, T, D, M, I>,
     pub(crate) in_flight: InFlight,
+    pub(crate) hints: RootHints,
     pub(crate) priming: Arc<Priming>,
     pub(crate) stats: Arc<DiagnosticsState>,
     pub(crate) last_eviction: Mutex<Option<Instant>>,
@@ -93,6 +103,7 @@ where
             settings,
             ports,
             in_flight: InFlight::new(),
+            hints: hints.clone(),
             priming: Arc::new(Priming::new()),
             stats: Arc::new(stats),
             last_eviction: Mutex::new(None),
@@ -111,6 +122,7 @@ where
     ) -> Result<Message, RecursionError> {
         self.resolve_detailed(question, deadline)
             .await
+            .map(|resolution| resolution.message)
             .map_err(|failure| failure.error)
     }
 
@@ -124,7 +136,7 @@ where
         &self,
         question: &Question,
         deadline: Instant,
-    ) -> Result<Message, DescentFailure> {
+    ) -> Result<Resolution, DescentFailure> {
         let now = self.ports.clock.now_monotonic();
         self.maintain(now);
         self.start_priming(now);
@@ -141,10 +153,16 @@ where
         if let Some(snapshot) = self.stats.snapshot_if_due(finished) {
             self.ports.diagnostics.publish(snapshot);
         }
-        result.map_err(|error| DescentFailure {
-            error,
-            network_silent: !self.stats.replied_within(finished, NETWORK_SILENCE),
-        })
+        match result {
+            Ok(message) => Ok(Resolution {
+                message,
+                via_tcp: context.used_tcp,
+            }),
+            Err(error) => Err(DescentFailure {
+                error,
+                network_silent: !self.stats.replied_within(finished, NETWORK_SILENCE),
+            }),
+        }
     }
 
     /// Starts priming in a task of its own if it is due. The descent that triggered
@@ -158,6 +176,7 @@ where
             infra: Arc::clone(&self.ports.infra),
             stats: Arc::clone(&self.stats),
             use_ipv6: self.settings.use_ipv6,
+            hints: self.hints.clone(),
         };
         let _detached = self.priming.trigger(now, || job().run());
     }
@@ -200,12 +219,12 @@ where
         deadline: Instant,
     ) -> Result<UpstreamResponse, UpstreamError> {
         let start = self.ports.clock.now_monotonic();
-        let message = self
+        let resolution = self
             .resolve_detailed(query, deadline)
             .await
             .map_err(|failure| to_upstream_error(&failure))?;
         Ok(UpstreamResponse {
-            message,
+            message: resolution.message,
             answered_by: self.id.clone(),
             kind: UpstreamKind::Recursor,
             elapsed: self
@@ -213,7 +232,7 @@ where
                 .clock
                 .now_monotonic()
                 .saturating_duration_since(start),
-            via_tcp: false,
+            via_tcp: resolution.via_tcp,
             raced_count: 1,
         })
     }
