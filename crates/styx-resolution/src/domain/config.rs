@@ -162,9 +162,14 @@ fn parse_member(m: RawUpstreamConfig) -> Result<UpstreamConfig, ConfigError> {
         None => None,
     };
 
+    let default_timeouts = Timeouts::default();
     let timeouts = Timeouts {
-        udp: Duration::from_millis(m.udp_timeout_ms.unwrap_or(2000)),
-        tcp: Duration::from_millis(m.tcp_timeout_ms.unwrap_or(3000)),
+        udp: m
+            .udp_timeout_ms
+            .map_or(default_timeouts.udp, Duration::from_millis),
+        tcp: m
+            .tcp_timeout_ms
+            .map_or(default_timeouts.tcp, Duration::from_millis),
     };
 
     let kind = match m.kind {

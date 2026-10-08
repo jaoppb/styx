@@ -35,7 +35,9 @@ use crate::infrastructure::udp::UdpListener;
 use crate::infrastructure::udp_socket::default_socket_count;
 
 const DEFAULT_UDP_PAYLOAD_SIZE: u16 = 1232;
-const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 2;
+/// Must stay above `Timeouts::default()`'s longest member timeout, or a config that leaves every
+/// timeout unset is rejected by `check_deadline_covers`.
+const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 5;
 
 fn default_listen_addrs() -> Vec<SocketAddr> {
     vec![SocketAddr::from(([127, 0, 0, 1], 53))]

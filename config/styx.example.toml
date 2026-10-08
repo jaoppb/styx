@@ -1,11 +1,38 @@
 # Example styx configuration: a recursor first, a public forwarder as standby.
 #
-# Copy to styx.toml (or pass the path as the first argument) and adjust.
+# Copy to styx.toml (or pass the path as the first argument) and adjust. styx exits at
+# startup when there is no styx.toml in the current directory and no path is given.
+#
+# Every key the server and pool schema accepts appears below, live or as a commented-out
+# line showing its built-in default. Uncomment a line to change it.
 
+# Addresses for the UDP and TCP listeners. The built-in default is 127.0.0.1:53, a
+# privileged port; this example uses 5300 so it starts without elevated rights.
 listen_addrs = ["127.0.0.1:5300"]
+
+# Whole-query deadline in seconds. It must exceed the longest `udp_timeout_ms` or
+# `tcp_timeout_ms` of any upstream member, or styx refuses to start.
 query_timeout_secs = 5
 
+# EDNS payload size advertised to clients that send none.
+# udp_payload_size_default = 1232
+
+# Seconds an idle TCP client connection is kept open.
+# tcp_idle_timeout_secs = 5
+
+# Caps on concurrent client work. Both must be non-zero.
+# max_in_flight_queries = 1024
+# max_tcp_connections = 256
+
+# How the listener supervisor backs off when a listener task dies.
+# [supervisor]
+# initial_backoff_ms = 50
+# max_backoff_secs = 2
+# healthy_threshold_secs = 60
+
 [upstream]
+# One of: ordered_failover, round_robin, weighted, race. `race` sends every query to
+# every member at once, so it tells all providers what you resolve.
 strategy = "ordered_failover"
 
 # The iterative recursor. `addr` is required by the pool schema but unused for a
@@ -19,6 +46,34 @@ addr = "0.0.0.0:0"
 name = "quad9"
 kind = "forwarder"
 addr = "9.9.9.9:53"
+# Share of traffic under the `weighted` strategy; ignored by the others.
+# weight = 1
+# EDNS buffer size sent upstream, at least 512.
+# edns_buffer = 1232
+# Per-query timeouts toward this member, in milliseconds. Both must stay below
+# `query_timeout_secs`.
+# udp_timeout_ms = 2000
+# tcp_timeout_ms = 3000
+
+# Health probe for this member. A recursor canary must name something below the root
+# that needs a descent, such as a name with two or more labels. qtype is A, AAAA, NS
+# or TXT.
+# [upstream.members.canary]
+# qname = "probe.canary.invalid."
+# qtype = "A"
+# timeout_ms = 2000
+
+# Active probing of members that have been idle or are marked down.
+# [upstream.probe]
+# idle_window_secs = 60
+# down_retry_secs = 10
+# tick_secs = 1
+
+# Circuit breaker applied to every member.
+# [upstream.circuit]
+# failure_threshold = 3
+# open_cooldown_secs = 30
+# half_open_successes = 2
 
 # Infrastructure for the recursor. The root-hints file is the only source of root
 # servers: a missing or unparseable file stops styx at startup.
