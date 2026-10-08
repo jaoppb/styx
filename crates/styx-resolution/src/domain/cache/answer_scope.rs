@@ -28,6 +28,7 @@ pub(crate) struct AnswerScope {
     chain_end: CanonicalName,
     alias_targets: HashSet<CanonicalName>,
     dname_owners: HashSet<CanonicalName>,
+    cyclic: bool,
 }
 
 impl AnswerScope {
@@ -48,10 +49,12 @@ impl AnswerScope {
             chain_end: qname.clone(),
             alias_targets: HashSet::new(),
             dname_owners: HashSet::new(),
+            cyclic: false,
         };
         let mut link = qname.clone();
         while let Some(target) = cnames.get(&link) {
             if !scope.alias_targets.insert(target.clone()) {
+                scope.cyclic = true;
                 break;
             }
             scope.admit_matching_dnames(&link, target, &dnames);
@@ -61,9 +64,16 @@ impl AnswerScope {
         scope
     }
 
-    /// The name the alias chain ends at: the qname when it has no alias.
+    /// The name the alias chain ends at: the qname when it has no alias. For a cyclic
+    /// chain this is an arbitrary link of the loop, so it names no ending at all.
     pub(crate) const fn chain_end(&self) -> &CanonicalName {
         &self.chain_end
+    }
+
+    /// Whether the chain loops back on a name it already passed through, and so
+    /// leads nowhere however many records the answer carries.
+    pub(crate) const fn is_cyclic(&self) -> bool {
+        self.cyclic
     }
 
     /// Admits each DNAME that explains the CNAME `link -> target`: RFC 6672 §3.1

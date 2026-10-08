@@ -501,7 +501,8 @@ fn test_cross_zone_chain_ending_in_nxdomain_is_cached_under_the_qname_only() {
 }
 
 /// The SOA must enclose the name the chain ends at: another zone's SOA does not close
-/// the chain, so the answer is refused whole rather than cached without its ending.
+/// the chain, so the answer is refused whole rather than cached without its ending,
+/// and the foreign SOA is still reported as the out-of-bailiwick record it is.
 #[test]
 fn test_chain_denial_with_an_unrelated_soa_is_not_admitted() {
     let (question, msg) = chain_message(ResponseCode::NXDOMAIN, "attacker.org.", false);
@@ -509,11 +510,107 @@ fn test_chain_denial_with_an_unrelated_soa_is_not_admitted() {
     let outcome = evaluate_chain(&question, &msg);
 
     assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
+    let reason_of = |owner: &str| {
+        outcome
+            .rejected
+            .iter()
+            .find(|rejected| rejected.owner.to_string() == owner)
+            .map(|rejected| rejected.reason)
+    };
+    assert_eq!(
+        reason_of("attacker.org."),
+        Some(RejectReason::OutOfBailiwick)
+    );
+    assert_eq!(
+        reason_of("www.example.com."),
+        Some(RejectReason::IncompleteChain)
+    );
+}
+
+/// An error response carries nothing to admit, and says nothing about alias chains:
+/// it is not refused as an incomplete one.
+#[test]
+fn test_an_error_rcode_is_not_refused_as_an_incomplete_chain() {
+    for rcode in [
+        ResponseCode::SERVFAIL,
+        ResponseCode::REFUSED,
+        ResponseCode::FORMERR,
+    ] {
+        let question = Question::new(name("www.example.com."), RecordType::A, RecordClass::In);
+        let mut msg = Message::response_to(0x2003, question.clone());
+        msg.header.rcode = rcode;
+        msg.authorities.push(ResourceRecord::new(
+            name("example.com."),
+            RecordType::NS,
+            RecordClass::In,
+            Ttl::from_secs(300),
+            RData::Ns(name("ns.example.com.")),
+        ));
+
+        let outcome = evaluate_chain(&question, &msg);
+
+        assert!(outcome.admitted.is_empty(), "{rcode:?}");
+        assert!(
+            outcome.rejected.is_empty(),
+            "{rcode:?}: {:?}",
+            outcome.rejected
+        );
+    }
+}
+
+/// A response with no question cannot be shown to answer anything, so a dangling
+/// alias in it is refused rather than admitted on the strength of the zone name.
+#[test]
+fn test_a_response_without_a_question_is_refused() {
+    let (question, mut msg) = chain_message(ResponseCode::NOERROR, "bank.com.", false);
+    msg.authorities.clear();
+    msg.questions.clear();
+
+    let outcome = evaluate_chain(&question, &msg);
+
+    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
     assert!(outcome
         .rejected
         .iter()
-        .any(|rejected| rejected.owner.to_string() == "attacker.org."
-            && rejected.reason == RejectReason::IncompleteChain));
+        .any(|rejected| rejected.reason == RejectReason::IncompleteChain));
+}
+
+/// An alias loop leads nowhere: data owned by a name inside the loop, or an SOA
+/// beside it, does not make it an ending.
+#[test]
+fn test_a_cyclic_alias_chain_is_refused() {
+    let question = Question::new(name("a.example.com."), RecordType::A, RecordClass::In);
+    let record = |owner: &str, rdata: RData| {
+        ResourceRecord::new(
+            name(owner),
+            rdata.rtype(),
+            RecordClass::In,
+            Ttl::from_secs(300),
+            rdata,
+        )
+    };
+    let mut msg = Message::response_to(0x2004, question.clone());
+    msg.answers.push(record(
+        "a.example.com.",
+        RData::Cname(name("b.example.com.")),
+    ));
+    msg.answers.push(record(
+        "b.example.com.",
+        RData::Cname(name("a.example.com.")),
+    ));
+    msg.answers.push(record(
+        "a.example.com.",
+        RData::A(Ipv4Addr::new(192, 0, 2, 7)),
+    ));
+
+    let outcome = evaluate_chain(&question, &msg);
+
+    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
+    assert!(outcome
+        .rejected
+        .iter()
+        .all(|rejected| rejected.reason == RejectReason::IncompleteChain));
+    assert_eq!(outcome.rejected.len(), 3);
 }
 
 /// A foreign SOA is a chain's ending only when the answer is a denial: beside real

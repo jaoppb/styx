@@ -7,7 +7,9 @@ use styx_proto::{Message, RData, RecordClass, RecordType, ResourceRecord, Respon
 use crate::domain::answer::AnswerSource;
 use crate::domain::cache::answer_scope::AnswerScope;
 use crate::domain::cache::bailiwick::Bailiwick;
-use crate::domain::cache::chain_denial::{chain_is_complete, ends_in_denial, soa_closes_chain};
+use crate::domain::cache::chain_denial::{
+    chain_is_complete, ends_in_denial, refused_records, soa_closes_chain,
+};
 use crate::domain::cache::dnssec::DnssecMetadata;
 use crate::domain::cache::entry::CacheEntry;
 use crate::domain::cache::key::CanonicalName;
@@ -253,13 +255,8 @@ impl Admission {
             |question| CanonicalName::canonicalize(&question.qname),
         );
         let scope = bailiwick.answer_scope(&qname, &message.answers);
-        let qtype = message.questions.first().map(|question| question.qtype);
-        if qtype.is_some_and(|qtype| !chain_is_complete(message, &scope, qtype)) {
-            self.reject_all_records(
-                message,
-                RejectReason::IncompleteChain,
-                &mut outcome.rejected,
-            );
+        if !Self::answers_the_question(message, &scope) {
+            outcome.rejected.extend(refused_records(message, &scope));
             return;
         }
         let mut answer_rrsets = self.admit_answers(&scope, message, now, outcome);
@@ -310,6 +307,22 @@ impl Admission {
         outcome
             .admitted
             .push(CacheEntry::Positive(PositiveEntry::Message(cached_msg)));
+    }
+
+    /// Whether a response that carries data answers the question it echoes. An error
+    /// rcode carries nothing worth admitting and is not judged here, but a response
+    /// with no question cannot be shown to answer anything, so it fails closed.
+    fn answers_the_question(message: &Message, scope: &AnswerScope) -> bool {
+        if !matches!(
+            message.header.rcode,
+            ResponseCode::NOERROR | ResponseCode::NXDOMAIN
+        ) {
+            return true;
+        }
+        message
+            .questions
+            .first()
+            .is_some_and(|question| chain_is_complete(message, scope, question.qtype))
     }
 
     fn admit_answers(

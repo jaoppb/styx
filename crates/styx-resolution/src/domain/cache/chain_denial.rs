@@ -10,6 +10,7 @@
 
 use styx_proto::{Message, RData, RecordType, ResponseCode};
 
+use crate::domain::cache::admission::{RejectReason, RejectedRecord};
 use crate::domain::cache::answer_scope::AnswerScope;
 use crate::domain::cache::key::CanonicalName;
 
@@ -42,13 +43,17 @@ pub(crate) fn soa_closes_chain(scope: &AnswerScope, soa_owner: &CanonicalName) -
 /// `qtype` owned by the chain's last name, or a denial closed by an SOA that
 /// encloses it. Anything else is a chain that leads nowhere, and served from cache
 /// it would hand a stub a CNAME with no address to follow. A question about the
-/// alias itself (CNAME, DNAME) or about every type (ANY) is complete as answered.
+/// alias itself (CNAME, DNAME) or about every type (ANY) is complete as answered. A
+/// chain that loops back on itself has no last name, so it is never complete.
 pub(crate) fn chain_is_complete(message: &Message, scope: &AnswerScope, qtype: RecordType) -> bool {
     if matches!(
         qtype,
         RecordType::CNAME | RecordType::DNAME | RecordType::ANY
     ) {
         return true;
+    }
+    if scope.is_cyclic() {
+        return false;
     }
     let has_wanted_data = message.answers.iter().any(|record| {
         record.rtype == qtype && CanonicalName::canonicalize(&record.owner) == *scope.chain_end()
@@ -61,4 +66,30 @@ fn has_closing_soa(message: &Message, scope: &AnswerScope) -> bool {
         record.rtype == RecordType::SOA
             && soa_closes_chain(scope, &CanonicalName::canonicalize(&record.owner))
     })
+}
+
+/// Every record of a refused answer, each with the reason it is refused for: a record
+/// the answer had no standing to carry (a foreign SOA beside an alias chain, say) is
+/// out of bailiwick, as it would be in any other answer, so the forgery stays visible;
+/// the rest are refused only because the chain they belong to leads nowhere.
+pub(crate) fn refused_records(message: &Message, scope: &AnswerScope) -> Vec<RejectedRecord> {
+    message
+        .answers
+        .iter()
+        .chain(&message.authorities)
+        .chain(&message.additionals)
+        .map(|record| {
+            let owner = CanonicalName::canonicalize(&record.owner);
+            let reason = if scope.permits(&owner, record.rtype) {
+                RejectReason::IncompleteChain
+            } else {
+                RejectReason::OutOfBailiwick
+            };
+            RejectedRecord {
+                owner,
+                rtype: record.rtype,
+                reason,
+            }
+        })
+        .collect()
 }
