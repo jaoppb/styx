@@ -9,7 +9,10 @@ resolver = "2"
 members = [
     "crates/styx-proto",
     "crates/styx-core",
+    "crates/styx-net",
+    "crates/styx-testkit",
     "crates/styx-resolution",
+    "crates/styx-recursion",
     "crates/styx-filtering",
     "crates/styx",
     "xtask",

@@ -36,6 +36,7 @@
 )]
 
 mod deps;
+mod differential;
 mod hickory;
 mod module_size;
 
@@ -69,13 +70,18 @@ fn run() -> Result<bool> {
     let Some(command) = rest.next() else {
         bail!(
             "usage: xtask <deps|hickory-dev-only> [--manifest-path <path>]\n   \
-             or: xtask module-size [--root <path>]"
+             or: xtask module-size [--root <path>]\n   \
+             or: xtask differential [--unbound <addr>]"
         );
     };
 
     if command == "module-size" {
         let root = parse_flag_value(rest, "--root")?;
         return module_size::run(root.as_deref());
+    }
+
+    if command == "differential" {
+        return run_differential(rest);
     }
 
     let manifest_path = parse_flag_value(rest, "--manifest-path")?;
@@ -89,6 +95,24 @@ fn run() -> Result<bool> {
              `module-size`"
         ),
     }
+}
+
+/// Runs the recursion differential: `xtask differential [--unbound <addr>]`,
+/// reading the corpus and root hints from their committed locations.
+///
+/// # Errors
+///
+/// Returns an error for a bad `--unbound` address or an unreadable input.
+fn run_differential<'a>(rest: impl Iterator<Item = &'a String>) -> Result<bool> {
+    let unbound = parse_flag_value(rest, "--unbound")?
+        .unwrap_or_else(|| "127.0.0.1:5353".to_string())
+        .parse()
+        .context("--unbound must be an address such as 127.0.0.1:5353")?;
+    differential::run(&differential::Inputs {
+        corpus: std::path::Path::new("crates/styx-recursion/differential/corpus.txt"),
+        root_hints: std::path::Path::new("config/named.root"),
+        unbound,
+    })
 }
 
 /// Parses a single optional `--flag <value>` pair from the remaining

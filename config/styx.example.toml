@@ -1,0 +1,36 @@
+# Example styx configuration: a recursor first, a public forwarder as standby.
+#
+# Copy to styx.toml (or pass the path as the first argument) and adjust.
+
+listen_addrs = ["127.0.0.1:5300"]
+query_timeout_secs = 5
+
+[upstream]
+strategy = "ordered_failover"
+
+# The iterative recursor. `addr` is required by the pool schema but unused for a
+# recursor: it finds its servers by walking down from the root.
+[[upstream.members]]
+name = "recursor"
+kind = "recursor"
+addr = "0.0.0.0:0"
+
+[[upstream.members]]
+name = "quad9"
+kind = "forwarder"
+addr = "9.9.9.9:53"
+
+# Infrastructure for the recursor. The root-hints file is the only source of root
+# servers: a missing or unparseable file stops styx at startup.
+[recursion]
+root_hints = "config/named.root"
+# Denial-of-service bounds per client question.
+max_depth = 16
+max_outbound_queries = 64
+max_cname_chain = 8
+wall_clock_ms = 4000
+# Per-query timeouts toward authoritative servers.
+udp_timeout_ms = 800
+tcp_timeout_ms = 1500
+# Set to false on a box with no IPv6 path, so AAAA glue is never tried.
+use_ipv6 = true

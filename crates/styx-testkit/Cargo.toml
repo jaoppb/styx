@@ -1,0 +1,20 @@
+[package]
+name = "styx-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "styx test support: hickory-based fake DNS servers. Dev-dependency only."
+publish = false
+
+[dependencies]
+styx-proto = { path = "../styx-proto" }
+styx-core = { path = "../styx-core", features = ["test-support"] }
+hickory-proto.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[lints]
+workspace = true

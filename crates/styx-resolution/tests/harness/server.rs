@@ -10,8 +10,8 @@ use styx_resolution::{
     ServerConfig, SupervisorBackoffPolicy, TerminalHandler,
 };
 
-use super::clock::TestClock;
-use super::error::HarnessError;
+use styx_testkit::HarnessError;
+use styx_testkit::TestClock;
 
 /// Server settings a test may override; every `TestServer` uses one UDP socket.
 #[derive(Debug, Clone, Copy)]
@@ -168,7 +168,9 @@ where
             upstream: None,
         };
 
-        let server = Server::bind(config, Arc::new(pipeline), Arc::clone(&clock)).await?;
+        let server = Server::bind(config, Arc::new(pipeline), Arc::clone(&clock))
+            .await
+            .map_err(|error| HarnessError::Server(error.to_string()))?;
         let addrs = server.local_addrs();
         let udp_addr = *addrs
             .first()
@@ -216,7 +218,10 @@ impl<L, F, O, C, T> TestServer<L, F, O, C, T> {
     /// # Errors
     /// Returns [`HarnessError`] if listener termination fails.
     pub async fn shutdown(&mut self) -> Result<(), HarnessError> {
-        self.server.shutdown().await?;
+        self.server
+            .shutdown()
+            .await
+            .map_err(|error| HarnessError::Server(error.to_string()))?;
         Ok(())
     }
 }

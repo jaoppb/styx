@@ -17,9 +17,11 @@ pub enum HarnessError {
     #[error("protocol encode error: {0}")]
     Encode(#[from] styx_proto::EncodeError),
 
-    /// Server startup or supervision failure.
+    /// Startup or supervision failure of a server under test.
+    ///
+    /// Carried as text because this crate names no feature crate's error type.
     #[error("server error: {0}")]
-    Server(#[from] styx_resolution::ServerError),
+    Server(String),
 
     /// Hickory test oracle protocol error.
     #[error("hickory error: {0}")]

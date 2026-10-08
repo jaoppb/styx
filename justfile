@@ -209,6 +209,12 @@ gate-selftest: _arch-version _rumdl-version
             --manifest-path {{ SELFTEST }}/fixture-d-hickory-in-deps/Cargo.toml
 
     echo ""
+    echo "Fixture J — styx-testkit (the oracle's carrier) on a normal dependency path:"
+    expect_rejected "hickory containment, dev-only crate" \
+        cargo run --quiet --package xtask -- hickory-dev-only \
+            --manifest-path {{ SELFTEST }}/fixture-j-testkit-in-deps/Cargo.toml
+
+    echo ""
     echo "Fixture E — markdown with structural violations:"
     # --no-exclude is LOAD-BEARING. rumdl does not lint an excluded file just
     # because it was named on the command line: an explicitly-passed excluded
@@ -289,6 +295,29 @@ gate-selftest: _arch-version _rumdl-version
         exit 1
     fi
     echo "gate-selftest: GREEN — every fixture was rejected."
+
+# ---------------------------------------------------------------------------
+# The recursion differential run: a PHASE gate, never a push gate.
+#
+# Resolves a curated corpus of real names through styx's recursor and through a
+# local unbound, and diffs RCODE and answer rrsets. It needs the live internet
+# and is flaky by nature, which is exactly why it is not in `gate` — and why
+# every disagreement it reports must be triaged to a named cause rather than
+# shrugged off as "DNS moved".
+# ---------------------------------------------------------------------------
+[doc("Recursion differential run against a local unbound. NOT part of the gate: needs the internet.")]
+differential:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v unbound >/dev/null 2>&1; then
+        echo "unbound is not installed; it is the independent oracle this run needs." >&2
+        exit 1
+    fi
+    unbound -d -c crates/styx-recursion/differential/unbound.conf &
+    unbound_pid=$!
+    trap 'kill "$unbound_pid" 2>/dev/null || true' EXIT
+    sleep 1
+    cargo run --quiet --package xtask -- differential --unbound 127.0.0.1:5353
 
 # ---------------------------------------------------------------------------
 # Setup

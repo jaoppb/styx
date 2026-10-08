@@ -1,9 +1,11 @@
 //! Domain policy, primitives, and traits for the answer cache.
 
 pub mod admission;
+pub mod answer_scope;
 pub mod bailiwick;
 pub mod bytes;
 pub mod capacity;
+pub mod chain_denial;
 pub mod dnssec;
 pub mod entry;
 pub mod error;

@@ -8,7 +8,7 @@ use styx_proto::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 
-use super::error::HarnessError;
+use crate::error::HarnessError;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
 

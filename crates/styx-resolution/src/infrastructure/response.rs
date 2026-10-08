@@ -61,7 +61,7 @@ impl ResponseWriter {
     /// if the query included EDNS, or stripped if the query did not include EDNS (RFC 6891 §6.1.1).
     /// On UDP, truncation is applied against `ctx.max_response_size`.
     /// On TCP, the body is returned without a length prefix; the caller frames it on the
-    /// wire through [`crate::infrastructure::tcp_frame::write_framed`].
+    /// wire through [`styx_net::write_framed`].
     ///
     /// # Errors
     /// Returns [`EncodeError`] on wire formatting failure or overflow.

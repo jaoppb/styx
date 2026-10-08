@@ -18,7 +18,6 @@ pub mod server;
 pub mod supervisor;
 pub mod tcp;
 pub mod tcp_connection;
-pub mod tcp_frame;
 pub mod udp;
 pub mod udp_socket;
 
@@ -30,12 +29,12 @@ pub use local::NoLocalRecords;
 pub use observer::DiscardObserver;
 pub use response::ResponseWriter;
 pub use server::{Server, ServerConfig};
+pub use styx_net::{write_framed, FrameWriteError};
 pub use supervisor::{
     run_listener_supervisor, SupervisedListener, SupervisorBackoff, SupervisorBackoffPolicy,
     DEFAULT_HEALTHY_THRESHOLD, DEFAULT_INITIAL_BACKOFF, DEFAULT_MAX_BACKOFF,
 };
 pub use tcp::TcpListener;
 pub use tcp_connection::{ConnectionInFlight, InFlightSlot, OutboundFrame};
-pub use tcp_frame::{write_framed, FrameWriteError};
 pub use udp::UdpListener;
 pub use udp_socket::{bind_reuseport_group, default_socket_count};

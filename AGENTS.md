@@ -29,10 +29,18 @@ this document revises.
   collections or true type erasure are strictly required.
 - **Feature crates never depend on each other.** A cross-feature need is a port in the
   consumer's `domain`, implemented by an adapter the `styx` binary wires in.
-  `styx-proto` and `styx-core` are shared foundation and the exemptions: every crate may
-  depend on them, and they depend on no feature crate. `styx-proto` depends on nothing
-  workspace-internal; `styx-core` depends only on `styx-proto`. `styx-web` is presentation
-  and may reach a feature's `application` layer; it is not a peer of the feature crates.
+  `styx-proto`, `styx-core` and `styx-net` are shared foundation and the exemptions: every
+  crate may depend on them, and they depend on no feature crate. `styx-proto` depends on
+  nothing workspace-internal; `styx-core` depends only on `styx-proto`; `styx-net` depends
+  only on `styx-proto` and `styx-core`. `styx-web` is presentation and may reach a
+  feature's `application` layer; it is not a peer of the feature crates.
+- **One outbound DNS client.** Every outbound Do53 query goes through `styx-net`'s
+  `Do53Client::exchange`, which owns the off-path spoofing defence (random ID, fresh
+  source port, connected socket, response matching). No other crate opens an outbound
+  DNS socket.
+- **`styx-testkit` is a dev-dependency only.** It holds the hickory-based fake DNS
+  servers shared by every crate's socket tests, names no feature crate, and must never
+  appear on a normal or build path — the `hickory-dev-only` gate rejects one.
 - **Errors are `thiserror` enums.** Every fallible operation returns `Result<T, E>` with a
   crate-owned error enum. No `Box<dyn Error>` on a public boundary, no stringly-typed
   errors. `anyhow` is reserved for the composition root (the `styx` binary's own startup
@@ -43,6 +51,12 @@ this document revises.
   whole house. The lint helps; the real mitigation — a `catch_unwind` boundary around the
   web layer and a supervised task model — does not arrive until Phase 12, so this rule
   carries the whole weight of panic safety until then.
+- **Work shared between callers belongs to a task, not to the first caller.** When several
+  callers wait on one piece of work — an outbound exchange, a priming query — the first
+  caller hands it to a detached task that records its own results and removes its own
+  bookkeeping, and every caller waits under its own deadline. A caller that is cancelled
+  or times out then strands no one, leaks no entry and cannot make a shared result count
+  once per waiter. See `styx-recursion`'s `application::single_flight`.
 - **No indexing, no unchecked arithmetic.** `indexing_slicing` and `arithmetic_side_effects`
   are denied workspace-wide. Route every raw offset computation through one audited,
   bounds-checked primitive per crate — `styx-proto`'s `application::cursor::Cursor` is the
@@ -79,7 +93,7 @@ styx/
 ├── Cargo.toml                  # Workspace virtual manifest, dependencies, lints
 ├── crates/
 │   ├── styx/                   # Composition root binary (startup, CLI, wiring)
-│   │   └── src/main.rs
+│   │   └── src/                # main.rs; upstream.rs: the pool's forwarder/recursor enum
 │   ├── styx-proto/             # Shared foundation: DNS wire codec (owned domain types)
 │   │   └── src/
 │   │       ├── domain/         # Wire types: Header, Question, Name, Record, RData, EDNS
@@ -90,15 +104,29 @@ styx/
 │   │       ├── domain/         # Clock, Upstream, UpstreamId, UpstreamResponse, errors
 │   │       ├── infrastructure/ # SystemClock
 │   │       └── test_util/      # TestClock (test-support feature)
+│   ├── styx-net/               # Shared foundation: the one outbound Do53 client
+│   │   └── src/
+│   │       ├── domain/         # Exchanged, ExchangeError
+│   │       └── infrastructure/ # Do53Client (UDP, TCP on TC), TCP framing
+│   ├── styx-testkit/           # Dev-only: hickory fake servers, DnsClient, TestClock
+│   │   └── src/
 │   ├── styx-resolution/        # DNS resolution engine and upstream forwarding
 │   │   └── src/
 │   │       ├── domain/         # Domain logic, circuit breaker, health, ports/
 │   │       ├── application/    # Pipeline, selection strategies, probe scheduler
 │   │       └── infrastructure/ # UDP/TCP listeners, client transports, port adapters
+│   ├── styx-recursion/         # Iterative recursor behind the Upstream port
+│   │   ├── src/
+│   │   │   ├── domain/         # Descent, minimisation, classification, topology, ports
+│   │   │   ├── application/    # Recursor, descent driver, exchange task, selection,
+│   │   │   │                   # single-flight, priming, diagnostics assembly, [recursion] config
+│   │   │   └── infrastructure/ # In-memory infra cache, Do53 transport, root hints, sinks
+│   │   └── differential/       # unbound config and corpus for `just differential`
 │   └── styx-filtering/         # Filtering & blocklist policy engine (skeleton)
 │       └── src/{domain, application, infrastructure}/
-└── xtask/                      # Developer & CI gate tasks (deps, hickory, module-size)
-    └── src/main.rs
+├── config/                     # named.root (IANA) and an example styx.toml
+└── xtask/                      # Gate tasks (deps, hickory, module-size) and the
+    └── src/main.rs             # per-phase recursion differential run
 ```
 
 ## Object Calisthenics, adapted for Rust

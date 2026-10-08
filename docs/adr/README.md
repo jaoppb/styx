@@ -31,3 +31,5 @@ As defined in [`AGENTS.md`](../../AGENTS.md):
 | [0017](0017-admission-time-bailiwick-validation-and-forgery-refusal.md) | Admission-time bailiwick validation and forgery refusal | Phase 4 — Answer cache | 2026-09-27 | Accepted |
 | [0018](0018-sharded-in-memory-concurrency-and-checked-heapbytes-accounting.md) | Sharded in-memory concurrency and checked heapbytes accounting | Phase 4 — Answer cache | 2026-09-27 | Accepted |
 | [0019](0019-rfc2308-negative-caching-with-soa-ttl.md) | RFC 2308 negative caching with SOA TTL | Phase 4 — Answer cache | 2026-09-27 | Accepted |
+| [0020](0020-recursor-failure-classification-and-qname-rooted-alias-scope.md) | Recursor failure classification and the qname-rooted alias scope | Phase 5 — Recursion | 2026-10-06 | Accepted |
+| [0021](0021-priming-validation-and-one-label-nxdomain-confirmation.md) | Priming validation and one-label NXDOMAIN confirmation | Phase 5 — Recursion | 2026-10-07 | Accepted |

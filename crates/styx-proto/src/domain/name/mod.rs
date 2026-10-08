@@ -7,6 +7,7 @@
 //! In accordance with RFC 1035 §2.3.3 and Phase 4/Phase 6 requirements, [`Name`]
 //! preserves original case but compares and hashes case-insensitively.
 
+mod arithmetic;
 mod label;
 
 pub use label::{Label, LabelIter, LabelOffsets, LabelRef};

@@ -21,10 +21,10 @@ use hickory_proto::rr::{
 };
 use hickory_proto::serialize::binary::{BinEncodable, BinEncoder};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::net::{TcpListener, UdpSocket};
 use tokio_util::sync::CancellationToken;
 
-use super::error::HarnessError;
+use crate::error::HarnessError;
 
 /// Scripted response behavior for a [`CommandableUpstream`].
 #[derive(Debug, Clone)]
@@ -183,6 +183,12 @@ impl CommandableUpstream {
     #[must_use]
     pub fn udp_addr(&self) -> SocketAddr {
         self.udp_addr
+    }
+
+    /// Returns the OS-assigned TCP listening address.
+    #[must_use]
+    pub fn tcp_addr(&self) -> SocketAddr {
+        self.tcp_addr
     }
 
     /// Shuts down the fake server listeners.

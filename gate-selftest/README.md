@@ -48,10 +48,11 @@ is the failure this whole directory exists to catch.
 | G | `anyhow::Result` in a feature crate's `domain` module | arch-lint `[[restrict-use]]` `no-anyhow-filtering` |
 | H | one violation each of the six `AGENTS.md` clippy lints | clippy, asserted to name each of the six by its doc anchor |
 | I | a `.rs` file with 401 counted lines | `xtask module-size` |
+| J | `styx-testkit` on a normal dependency path | the `hickory-dev-only` containment check, via its dev-only crate list |
 
-## Why nine, when the exit criteria name two
+## Why ten, when the exit criteria name two
 
-The phase's stated exit criteria name A and B. C through I are here because:
+The phase's stated exit criteria name A and B. C through J are here because:
 
 - **C** exercises `[[restrict-use]]`, a rule family a cross-layer `use` does
   not reach. It is also the rule most likely to be silently wrong, because of
@@ -94,6 +95,13 @@ The phase's stated exit criteria name A and B. C through I are here because:
   - **I** is checked with `xtask module-size --root`, pointed at the
     fixture directly rather than at the repository, so the check runs
     against a file the cap must reject without disturbing the real scan.
+- **J** was added in Phase 5, when the fake servers moved out of
+  `styx-resolution`'s tests into the `styx-testkit` crate. That crate links
+  `hickory-proto` on a normal edge — it is the oracle's carrier — so the
+  containment check stopped walking from it. Exempting a crate is exactly the
+  change that can quietly open a hole: a shipping crate depending on
+  `styx-testkit` would carry the oracle into the binary under a name that does
+  not start with `hickory`. D cannot catch that; J does.
 
 An inert config and a passing config emit the same exit code. This directory is
 the only thing that distinguishes them, which is why `just gate-selftest` runs

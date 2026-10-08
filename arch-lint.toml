@@ -131,6 +131,18 @@ name = "styx-core-infrastructure"
 paths = ["crates/styx-core/src/infrastructure/**", "src/infrastructure/**"]
 
 [[scopes]]
+name = "styx-net"
+paths = ["crates/styx-net/src/**"]
+
+[[scopes]]
+name = "styx-net-domain"
+paths = ["crates/styx-net/src/domain/**", "src/domain/**"]
+
+[[scopes]]
+name = "styx-net-infrastructure"
+paths = ["crates/styx-net/src/infrastructure/**", "src/infrastructure/**"]
+
+[[scopes]]
 name = "styx-resolution"
 paths = ["crates/styx-resolution/src/**"]
 
@@ -147,6 +159,22 @@ name = "styx-resolution-infrastructure"
 paths = ["crates/styx-resolution/src/infrastructure/**", "src/infrastructure/**"]
 
 [[scopes]]
+name = "styx-recursion"
+paths = ["crates/styx-recursion/src/**"]
+
+[[scopes]]
+name = "styx-recursion-domain"
+paths = ["crates/styx-recursion/src/domain/**", "src/domain/**"]
+
+[[scopes]]
+name = "styx-recursion-application"
+paths = ["crates/styx-recursion/src/application/**", "src/application/**"]
+
+[[scopes]]
+name = "styx-recursion-infrastructure"
+paths = ["crates/styx-recursion/src/infrastructure/**", "src/infrastructure/**"]
+
+[[scopes]]
 name = "styx-filtering"
 paths = ["crates/styx-filtering/src/**"]
 
@@ -161,6 +189,10 @@ paths = ["crates/styx-filtering/src/application/**", "src/application/**"]
 [[scopes]]
 name = "styx-filtering-infrastructure"
 paths = ["crates/styx-filtering/src/infrastructure/**", "src/infrastructure/**"]
+
+[[scopes]]
+name = "styx-testkit"
+paths = ["crates/styx-testkit/src/**"]
 
 [[scopes]]
 name = "styx-bin"
@@ -184,6 +216,18 @@ name = "resolution-application-to-infrastructure"
 from = "styx-resolution-application"
 to = ["styx-resolution-infrastructure"]
 message = "application orchestrates over the ports declared in domain; it must not know which adapter implements them. Depend on the port, and let the styx binary inject the adapter at startup"
+
+[[deny-scope-dep]]
+name = "recursion-domain-outward"
+from = "styx-recursion-domain"
+to = ["styx-recursion-application", "styx-recursion-infrastructure"]
+message = "domain is the innermost layer: the Descent state machine is I/O-free and depends outward on nothing but styx-proto and third-party crates. Move the type into domain, or invert the call behind a port that infrastructure implements"
+
+[[deny-scope-dep]]
+name = "recursion-application-to-infrastructure"
+from = "styx-recursion-application"
+to = ["styx-recursion-infrastructure"]
+message = "application orchestrates over the ports declared in domain (Transport, InfraCache, DiagnosticsSink, ChainMaterialSink); it must not know which adapter implements them. Depend on the port, and let the styx binary inject the adapter at startup"
 
 [[deny-scope-dep]]
 name = "filtering-domain-outward"
@@ -215,6 +259,12 @@ from = "styx-core-domain"
 to = ["styx-core-infrastructure"]
 message = "domain is the innermost layer: it declares ports and owns error types, and depends outward on nothing but styx-proto and third-party crates. Move the type into domain, or invert the call behind a port that infrastructure implements"
 
+[[deny-scope-dep]]
+name = "net-domain-outward"
+from = "styx-net-domain"
+to = ["styx-net-infrastructure"]
+message = "domain is the innermost layer: the exchange's value and error types depend outward on nothing but styx-proto and third-party crates. Sockets and framing belong in infrastructure"
+
 # ===========================================================================
 # Feature isolation — Structure rules 4-7.
 #
@@ -236,32 +286,56 @@ message = "domain is the innermost layer: it declares ports and owns error types
 [[restrict-use]]
 name = "no-resolution-to-filtering"
 scope = "styx-resolution"
-deny = ["styx_filtering", "styx_filtering::**"]
+deny = ["styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**"]
 message = "feature crates must not name each other. styx-resolution declares a FilterPolicy port in its domain module and the styx binary wires styx-filtering into it; a direct dependency makes the isolation a rewrite to recover"
 
 [[restrict-use]]
 name = "no-filtering-to-resolution"
 scope = "styx-filtering"
-deny = ["styx_resolution", "styx_resolution::**"]
+deny = ["styx_resolution", "styx_resolution::**", "styx_recursion", "styx_recursion::**"]
 message = "feature crates must not name each other. Declare a port in this crate's domain module and let the styx binary inject the adapter"
+
+[[restrict-use]]
+name = "no-recursion-to-feature"
+scope = "styx-recursion"
+deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**"]
+message = "feature crates must not name each other. styx-recursion implements styx-core's Upstream port, and the styx binary puts it in styx-resolution's pool; neither crate names the other"
 
 [[restrict-use]]
 name = "proto-names-no-feature"
 scope = "styx-proto"
-deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**"]
+deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**"]
 message = "styx-proto is shared foundation: it is exempt from feature isolation as a dependency target, not as a source. Every crate parses through the wire codec, so the codec must depend on none of them"
 
 [[restrict-use]]
 name = "proto-names-no-core"
 scope = "styx-proto"
-deny = ["styx_core", "styx_core::**"]
-message = "styx-proto is the wire codec and bottom-most shared foundation crate; styx-core depends on styx-proto, never the reverse"
+deny = ["styx_core", "styx_core::**", "styx_net", "styx_net::**"]
+message = "styx-proto is the wire codec and bottom-most shared foundation crate; styx-core and styx-net depend on styx-proto, never the reverse"
 
 [[restrict-use]]
 name = "core-names-no-feature"
 scope = "styx-core"
-deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**"]
+deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**"]
 message = "styx-core is shared foundation: it is exempt from feature isolation as a dependency target, not as a source. Core contracts and ports must depend on no feature crate"
+
+[[restrict-use]]
+name = "core-names-no-net"
+scope = "styx-core"
+deny = ["styx_net", "styx_net::**"]
+message = "styx-core sits below styx-net: styx-net depends on styx-core for the Clock port, never the reverse"
+
+[[restrict-use]]
+name = "testkit-names-no-feature"
+scope = "styx-testkit"
+deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**"]
+message = "styx-testkit is a dev-dependency of every feature crate. Naming one would create a dependency cycle through those dev edges; harness pieces that wrap a feature crate's own types stay in that crate's tests"
+
+[[restrict-use]]
+name = "net-names-no-feature"
+scope = "styx-net"
+deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**"]
+message = "styx-net is shared foundation: it is exempt from feature isolation as a dependency target, not as a source. The outbound exchange every feature shares must depend on none of them"
 
 # ===========================================================================
 # Synchronous I/O by layer (amendment, 2026-09-24).
@@ -378,6 +452,50 @@ deny = [
 message = "a database outage must degrade logging and admin, never resolution. A synchronous call here is a latent violation of that guarantee — move it behind a port implemented in infrastructure"
 
 [[restrict-use]]
+name = "no-sync-io-recursion-domain"
+scope = "styx-recursion-domain"
+deny = [
+    "std::fs",
+    "std::fs::**",
+    "std::net::TcpStream",
+    "std::net::TcpListener",
+    "std::net::UdpSocket",
+    "std::net::ToSocketAddrs",
+    "std::io::Read",
+    "std::io::Write",
+    "std::io::BufRead",
+    "std::io::Seek",
+    "std::io::prelude",
+    "std::io::prelude::**",
+    "std::io::stdin",
+    "std::io::stdout",
+    "std::io::stderr",
+]
+message = "the Descent state machine is I/O-free by construction: that is what makes the resolver's correctness testable without a network. Sockets belong behind the Transport port, implemented in infrastructure"
+
+[[restrict-use]]
+name = "no-sync-io-recursion-application"
+scope = "styx-recursion-application"
+deny = [
+    "std::fs",
+    "std::fs::**",
+    "std::net::TcpStream",
+    "std::net::TcpListener",
+    "std::net::UdpSocket",
+    "std::net::ToSocketAddrs",
+    "std::io::Read",
+    "std::io::Write",
+    "std::io::BufRead",
+    "std::io::Seek",
+    "std::io::prelude",
+    "std::io::prelude::**",
+    "std::io::stdin",
+    "std::io::stdout",
+    "std::io::stderr",
+]
+message = "the descent driver runs on the hot path, which touches no synchronous I/O. Sockets belong behind the Transport port; files are read at startup in infrastructure"
+
+[[restrict-use]]
 name = "no-sync-io-proto"
 scope = "styx-proto"
 deny = [
@@ -421,6 +539,28 @@ deny = [
 ]
 message = "the hot path touches no I/O: domain declarations must not do synchronous I/O"
 
+[[restrict-use]]
+name = "no-sync-io-net-domain"
+scope = "styx-net-domain"
+deny = [
+    "std::fs",
+    "std::fs::**",
+    "std::net::TcpStream",
+    "std::net::TcpListener",
+    "std::net::UdpSocket",
+    "std::net::ToSocketAddrs",
+    "std::io::Read",
+    "std::io::Write",
+    "std::io::BufRead",
+    "std::io::Seek",
+    "std::io::prelude",
+    "std::io::prelude::**",
+    "std::io::stdin",
+    "std::io::stdout",
+    "std::io::stderr",
+]
+message = "styx-net's domain holds only the values an exchange produces; every socket lives in infrastructure, and only the async ones"
+
 # ===========================================================================
 # `anyhow` by crate (amendment, 2026-09-24).
 #
@@ -445,10 +585,28 @@ deny = ["anyhow", "anyhow::**"]
 message = "library crates return a crate-owned thiserror enum, never anyhow (Norm 3). anyhow is reserved for the styx binary's own startup errors and for xtask, which reports a verdict to a human rather than exposing a library boundary"
 
 [[restrict-use]]
+name = "no-anyhow-testkit"
+scope = "styx-testkit"
+deny = ["anyhow", "anyhow::**"]
+message = "styx-testkit is a library crate with its own thiserror HarnessError (Norm 3); anyhow is reserved for the styx binary and xtask"
+
+[[restrict-use]]
+name = "no-anyhow-net"
+scope = "styx-net"
+deny = ["anyhow", "anyhow::**"]
+message = "library crates return a crate-owned thiserror enum, never anyhow (Norm 3). anyhow is reserved for the styx binary's own startup errors and for xtask, which reports a verdict to a human rather than exposing a library boundary"
+
+[[restrict-use]]
 name = "no-anyhow-resolution"
 scope = "styx-resolution"
 deny = ["anyhow", "anyhow::**"]
 message = "library crates return a crate-owned thiserror enum, never anyhow (Norm 3). anyhow is reserved for the styx binary's own startup errors and for xtask, which reports a verdict to a human rather than exposing a library boundary"
+
+[[restrict-use]]
+name = "no-anyhow-recursion"
+scope = "styx-recursion"
+deny = ["anyhow", "anyhow::**"]
+message = "library crates return a crate-owned thiserror enum, never anyhow (Norm 3). RecursionError is the one error type at this crate's boundary"
 
 [[restrict-use]]
 name = "no-anyhow-filtering"

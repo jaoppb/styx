@@ -17,6 +17,16 @@ use crate::names;
 /// Crate name prefix reserved for the DNS test oracle.
 const ORACLE_PREFIX: &str = "hickory";
 
+/// Workspace crates that exist only to be dev-dependencies: they may link the
+/// oracle themselves, so they are never a walk's origin, and reaching one through a
+/// shipping edge is the same violation as reaching the oracle directly.
+const DEV_ONLY: &[&str] = &["styx-testkit"];
+
+/// Returns true when a crate must never be reachable through a shipping edge.
+fn is_contained(name: &str) -> bool {
+    name.starts_with(ORACLE_PREFIX) || DEV_ONLY.contains(&name)
+}
+
 /// Returns true when an edge of this kind is linked into the shipping binary.
 ///
 /// Normal and build edges are; dev edges are not, which is the entire basis of
@@ -63,7 +73,7 @@ fn walk_from<'a>(
             let mut next = path.clone();
             next.push(name);
 
-            if name.starts_with(ORACLE_PREFIX) {
+            if is_contained(name) {
                 violations.insert(format!("  {}", next.join(" -> ")));
                 continue;
             }
@@ -79,7 +89,9 @@ fn walk_from<'a>(
 /// Walks the **full transitive** normal and build dependency paths of every
 /// workspace member, so a `hickory-*` crate pulled in indirectly is caught as
 /// surely as one written into a manifest. Presence under `[dev-dependencies]`
-/// at any depth is permitted and is the entire point of the exception.
+/// at any depth is permitted and is the entire point of the exception. The same
+/// holds for the [`DEV_ONLY`] crates that carry the oracle: they are not walked
+/// from, and reaching one through a shipping edge is a violation.
 ///
 /// # Errors
 ///
@@ -98,12 +110,15 @@ pub(crate) fn check(metadata: &Metadata) -> Result<bool> {
         let Some(origin) = names.get(member) else {
             continue;
         };
+        if DEV_ONLY.contains(origin) {
+            continue;
+        }
         violations.extend(walk_from(member, origin, &edges, &names));
     }
 
     if violations.is_empty() {
         println!(
-            "hickory-dev-only: OK — no `{ORACLE_PREFIX}*` crate is reachable through a normal or build path."
+            "hickory-dev-only: OK — no `{ORACLE_PREFIX}*` or dev-only crate is reachable through a normal or build path."
         );
         return Ok(true);
     }
@@ -120,8 +135,9 @@ pub(crate) fn check(metadata: &Metadata) -> Result<bool> {
          and the expected-byte fixtures have to encode DNS wire format, and if OUR codec\n\
          encodes them then the resolver and its oracle share every bug — a green suite\n\
          would prove only self-consistency.\n\n\
-         The ban is on shipping code, not the test rig. Move this back to\n\
-         [dev-dependencies]. See docs/adr/0002-hickory-proto-exception.md."
+         The ban is on shipping code, not the test rig. `styx-testkit` carries the\n\
+         oracle and is held to the same rule. Move this back to [dev-dependencies].\n\
+         See docs/adr/0002-hickory-proto-exception.md."
     );
     Ok(false)
 }

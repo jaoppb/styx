@@ -13,10 +13,10 @@ use styx_proto::{
     ResponseCode, Ttl,
 };
 use styx_resolution::{
-    Admission, AllowAllFilter, AnswerCache, AnswerSource, Bailiwick, CacheCapacity, CacheKey,
-    CacheStage, CircuitConfig, DiscardObserver, Do53Forwarder, EdnsBufferSize, HeapBytes, Lookup,
-    NoLocalRecords, OrderedFailover, PoolMember, ProbeConfig, ProbePolicy, ShardedAnswerCache,
-    TtlPolicy, UpstreamPool,
+    Admission, AllowAllFilter, AnswerCache, AnswerSource, Bailiwick, CacheCapacity, CacheEntry,
+    CacheKey, CacheStage, CircuitConfig, DiscardObserver, Do53Forwarder, EdnsBufferSize, HeapBytes,
+    Lookup, NoLocalRecords, OrderedFailover, PoolMember, PositiveEntry, ProbeConfig, ProbePolicy,
+    RejectReason, ShardedAnswerCache, TtlPolicy, UpstreamPool,
 };
 
 fn make_query(name: &str, rtype: RecordType) -> Message {
@@ -295,4 +295,236 @@ async fn test_concurrent_admissions_safety() {
     assert_eq!(purged.count(), stats.entries);
     assert_eq!(cache.stats().entries, 0);
     assert_eq!(cache.stats().bytes, HeapBytes::zero());
+}
+
+/// ADR 0017: an answer record reached through an in-bailiwick CNAME chain is
+/// admissible, so a cross-zone chain is cached whole — while an unrelated record
+/// appended to the same answer section is still rejected.
+#[test]
+fn test_cross_zone_cname_chain_is_admitted_whole() {
+    let clock = TestClock::new();
+    let admission = Admission::new(TtlPolicy::default());
+    let qname = Name::from_ascii("www.example.com.").expect("qname");
+    let target = Name::from_ascii("x.cdn.net.").expect("target");
+    let question = Question::new(qname.clone(), RecordType::A, RecordClass::In);
+
+    let mut msg = Message::response_to(0x2000, question.clone());
+    msg.answers.push(ResourceRecord::new(
+        qname,
+        RecordType::CNAME,
+        RecordClass::In,
+        Ttl::from_secs(300),
+        RData::Cname(target.clone()),
+    ));
+    msg.answers.push(ResourceRecord::new(
+        target,
+        RecordType::A,
+        RecordClass::In,
+        Ttl::from_secs(300),
+        RData::A(Ipv4Addr::new(192, 0, 2, 7)),
+    ));
+    msg.answers.push(ResourceRecord::new(
+        Name::from_ascii("evil.example.").expect("evil"),
+        RecordType::A,
+        RecordClass::In,
+        Ttl::from_secs(300),
+        RData::A(Ipv4Addr::new(6, 6, 6, 6)),
+    ));
+
+    let bailiwick = Bailiwick::of_response(&question, &msg);
+    let outcome = admission.evaluate(
+        &bailiwick,
+        &msg,
+        AnswerSource::Recursion,
+        clock.now_monotonic(),
+    );
+
+    assert_eq!(outcome.admitted.len(), 1, "one composite entry");
+    let Some(CacheEntry::Positive(PositiveEntry::Message(cached))) = outcome.admitted.first()
+    else {
+        panic!(
+            "expected a composite message entry, got {:?}",
+            outcome.admitted
+        );
+    };
+    let owners: Vec<String> = cached
+        .answer()
+        .iter()
+        .map(|rrset| rrset.owner().to_string())
+        .collect();
+    assert_eq!(owners, ["www.example.com.", "x.cdn.net."]);
+
+    assert_eq!(outcome.rejected.len(), 1);
+    let rejected = outcome.rejected.first().expect("one rejection");
+    assert_eq!(rejected.reason, RejectReason::OutOfBailiwick);
+    assert_eq!(rejected.owner.to_string(), "evil.example.");
+}
+
+/// A CNAME inside the zone that is not a link of the chain from the qname must not
+/// let a record for an arbitrary foreign name into the cache.
+#[test]
+fn test_in_zone_cname_off_the_chain_cannot_poison_a_foreign_name() {
+    let clock = TestClock::new();
+    let admission = Admission::new(TtlPolicy::default());
+    let qname = Name::from_ascii("www.example.com.").expect("qname");
+    let question = Question::new(qname.clone(), RecordType::A, RecordClass::In);
+    let record = |owner: &str, rdata: RData| {
+        ResourceRecord::new(
+            Name::from_ascii(owner).expect("owner"),
+            rdata.rtype(),
+            RecordClass::In,
+            Ttl::from_secs(300),
+            rdata,
+        )
+    };
+
+    let mut msg = Message::response_to(0x2001, question.clone());
+    msg.answers.push(record(
+        "www.example.com.",
+        RData::A(Ipv4Addr::new(192, 0, 2, 7)),
+    ));
+    msg.answers.push(record(
+        "x.example.com.",
+        RData::Cname(Name::from_ascii("www.bank.com.").expect("target")),
+    ));
+    msg.answers.push(record(
+        "www.bank.com.",
+        RData::A(Ipv4Addr::new(203, 0, 113, 66)),
+    ));
+    msg.authorities.push(record(
+        "example.com.",
+        RData::Ns(Name::from_ascii("ns.example.com.").expect("ns")),
+    ));
+
+    let bailiwick = Bailiwick::of_response(&question, &msg);
+    let outcome = admission.evaluate(
+        &bailiwick,
+        &msg,
+        AnswerSource::Recursion,
+        clock.now_monotonic(),
+    );
+
+    assert!(outcome
+        .rejected
+        .iter()
+        .any(|rejected| rejected.owner.to_string() == "www.bank.com."
+            && rejected.reason == RejectReason::OutOfBailiwick));
+}
+
+fn name(text: &str) -> Name {
+    Name::from_ascii(text).unwrap_or_else(|_| Name::root())
+}
+
+fn chain_message(
+    rcode: ResponseCode,
+    soa_owner: &str,
+    with_target_data: bool,
+) -> (Question, Message) {
+    let qname = name("www.example.com.");
+    let question = Question::new(qname, RecordType::A, RecordClass::In);
+    let record = |owner: &str, rdata: RData| {
+        ResourceRecord::new(
+            name(owner),
+            rdata.rtype(),
+            RecordClass::In,
+            Ttl::from_secs(300),
+            rdata,
+        )
+    };
+    let mut msg = Message::response_to(0x2002, question.clone());
+    msg.header.rcode = rcode;
+    msg.answers.push(record(
+        "www.example.com.",
+        RData::Cname(name("www.bank.com.")),
+    ));
+    if with_target_data {
+        msg.answers.push(record(
+            "www.bank.com.",
+            RData::A(Ipv4Addr::new(192, 0, 2, 9)),
+        ));
+    }
+    let soa = styx_proto::SoaRdata::new(
+        name("ns.bank.com."),
+        name("hostmaster.bank.com."),
+        1,
+        2,
+        3,
+        4,
+        120,
+    );
+    msg.authorities.push(record(soa_owner, RData::Soa(soa)));
+    (question, msg)
+}
+
+fn evaluate_chain(
+    question: &Question,
+    msg: &Message,
+) -> styx_resolution::domain::cache::AdmissionOutcome {
+    let clock = TestClock::new();
+    let admission = Admission::new(TtlPolicy::default());
+    let bailiwick = Bailiwick::of_response(question, msg);
+    admission.evaluate(
+        &bailiwick,
+        msg,
+        AnswerSource::Recursion,
+        clock.now_monotonic(),
+    )
+}
+
+/// A cross-zone chain that ends in NXDOMAIN is cached whole, under the qname only:
+/// the SOA of the zone the chain ends in rides inside the qname's composite entry
+/// and never becomes a negative entry for the target name.
+#[test]
+fn test_cross_zone_chain_ending_in_nxdomain_is_cached_under_the_qname_only() {
+    let (question, msg) = chain_message(ResponseCode::NXDOMAIN, "bank.com.", false);
+
+    let outcome = evaluate_chain(&question, &msg);
+
+    assert_eq!(
+        outcome.admitted.len(),
+        1,
+        "one composite entry, nothing for the target"
+    );
+    let Some(CacheEntry::Positive(PositiveEntry::Message(cached))) = outcome.admitted.first()
+    else {
+        panic!("expected a composite entry, got {:?}", outcome.admitted);
+    };
+    assert_eq!(cached.rcode(), ResponseCode::NXDOMAIN);
+    assert_eq!(cached.answer().len(), 1);
+    let authority: Vec<String> = cached
+        .authority()
+        .iter()
+        .map(|rrset| rrset.owner().to_string())
+        .collect();
+    assert_eq!(authority, ["bank.com."]);
+    assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+}
+
+/// The SOA must enclose the name the chain ends at: another zone's SOA is refused.
+#[test]
+fn test_chain_denial_with_an_unrelated_soa_is_not_admitted() {
+    let (question, msg) = chain_message(ResponseCode::NXDOMAIN, "attacker.org.", false);
+
+    let outcome = evaluate_chain(&question, &msg);
+
+    assert!(outcome
+        .rejected
+        .iter()
+        .any(|rejected| rejected.owner.to_string() == "attacker.org."
+            && rejected.reason == RejectReason::OutOfBailiwick));
+}
+
+/// A foreign SOA is a chain's ending only when the answer is a denial: beside real
+/// data at the end of the chain it is out of bailiwick like any other.
+#[test]
+fn test_a_foreign_soa_beside_data_is_not_a_chain_ending() {
+    let (question, msg) = chain_message(ResponseCode::NOERROR, "bank.com.", true);
+
+    let outcome = evaluate_chain(&question, &msg);
+
+    assert!(outcome
+        .rejected
+        .iter()
+        .any(|rejected| rejected.owner.to_string() == "bank.com."
+            && rejected.reason == RejectReason::OutOfBailiwick));
 }

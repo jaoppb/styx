@@ -14,7 +14,11 @@ use cargo_metadata::{DependencyKind, Metadata, PackageId};
 use crate::names;
 
 /// The shared foundation crates every other crate may name.
-const SHARED_FOUNDATIONS: &[&str] = &["styx-proto", "styx-core"];
+const SHARED_FOUNDATIONS: &[&str] = &["styx-proto", "styx-core", "styx-net"];
+
+/// The dev-only test-support crate. Like a foundation it may name no feature crate,
+/// and the `hickory-dev-only` gate keeps it off every shipping path.
+const TEST_SUPPORT: &str = "styx-testkit";
 
 /// The composition root: the only crate that may name every feature crate.
 const COMPOSITION_ROOT: &str = "styx";
@@ -28,8 +32,11 @@ const TOOLING: &str = "xtask";
 /// What a workspace member is, for the purposes of the layering rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Class {
-    /// `styx-proto` and `styx-core`: everyone may name them, they name no feature.
+    /// `styx-proto`, `styx-core` and `styx-net`: everyone may name them, they name
+    /// no feature.
     SharedFoundation,
+    /// `styx-testkit`: named only under `[dev-dependencies]`, names no feature.
+    TestSupport,
     /// `styx-<feature>`: may not name another feature crate.
     Feature,
     /// `styx-web`: may reach a feature's `application` layer.
@@ -52,6 +59,7 @@ impl Class {
         }
         match name {
             COMPOSITION_ROOT => Self::CompositionRoot,
+            TEST_SUPPORT => Self::TestSupport,
             PRESENTATION => Self::Presentation,
             TOOLING => Self::Tooling,
             _ => Self::Feature,
@@ -66,9 +74,22 @@ fn is_normal_edge(kinds: &[cargo_metadata::DepKindInfo]) -> bool {
         .any(|kind| matches!(kind.kind, DependencyKind::Normal))
 }
 
-/// The link-graph layering gate: no feature crate may link another.
+/// Returns true when a crate of this class must not link any feature crate.
 ///
-/// A violation is a **normal** edge from one feature crate to another. Edges
+/// Feature crates are isolated from each other; foundation and test-support crates
+/// sit beneath every feature, so naming one would be a layering inversion — and for
+/// `styx-testkit`, a dependency cycle through the dev edges of the crates it serves.
+fn names_no_feature(class: Class) -> bool {
+    matches!(
+        class,
+        Class::Feature | Class::SharedFoundation | Class::TestSupport
+    )
+}
+
+/// The link-graph layering gate: no feature crate may link another, and no
+/// foundation or test-support crate may link a feature crate.
+///
+/// A violation is a **normal** edge from such a crate into a feature crate. Edges
 /// into shared foundation crates, edges out of the `styx` binary, edges from `styx-web`
 /// into a feature crate, and dev edges of any shape are all permitted.
 ///
@@ -92,7 +113,7 @@ pub(crate) fn check(metadata: &Metadata) -> Result<bool> {
         let Some(from) = names.get(&node.id) else {
             continue;
         };
-        if Class::of(from) != Class::Feature {
+        if !names_no_feature(Class::of(from)) {
             continue;
         }
 

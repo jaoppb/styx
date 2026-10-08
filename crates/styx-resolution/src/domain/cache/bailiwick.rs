@@ -4,8 +4,9 @@
 //! Permitting arbitrary records into the answer cache without bailiwick verification
 //! creates a classic cache-poisoning vulnerability.
 
-use styx_proto::{Message, Question, RecordType};
+use styx_proto::{Message, Question, RecordType, ResourceRecord};
 
+use crate::domain::cache::answer_scope::AnswerScope;
 use crate::domain::cache::key::CanonicalName;
 
 /// The authoritative zone scope defining cache admission boundaries for a response.
@@ -87,5 +88,15 @@ impl Bailiwick {
     #[must_use]
     pub const fn zone(&self) -> &CanonicalName {
         &self.zone
+    }
+
+    /// Returns the owner names an answer section may carry under this bailiwick
+    /// for a question about `qname`. See [`AnswerScope`].
+    pub(crate) fn answer_scope(
+        &self,
+        qname: &CanonicalName,
+        answers: &[ResourceRecord],
+    ) -> AnswerScope {
+        AnswerScope::from_chain(self.zone.clone(), qname, answers)
     }
 }

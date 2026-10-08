@@ -5,7 +5,9 @@ use std::time::Instant;
 use styx_proto::{Message, RData, RecordClass, RecordType, ResourceRecord, ResponseCode, Ttl};
 
 use crate::domain::answer::AnswerSource;
+use crate::domain::cache::answer_scope::AnswerScope;
 use crate::domain::cache::bailiwick::Bailiwick;
+use crate::domain::cache::chain_denial::{ends_in_denial, soa_closes_chain};
 use crate::domain::cache::dnssec::DnssecMetadata;
 use crate::domain::cache::entry::CacheEntry;
 use crate::domain::cache::key::CanonicalName;
@@ -102,7 +104,9 @@ impl Admission {
         let is_nxdomain = message.header.rcode == ResponseCode::NXDOMAIN;
         let is_nodata = message.header.rcode == ResponseCode::NOERROR && message.answers.is_empty();
 
-        if is_nxdomain || is_nodata {
+        // An NXDOMAIN that follows an alias chain speaks for the chain's last name, not
+        // for the qname, so it is cached with its chain as a positive entry instead.
+        if (is_nxdomain && message.answers.is_empty()) || is_nodata {
             let kind = if is_nxdomain {
                 DenialKind::NxDomain
             } else {
@@ -242,12 +246,17 @@ impl Admission {
         now: Instant,
         outcome: &mut AdmissionOutcome,
     ) {
-        let mut answer_rrsets = self.admit_answers(bailiwick, message, now, outcome);
+        let qname = message.questions.first().map_or_else(
+            || bailiwick.zone().clone(),
+            |question| CanonicalName::canonicalize(&question.qname),
+        );
+        let scope = bailiwick.answer_scope(&qname, &message.answers);
+        let mut answer_rrsets = self.admit_answers(&scope, message, now, outcome);
         if answer_rrsets.is_empty() {
             return;
         }
 
-        let authority_rrsets = self.admit_authorities(bailiwick, message, now, outcome);
+        let authority_rrsets = self.admit_authorities(bailiwick, &scope, message, now, outcome);
         let additional_rrsets = self.admit_additionals(message, &authority_rrsets, now, outcome);
 
         if answer_rrsets.len() == 1 && authority_rrsets.is_empty() && additional_rrsets.is_empty() {
@@ -294,7 +303,7 @@ impl Admission {
 
     fn admit_answers(
         &self,
-        bailiwick: &Bailiwick,
+        scope: &AnswerScope,
         message: &Message,
         now: Instant,
         outcome: &mut AdmissionOutcome,
@@ -303,7 +312,7 @@ impl Admission {
         let mut admitted = Vec::new();
 
         for raw in raw_rrsets {
-            if !bailiwick.permits(&raw.owner) {
+            if !scope.permits(&raw.owner, raw.rtype) {
                 outcome.rejected.push(RejectedRecord {
                     owner: raw.owner,
                     rtype: raw.rtype,
@@ -332,19 +341,17 @@ impl Admission {
     fn admit_authorities(
         &self,
         bailiwick: &Bailiwick,
+        scope: &AnswerScope,
         message: &Message,
         now: Instant,
         outcome: &mut AdmissionOutcome,
     ) -> Vec<CachedRRset> {
         let raw_rrsets = self.group_records(&message.authorities);
+        let denial = ends_in_denial(message, scope);
         let mut admitted = Vec::new();
 
-        for raw in raw_rrsets {
-            let is_permitted_type = matches!(raw.rtype, RecordType::SOA | RecordType::NS);
-            let is_in_or_above =
-                bailiwick.permits(&raw.owner) || bailiwick.zone().is_subdomain_of(&raw.owner);
-
-            if !is_permitted_type || !is_in_or_above {
+        for mut raw in raw_rrsets {
+            if !authority_permitted(bailiwick, scope, &raw, denial) {
                 outcome.rejected.push(RejectedRecord {
                     owner: raw.owner,
                     rtype: raw.rtype,
@@ -353,6 +360,9 @@ impl Admission {
                 continue;
             }
 
+            if denial && raw.rtype == RecordType::SOA {
+                raw.ttl = self.negative_ttl(&raw);
+            }
             if raw.ttl == Ttl::ZERO {
                 outcome.rejected.push(RejectedRecord {
                     owner: raw.owner,
@@ -368,6 +378,18 @@ impl Admission {
         }
 
         admitted
+    }
+
+    /// RFC 2308 section 5: a negative answer lives for the smaller of the SOA's own
+    /// TTL and its MINIMUM field.
+    fn negative_ttl(&self, raw: &RawRRset) -> Ttl {
+        let minimum = raw.rdata.iter().find_map(|rdata| match rdata {
+            RData::Soa(soa) => Some(soa.minimum()),
+            _ => None,
+        });
+        minimum.map_or(raw.ttl, |minimum| {
+            self.ttl.effective_negative_ttl_raw(raw.ttl, minimum)
+        })
     }
 
     fn admit_additionals(
@@ -419,4 +441,22 @@ impl Admission {
         let rrset = RRset::new(raw.owner, raw.rtype, raw.rclass, raw.rdata).ok()?;
         Some(CachedRRset::new(rrset, raw.ttl, deadline))
     }
+}
+
+/// Whether an authority RRset may be cached with this response: an SOA or NS at or
+/// above the bailiwick zone, or an SOA that closes the alias chain the answer ends
+/// in a denial of (ADR 0020).
+fn authority_permitted(
+    bailiwick: &Bailiwick,
+    scope: &AnswerScope,
+    raw: &RawRRset,
+    denial: bool,
+) -> bool {
+    if !matches!(raw.rtype, RecordType::SOA | RecordType::NS) {
+        return false;
+    }
+    let in_or_above = bailiwick.permits(&raw.owner) || bailiwick.zone().is_subdomain_of(&raw.owner);
+    let closes_chain =
+        denial && raw.rtype == RecordType::SOA && soa_closes_chain(scope, &raw.owner);
+    in_or_above || closes_chain
 }
