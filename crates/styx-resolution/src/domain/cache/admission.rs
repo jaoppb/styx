@@ -7,7 +7,7 @@ use styx_proto::{Message, RData, RecordClass, RecordType, ResourceRecord, Respon
 use crate::domain::answer::AnswerSource;
 use crate::domain::cache::answer_scope::AnswerScope;
 use crate::domain::cache::bailiwick::Bailiwick;
-use crate::domain::cache::chain_denial::{ends_in_denial, soa_closes_chain};
+use crate::domain::cache::chain_denial::{chain_is_complete, ends_in_denial, soa_closes_chain};
 use crate::domain::cache::dnssec::DnssecMetadata;
 use crate::domain::cache::entry::CacheEntry;
 use crate::domain::cache::key::CanonicalName;
@@ -33,6 +33,8 @@ pub enum RejectReason {
     MalformedDenial,
     /// Negative response (NXDOMAIN or NODATA) lacked an authoritative SOA record.
     NoSoaInDenial,
+    /// Positive answer whose alias chain ends in neither the asked type nor a denial.
+    IncompleteChain,
     /// Provenance source is inadmissible for caching (e.g. cache hit or error).
     InadmissibleSource,
 }
@@ -251,6 +253,15 @@ impl Admission {
             |question| CanonicalName::canonicalize(&question.qname),
         );
         let scope = bailiwick.answer_scope(&qname, &message.answers);
+        let qtype = message.questions.first().map(|question| question.qtype);
+        if qtype.is_some_and(|qtype| !chain_is_complete(message, &scope, qtype)) {
+            self.reject_all_records(
+                message,
+                RejectReason::IncompleteChain,
+                &mut outcome.rejected,
+            );
+            return;
+        }
         let mut answer_rrsets = self.admit_answers(&scope, message, now, outcome);
         if answer_rrsets.is_empty() {
             return;

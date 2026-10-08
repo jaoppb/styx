@@ -17,6 +17,8 @@ pub struct CacheStats {
     pub admitted: u64,
     /// Number of records rejected due to bailiwick rule violations.
     pub rejected_out_of_bailiwick: u64,
+    /// Number of whole answers refused because their alias chain led nowhere.
+    pub rejected_incomplete_chain: u64,
     /// Number of entries removed due to TTL expiration.
     pub expired: u64,
     /// Number of fresh entries evicted due to capacity bounds.
@@ -35,6 +37,7 @@ pub struct AtomicCacheCounters {
     negative_hits: AtomicU64,
     admitted: AtomicU64,
     rejected_out_of_bailiwick: AtomicU64,
+    rejected_incomplete_chain: AtomicU64,
     expired: AtomicU64,
     evicted: AtomicU64,
 }
@@ -72,6 +75,12 @@ impl AtomicCacheCounters {
             .fetch_add(count, Ordering::Relaxed);
     }
 
+    /// Increments the incomplete-chain refusal counter by `count` answers.
+    pub fn inc_rejected_incomplete_chain(&self, count: u64) {
+        self.rejected_incomplete_chain
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
     /// Increments the expired entry counter by `count`.
     pub fn inc_expired(&self, count: u64) {
         self.expired.fetch_add(count, Ordering::Relaxed);
@@ -91,6 +100,7 @@ impl AtomicCacheCounters {
             negative_hits: self.negative_hits.load(Ordering::Relaxed),
             admitted: self.admitted.load(Ordering::Relaxed),
             rejected_out_of_bailiwick: self.rejected_out_of_bailiwick.load(Ordering::Relaxed),
+            rejected_incomplete_chain: self.rejected_incomplete_chain.load(Ordering::Relaxed),
             expired: self.expired.load(Ordering::Relaxed),
             evicted: self.evicted.load(Ordering::Relaxed),
             entries,

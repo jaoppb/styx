@@ -49,3 +49,28 @@ section-dependent validation rules, and categorically refuse forged answers.**
 - Every out-of-bailiwick rejection is explicitly tracked and observable via `CacheStats`
   counters and `tracing::warn` events.
 - Legitimate in-bailiwick answers in mixed-validity responses remain usable.
+
+## Amendment (2026-10-07) — forwarded answers and incomplete alias chains
+
+*Issue #77. This block is edited into the record in place, a deliberate exception to
+the rule that an ADR is superseded rather than edited. ADR 0020 had already replaced
+the chain walk this ADR describes; this block records what follows for a forwarder.*
+
+- **A forwarder's zone is the qname.** A recursive upstream (a public resolver, a
+  router) usually answers with an empty authority section. `Bailiwick::of_response`
+  then finds no SOA and no NS, so the bailiwick zone degenerates to the qname. That is
+  harmless for the chain: the answer scope of ADR 0020 admits each link's target and
+  the records at it by walking the chain from the qname, whatever zone answered, so
+  `www.example.com CNAME cdn.provider.net` is cached together with
+  `cdn.provider.net A`, and a record off that chain is still refused as
+  `OutOfBailiwick`.
+- **A chain must lead somewhere.** A positive answer is admitted only if the name its
+  alias chain ends at holds a record of the asked type, or the answer is a denial closed
+  by an SOA enclosing that name (ADR 0020). Otherwise the whole answer is refused as
+  `RejectReason::IncompleteChain`: served to the client once, never stored, because
+  a cache hit would return a CNAME with no address and stubs do not follow chains
+  themselves. A question about the alias itself (CNAME, DNAME) or about every type
+  (ANY) is complete as answered.
+- **Consequence.** An upstream that answers an alias with no ending, or a NODATA after
+  an alias with no SOA, costs one upstream query per request for that name. Each refused
+  answer is counted in `CacheStats::rejected_incomplete_chain` and logged at `debug`.

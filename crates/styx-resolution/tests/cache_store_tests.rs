@@ -500,18 +500,20 @@ fn test_cross_zone_chain_ending_in_nxdomain_is_cached_under_the_qname_only() {
     assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
 }
 
-/// The SOA must enclose the name the chain ends at: another zone's SOA is refused.
+/// The SOA must enclose the name the chain ends at: another zone's SOA does not close
+/// the chain, so the answer is refused whole rather than cached without its ending.
 #[test]
 fn test_chain_denial_with_an_unrelated_soa_is_not_admitted() {
     let (question, msg) = chain_message(ResponseCode::NXDOMAIN, "attacker.org.", false);
 
     let outcome = evaluate_chain(&question, &msg);
 
+    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
     assert!(outcome
         .rejected
         .iter()
         .any(|rejected| rejected.owner.to_string() == "attacker.org."
-            && rejected.reason == RejectReason::OutOfBailiwick));
+            && rejected.reason == RejectReason::IncompleteChain));
 }
 
 /// A foreign SOA is a chain's ending only when the answer is a denial: beside real

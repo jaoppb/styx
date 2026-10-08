@@ -139,6 +139,27 @@ impl<C: Clock> ShardedAnswerCache<C> {
         self.shards.get(idx)
     }
 
+    /// Logs and counts what admission refused. An outcome is one answer, and a refused
+    /// answer rejects every record in it, so an incomplete chain counts once.
+    fn record_rejections(&self, outcome: &AdmissionOutcome) {
+        for rej in &outcome.rejected {
+            if rej.reason == RejectReason::OutOfBailiwick {
+                tracing::warn!(owner = %rej.owner, rtype = ?rej.rtype, "rejected out-of-bailiwick record");
+                self.counters.inc_rejected_out_of_bailiwick(1);
+            }
+            if rej.reason == RejectReason::IncompleteChain {
+                tracing::debug!(owner = %rej.owner, rtype = ?rej.rtype, "refused record of an incomplete alias chain");
+            }
+        }
+        if outcome
+            .rejected
+            .iter()
+            .any(|rej| rej.reason == RejectReason::IncompleteChain)
+        {
+            self.counters.inc_rejected_incomplete_chain(1);
+        }
+    }
+
     fn touch_key(shard: &Shard, key: &CacheKey) {
         if let Ok(mut write_guard) = shard.inner.write() {
             write_guard.recency.retain(|k| k != key);
@@ -217,12 +238,7 @@ impl<C: Clock> AnswerCache for ShardedAnswerCache<C> {
         key: &CacheKey,
         outcome: AdmissionOutcome,
     ) -> Result<AdmittedCount, CacheError> {
-        for rej in &outcome.rejected {
-            if rej.reason == RejectReason::OutOfBailiwick {
-                tracing::warn!(owner = %rej.owner, rtype = ?rej.rtype, "rejected out-of-bailiwick record");
-                self.counters.inc_rejected_out_of_bailiwick(1);
-            }
-        }
+        self.record_rejections(&outcome);
 
         if outcome.admitted.is_empty() {
             return Ok(AdmittedCount::new(0));
