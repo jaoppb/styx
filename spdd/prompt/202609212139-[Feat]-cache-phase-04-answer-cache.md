@@ -375,6 +375,19 @@ class Bailiwick {
     +of_response(&Question, &Message) Bailiwick
     +permits(&CanonicalName) bool
     +zone() &CanonicalName
+    +answer_scope(&CanonicalName, &[ResourceRecord]) AnswerScope
+}
+
+class AnswerScope {
+    -CanonicalName zone
+    -CanonicalName chain_end
+    -HashSet~CanonicalName~ alias_targets
+    -HashSet~CanonicalName~ dname_owners
+    -bool cyclic
+    +from_chain(CanonicalName, &CanonicalName, &[ResourceRecord]) AnswerScope
+    +chain_end() &CanonicalName
+    +is_cyclic() bool
+    +permits(&CanonicalName, RecordType) bool
 }
 
 class Admission {
@@ -383,11 +396,29 @@ class Admission {
     +ttl() &TtlPolicy
     +evaluate(&Bailiwick, &Message, AnswerSource, Instant) AdmissionOutcome
     -check_source_eligibility(AnswerSource) Option~RejectReason~
+    -evaluate_positive(&Bailiwick, &Message, Instant, &mut AdmissionOutcome)
+    -survivors_complete(&Bailiwick, &CanonicalName, RecordType, &Message, &AdmittedSections, Instant) bool
+    -push_positive(&Message, AdmittedSections, Instant, &mut AdmissionOutcome)
+}
+
+class SectionAdmission {
+    <<pub(crate)>>
+    -TtlPolicy ttl
+    +admit(&Bailiwick, &AnswerScope, &Message, Instant, &mut AdmissionOutcome) AdmittedSections
+}
+
+class AdmittedSections {
+    <<pub(crate)>>
+    +Vec~CachedRRset~ answers
+    +Vec~CachedRRset~ authorities
+    +Vec~CachedRRset~ additionals
+    +into_rejected(RejectReason) Vec~RejectedRecord~
 }
 
 class AdmissionOutcome {
     +Vec~CacheEntry~ admitted
     +Vec~RejectedRecord~ rejected
+    +Option~RejectReason~ refusal
 }
 
 class RejectedRecord {
@@ -404,6 +435,9 @@ class RejectReason {
     ZeroTtl
     MalformedDenial
     NoSoaInDenial
+    IncompleteChain
+    MalformedResponse
+    Unstorable
     InadmissibleSource
 }
 
@@ -498,6 +532,7 @@ class CacheStats {
     +u64 negative_hits
     +u64 admitted
     +u64 rejected_out_of_bailiwick
+    +u64 rejected_incomplete_chain
     +u64 expired
     +u64 evicted
     +usize entries
@@ -510,6 +545,7 @@ class AtomicCacheCounters {
     -AtomicU64 negative_hits
     -AtomicU64 admitted
     -AtomicU64 rejected_out_of_bailiwick
+    -AtomicU64 rejected_incomplete_chain
     -AtomicU64 expired
     -AtomicU64 evicted
     +new() AtomicCacheCounters
@@ -518,6 +554,7 @@ class AtomicCacheCounters {
     +inc_negative_hits()
     +inc_admitted(u64)
     +inc_rejected_out_of_bailiwick(u64)
+    +inc_rejected_incomplete_chain(u64)
     +inc_expired(u64)
     +inc_evicted(u64)
     +snapshot(usize, HeapBytes) CacheStats
@@ -557,6 +594,10 @@ NegativeEntry "1" --> "1" DnssecMetadata : dnssec
 DnssecMetadata ..> SecurityStatus : status
 Admission "1" --> "1" TtlPolicy : clamps with
 Admission "1" ..> "1" Bailiwick : consults
+Admission "1" ..> "1" AnswerScope : judges chains with
+Admission "1" ..> "1" SectionAdmission : admits sections with
+SectionAdmission "1" --> "1" AdmittedSections : produces
+Bailiwick "1" ..> "1" AnswerScope : derives
 Admission "1" --> "1" AdmissionOutcome : produces
 Admission "1" ..> "1" AnswerSource : rejects forged
 AdmissionOutcome "1" o-- "0..*" RejectedRecord : rejected
@@ -673,8 +714,11 @@ Eviction "1" --> "1" EvictionReport : reports
 - **The bailiwick of a response is the zone the responding server has authority over**,
   and a record may be admitted only if its owner name is at or below that zone. The rule
   is applied **per section, with different strictness**:
-  - **Answer section**: admissible if the owner name is the qname, or is reached from the
-    qname by a CNAME/DNAME chain whose every link is itself in bailiwick.
+  - **Answer section**: admissible if the owner name is in the bailiwick zone, or is
+    reached from the qname by a CNAME/DNAME chain. The chain is walked from the qname
+    only (ADR 0020), so a CNAME that merely sits inside the zone extends nothing, and a
+    forwarder's answer, whose bailiwick degenerates to the qname, still admits its whole
+    chain.
   - **Authority section**: admissible only for the SOA or NS of a zone at or above the
     qname's bailiwick.
   - **Additional section**: **the strictest**, because it is the classic cache-poisoning
@@ -683,7 +727,31 @@ Eviction "1" --> "1" EvictionReport : reports
 - **Partial admission is the required behaviour.** A response mixing in-bailiwick and
   out-of-bailiwick records admits the former and records the latter in
   `AdmissionOutcome::rejected` with `RejectReason::OutOfBailiwick`. Whole-response
-  rejection would be over-strict; whole-response acceptance would be the hole.
+  rejection would be over-strict; whole-response acceptance would be the hole. The one
+  exception is the next bullet.
+- **An alias chain that leads nowhere is refused whole.** Served from cache, a CNAME with
+  no address behind it hands a stub an answer it cannot follow. A NOERROR or NXDOMAIN
+  answer must therefore end in a record of the asked type owned by the chain's last name,
+  or in a denial closed by an SOA whose zone encloses that name; otherwise every record
+  is refused (`RejectReason::IncompleteChain`) and nothing is cached (ADR 0022). CNAME,
+  DNAME and ANY questions are exempt, being complete as answered. A chain that loops
+  back on itself has no last name and is never complete. A response with no question
+  cannot be shown to answer anything, so it fails closed as
+  `RejectReason::MalformedResponse`. An error rcode carries nothing to admit and is not
+  judged. A cross-zone denial that does close its chain is cached under the qname only,
+  never as a negative entry for the target (ADR 0020).
+- **Completeness is judged twice.** Once on the message as received, and again on what
+  admission kept: a zero-TTL RRset, or one that cannot be represented in the cache, is
+  dropped after the chain looked complete, leaving a bare alias or an address nothing
+  points to. The kept RRsets are turned back into a message and judged by the same
+  predicate; if the chain no longer ends where it should, nothing is stored. Dropped
+  records keep their own reason (`ZeroTtl`, `Unstorable`) and the survivors are
+  `IncompleteChain`.
+- **A refused answer is labelled by the rule of each section.** Answer records by the
+  answer scope, authority records by the SOA and NS rule, additional records by the glue
+  rule, so a legitimate NS and its glue are never reported as forgeries. A record the
+  answer had no standing to carry, such as a foreign SOA beside the chain, keeps
+  `RejectReason::OutOfBailiwick`, so the forgery stays counted and logged.
 - **Forged answers are refused by the cache itself.** `Admission` rejects
   `AnswerSource::LocalRecord` and `AnswerSource::Blocked` with
   `RejectReason::ForgedAnswer`. The pipeline already short-circuits both ahead of the
@@ -746,7 +814,9 @@ Eviction "1" --> "1" EvictionReport : reports
   hit/miss outcome into the **query-log observer hook that Phase 2 already declared** —
   that hook exists precisely so the product half does not rewrite the hot path later.
 - `CacheStats` counts hits, misses, negative hits, admissions,
-  **out-of-bailiwick rejections**, expiries, evictions, entries and bytes, from day one.
+  **out-of-bailiwick rejections**, **incomplete-chain refusals** (once per refused
+  answer, not once per record, and also for an answer whose records were all out of
+  bailiwick), expiries, evictions, entries and bytes, from day one.
   This is a direct mitigation for the accepted consequence that **cache behaviour gets no
   operational feedback until the cutover, which is the last phase** — when the household
   finally moves over, the data must already be being collected.
@@ -796,8 +866,13 @@ styx-resolution/
         ttl.rs             Deadline, TtlPolicy
         bytes.rs           HeapBytes
         bailiwick.rs       Bailiwick
-        admission.rs       Admission, AdmissionOutcome, RejectedRecord,
-                           RejectReason (AnswerSource imported from domain::answer)
+        answer_scope.rs    AnswerScope (the qname-rooted alias walk)
+        chain_denial.rs    pub(crate) predicates only: ends_in_denial, soa_closes_chain,
+                           chain_is_complete (imports nothing from admission)
+        admission_outcome.rs  AdmissionOutcome, RejectedRecord, RejectReason
+        section_admission.rs  SectionAdmission, AdmittedSections, label_refused
+                           (private mod; RawRRset, authority_permitted, is_glue)
+        admission.rs       Admission (AnswerSource imported from domain::answer)
         port.rs            trait AnswerCache, Lookup, AdmittedCount, PurgedCount
         capacity.rs        CacheCapacity
         stats.rs           CacheStats, AtomicCacheCounters
@@ -1058,11 +1133,14 @@ client query
      of authority from the question and the response's authority section — the SOA owner
      when present, otherwise the deepest NS owner at or above the qname, otherwise the
      qname itself.
+   - `answer_scope(&self, qname: &CanonicalName, answers: &[ResourceRecord]) -> AnswerScope`
+     (`pub(crate)`): the owner names an answer section may carry, per §6a.
 3. **`permits(&self, owner: &CanonicalName) -> bool`**: `owner.is_subdomain_of(&self.zone)`.
 4. **Section rules**, applied by `Admission` and documented on this type:
-   - **Answer**: the owner is the qname, or is reached from the qname by a CNAME/DNAME
-     chain whose every link is itself permitted.
-   - **Authority**: SOA or NS only, for a zone at or above the bailiwick.
+   - **Answer**: the owner is in the bailiwick zone, or is reached from the qname by a
+     CNAME/DNAME chain (see §6a).
+   - **Authority**: SOA or NS only, for a zone at or above the bailiwick, or an SOA that
+     closes the answer's alias chain (§6a).
    - **Additional**: **strictest** — address records only, and only for names at or below
      the zone whose NS records appeared in this same response's authority section.
      *This is the classic poisoning vector and gets the tightest rule.*
@@ -1070,7 +1148,45 @@ client query
    the chain walk. Exhaustively unit-tested; this is the one predicate in the phase whose
    failure is a vulnerability rather than a bug.
 
-### 7. Create `domain::cache::admission` — `Admission`, `AdmissionOutcome`
+### 6a. Create `domain::cache::answer_scope`, `chain_denial` — alias-chain rules
+
+1. **Responsibility**: decide which owner names an answer may carry, and whether an alias
+   chain ends in something worth caching. Both are pure functions of the message, with
+   no `Clock` and no I/O, because a mistake in either is a poisoning hole or a dangling
+   answer.
+2. **`AnswerScope`** (`answer_scope.rs`, `pub(crate)`, all fields private):
+   - `from_chain(zone: CanonicalName, qname: &CanonicalName, answers: &[ResourceRecord])
+     -> AnswerScope`: canonicalise every CNAME once into an owner-to-target map (the first
+     CNAME of an owner wins), then follow links from the qname, each at most once. A link
+     whose target was already reached sets `cyclic` and ends the walk. Each DNAME whose
+     synthesised CNAME (RFC 6672 §3.1) is a link is admitted; a DNAME without it proves
+     nothing.
+   - `chain_end(&self) -> &CanonicalName`: the name the walk stopped at, the qname when it
+     has no alias. For a cyclic chain it is an arbitrary link of the loop and names no
+     ending.
+   - `is_cyclic(&self) -> bool`: the chain loops back on a name it already passed through.
+   - `permits(&self, owner: &CanonicalName, rtype: RecordType) -> bool`: the owner is in
+     the zone's subtree or is an alias target; a DNAME owner is permitted for the DNAME
+     type only.
+3. **`chain_denial`** (`pub(crate)` free functions):
+   - `ends_in_denial(&Message, &AnswerScope) -> bool`: NXDOMAIN (RFC 6604: the code speaks
+     for the name the chain ends at), or NOERROR with no non-alias record owned by the
+     chain's end.
+   - `soa_closes_chain(&AnswerScope, &CanonicalName) -> bool`: the chain's end is at or
+     below the SOA's owner.
+   - `chain_is_complete(&Message, &AnswerScope, RecordType) -> bool`: `true` for CNAME,
+     DNAME and ANY questions; `false` for a cyclic chain; otherwise `true` when a record
+     of the asked type is owned by the chain's end, or the answer ends in a denial and an
+     authority SOA closes the chain.
+   - These are predicates only and return plain verdicts. Labelling what is refused is
+     admission's concern and lives in `section_admission::label_refused`, so this module
+     never imports `admission`.
+4. **Constraints**: no indexing and no unchecked arithmetic; the walk is linear in the
+   records. A denial that ends a chain is admitted only inside the qname's composite
+   entry, never as a negative entry for the target name, because the answering zone may
+   vouch for what its own name resolves to and nothing more.
+
+### 7. Create `domain::cache::admission`, `admission_outcome`, `section_admission`
 
 1. **Responsibility**: the complete answer to "may this be cached at all?", of which the
    bailiwick rule is one clause.
@@ -1089,36 +1205,55 @@ client query
      the cache is global, so a cached forgery would be served to clients in groups where
      the block does not apply; and blocked replies carry a deliberately short TTL so
      unblocking takes effect quickly, which caching would defeat.
-   - Group records into RRsets by `(owner, type, class)` using `group_records` and
-     `merge_record_into_group`.
-   - Apply the per-section bailiwick rule via `admit_answers`, `admit_authorities`,
-     `admit_additionals`; out-of-bailiwick RRsets go to `rejected` with
+   - In `evaluate_positive`, an NOERROR or NXDOMAIN response with no question is refused
+     whole as `RejectReason::MalformedResponse` (`AdmissionOutcome::refuse`). An error
+     rcode is not judged.
+   - Before admitting any record of such a response, ask `chain_is_complete` for the
+     question's type. On failure the answer is refused whole as
+     `RejectReason::IncompleteChain`, its records labelled by `label_refused`, and
+     `evaluate_positive` returns.
+   - Group records into RRsets by `(owner, type, class)` and apply the per-section rule
+     through `SectionAdmission::admit` (`admit_answers`, `admit_authorities`,
+     `admit_additionals`); out-of-bailiwick RRsets go to `rejected` with
      `RejectReason::OutOfBailiwick`. **Partial admission**: the in-bailiwick parts of a
-     mixed-validity response are still admitted.
-   - Reject TTL-zero RRsets with `RejectReason::ZeroTtl` — served once, never stored.
+     mixed-validity response are still admitted. The authority and additional sections
+     are only considered once the answer section yields an RRset.
+   - Reject TTL-zero RRsets with `RejectReason::ZeroTtl` — served once, never stored. An
+     RRset that cannot be represented (deadline overflow, invalid RRset) is rejected as
+     `RejectReason::Unstorable` instead of vanishing.
    - Clamp surviving TTLs via `TtlPolicy` and compute each `Deadline` from `now` using
      `to_cached_rrset`.
+   - Call the private `survivors_complete(...)`: rebuild the answer and authority
+     sections from the admitted RRsets (`to_resource_records`), derive a fresh
+     `AnswerScope` from them, and ask `chain_is_complete` again. If it fails, or an RRset
+     cannot be rebuilt, `AdmittedSections::into_rejected(IncompleteChain)` turns every
+     admitted RRset into a rejection, `refuse` records the refusal, and nothing is stored.
    - For a denial (NXDOMAIN, or NOERROR with an empty answer section), build a
      `NegativeEntry` with the kind and the SOA-derived lifetime via `evaluate_denial`;
      with no SOA present, reject with `RejectReason::NoSoaInDenial` and cache nothing.
    - Decide RRset-vs-message shape: an answer that reduces to one RRset of the queried
      type becomes a `CachedRRset`; anything else — a CNAME chain, a referral-shaped
      response — becomes a `CachedMessage`.
-3. **`AdmissionOutcome`**: the admitted entries and the rejected records with reasons. The
-   rejection list is not decoration: it drives the `rejected_out_of_bailiwick` counter and
-   is what the store-introspection tests assert against.
+3. **`AdmissionOutcome`** (`admission_outcome.rs`, all fields `pub`): the admitted entries,
+   the rejected records with reasons, and `refusal: Option<RejectReason>`, set when the
+   answer was refused whole rather than record by record. The rejection list drives the
+   `rejected_out_of_bailiwick` counter and the store-introspection tests; `refusal`
+   drives `rejected_incomplete_chain`, so an answer counts once however many records it
+   carried. `refuse(&mut self, reason, records)` is `pub(crate)`.
 4. **`Admission` accessors**: `ttl(&self) -> &TtlPolicy`.
 5. **Constraints**: `Admission` is the **only** path into the store. The `AnswerCache`
    trait accepts an `AdmissionOutcome`, never a raw `Message`, so there is no way to
    insert unvetted data.
 6. **Shape constraint** *(amendment, 2026-09-24)*: `evaluate` is a thin composition of
    named, guard-claused helpers — `check_source_eligibility`, `reject_all_records`,
-   `evaluate_denial`, `evaluate_positive`, `admit_answers`, `admit_authorities`,
-   `admit_additionals`, and `to_cached_rrset` — rather than one function holding every
-   step inline. Each helper returns early on its own reject reason instead of nesting the
-   next step inside its success branch. This is what keeps the security-critical path clear
-   of both `excessive_nesting` (threshold 4) and `too_many_lines` (threshold 60), per
-   Phase 0 Approach §10.
+   `evaluate_denial`, `evaluate_positive`, `survivors_complete` and `push_positive` in
+   `admission.rs`, and `admit`, `admit_answers`, `admit_authorities`, `admit_additionals`,
+   `store`, `to_cached_rrset` and `label_refused` in `section_admission.rs` — rather than
+   one function holding every step inline. The split also keeps each file under the
+   400-line module-size cap. Each helper returns early on its own reject reason instead
+   of nesting the next step inside its success branch. This is what keeps the
+   security-critical path clear of both `excessive_nesting` (threshold 4) and
+   `too_many_lines` (threshold 60), per Phase 0 Approach §10.
 
 ### 8. Create `domain::cache::port`, `capacity`, `stats` — the `AnswerCache` trait
 
@@ -1149,11 +1284,12 @@ client query
    shares `HeapBytes` with the counter it bounds.
 4. **`stats.rs`** — **`CacheStats`** and **`AtomicCacheCounters`**:
    - `CacheStats`: `hits: u64`, `misses: u64`, `negative_hits: u64`, `admitted: u64`,
-     `rejected_out_of_bailiwick: u64`, `expired: u64`, `evicted: u64`, `entries: usize`,
-     `bytes: HeapBytes`.
+     `rejected_out_of_bailiwick: u64`, `rejected_incomplete_chain: u64`, `expired: u64`,
+     `evicted: u64`, `entries: usize`, `bytes: HeapBytes`.
    - `AtomicCacheCounters`: holds atomic counters (`AtomicU64`) updated with relaxed
      ordering: `inc_hits()`, `inc_misses()`, `inc_negative_hits()`, `inc_admitted(u64)`,
-     `inc_rejected_out_of_bailiwick(u64)`, `inc_expired(u64)`, `inc_evicted(u64)`.
+     `inc_rejected_out_of_bailiwick(u64)`, `inc_rejected_incomplete_chain(u64)`,
+     `inc_expired(u64)`, `inc_evicted(u64)`.
      `snapshot(&self, entries: usize, bytes: HeapBytes) -> CacheStats` creates point-in-time
      reports without acquiring shard locks.
 5. **Constraints**: `AnswerCache` is `Send + Sync`, no `async` — the store is synchronous
@@ -1182,7 +1318,7 @@ client query
    freshness; on a stale entry upgrade to write lock, remove it, count an expiry, return
    `Expired`. Bump recency on a hit. Increment hit/miss/negative-hit counters via
    `AtomicCacheCounters`.
-6. **`admit`**: write-lock the shard, insert the admitted entries, fold each entry's
+6. **`admit`**: first `record_rejections`, then write-lock the shard, insert the admitted entries, fold each entry's
    `heap_size()` into `ShardInner::bytes` via `HeapBytes::checked_add` — the resulting
    `CacheError::ByteAccountingOverflow`, like every `CacheError`, degrades to "not
    admitted" rather than failing the query — then call `Eviction::evict` if the capacity
@@ -1192,6 +1328,9 @@ client query
 9. **Instrumentation**: `tracing` spans on `lookup` and `admit`; a `warn`-level event
    whenever a record is rejected as out of bailiwick, because that is either a broken
    upstream or an attack and either way somebody should be able to see it.
+   `record_rejections` counts `rejected_out_of_bailiwick` once per forged record, and when
+   `AdmissionOutcome::refusal` is `IncompleteChain` it counts `rejected_incomplete_chain`
+   and logs at `debug` once per answer, with the number of records.
 10. **Constraints**: no lock held across an `await`; no `unwrap`/`expect` on lock results
    (poisoning is handled explicitly and degrades to a miss); no I/O of any kind —
    arch-lint's `no-sync-io` applies.
@@ -1254,7 +1393,20 @@ client query
    - `admission`: mixed-validity partial admission; forged-source refusal for both
      `LocalRecord` and `Blocked`; `InadmissibleSource` refusal for `CacheHit` and
      `Error`; admission for both `Upstream` and `Recursion`; denial with and without an
-     SOA; NODATA versus NXDOMAIN.
+     SOA; NODATA versus NXDOMAIN; alias chains (a chain ending in data, in a closed
+     denial, in an unrelated zone's SOA, in a loop, with no question, and under an error
+     rcode: SERVFAIL, REFUSED and FORMERR are not refused as incomplete chains), checking
+     the reason each record is refused for, `OutOfBailiwick` for the foreign SOA and
+     `IncompleteChain` for the rest; a response with no question is `MalformedResponse`;
+     a zero-TTL closing SOA leaves no stored chain; a refused answer's legitimate NS and
+     glue are `IncompleteChain` and a foreign additional stays `OutOfBailiwick`; ANY and
+     CNAME questions are not refused; a DNAME without its synthesised CNAME is.
+   - `cname_chain_cache` (pipeline): a forwarder's chain is served whole from cache; an
+     off-chain record is rejected; a dangling, cyclic, zero-TTL-CNAME and zero-TTL-A
+     chain is never stored and counts once per refused answer; an answer of only
+     off-chain records counts both refusals.
+   - `answer_scope`: link following, DNAME synthesis, a CNAME that is not a link of the
+     chain, and a loop setting `is_cyclic`.
 2. **Socket-level tests** against the Phase 2 in-process fakes over real sockets: a second
    identical query is served from cache with a reduced TTL and no outbound traffic; after
    the clock advances past the TTL, the query goes upstream again; a NODATA denial is
@@ -1272,6 +1424,9 @@ client query
    of the never-cache-forgeries rule and is worth asserting explicitly.
 6. **Concurrency test**: many tasks admitting the same key simultaneously leave exactly
    one entry and no corruption.
+7. **Alias-chain cache tests** (`cname_chain_cache_tests`): a forwarded chain with an empty
+   authority section is served whole from cache; a record off the chain is still
+   rejected; an incomplete chain is refused, counted once and never served.
 
 ---
 
@@ -1357,6 +1512,11 @@ And the phase scope, verbatim:
 - An expired entry is never served. No serve-stale in this phase.
 - NXDOMAIN and NODATA are cached separately and remain distinguishable on retrieval.
 - A denial with no SOA is not cached.
+- A positive answer whose alias chain ends in neither the asked type nor an SOA-closed
+  denial, or loops, is refused whole and not cached; one that arrives with no question is
+  refused whole as `MalformedResponse`.
+- A chain that is no longer complete once its dropped links (zero TTL, unrepresentable)
+  are removed is not stored either.
 - A TTL-zero record is served but not stored.
 - Meta-qtypes (`ANY`, `AXFR`, `IXFR`, `OPT`) never form a key.
 - `purge_all` exists and empties the store completely.
@@ -1371,7 +1531,8 @@ And the phase scope, verbatim:
   whole-response acceptance nor whole-response rejection is acceptable.
 - `Admission` is the only path into the store; `admit` accepts an `AdmissionOutcome`,
   never a raw `Message`.
-- Every out-of-bailiwick rejection is counted and logged at `warn`.
+- Every out-of-bailiwick rejection is counted and logged at `warn`, including one made
+  inside an answer that is refused whole.
 - No cache error message reaches a client; errors degrade to a miss.
 
 ### 4. Performance and resource constraints
@@ -1454,6 +1615,10 @@ And the phase scope, verbatim:
   cache-poisoning vulnerability in a resolver serving a household. Mitigation: pure
   `domain` logic, exhaustive unit tests, store-introspection socket tests, and a single
   admission path.
+- **A forwarder that omits the SOA from a CNAME-then-NODATA answer is never cached for
+  that name.** Such an answer ends in neither data nor a closed denial, so each lookup
+  costs an upstream query. This is accepted: serving a dangling alias from cache is the
+  worse failure.
 - **`panic = "deny"` is load-bearing and its real mitigation arrives last.** The
   `catch_unwind` boundary and supervised task model are Phase 12 — Cutover hardening.
   Until then the lint and the no-panic discipline in this component are the whole defence.

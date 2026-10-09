@@ -1,6 +1,7 @@
 //! Domain policy, primitives, and traits for the answer cache.
 
 pub mod admission;
+pub mod admission_outcome;
 pub mod answer_scope;
 pub mod bailiwick;
 pub mod bytes;
@@ -14,10 +15,12 @@ pub mod negative_entry;
 pub mod port;
 pub mod positive_entry;
 pub mod rrset;
+mod section_admission;
 pub mod stats;
 pub mod ttl;
 
-pub use admission::{Admission, AdmissionOutcome, RejectReason, RejectedRecord};
+pub use admission::Admission;
+pub use admission_outcome::{AdmissionOutcome, RejectReason, RejectedRecord};
 pub use bailiwick::Bailiwick;
 pub use bytes::HeapBytes;
 pub use capacity::{CacheCapacity, DEFAULT_MAX_BYTES, DEFAULT_MAX_ENTRIES};

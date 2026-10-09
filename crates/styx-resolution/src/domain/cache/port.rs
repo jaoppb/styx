@@ -1,6 +1,6 @@
 //! Answer cache trait (port) and lookup outcome.
 
-use crate::domain::cache::admission::AdmissionOutcome;
+use crate::domain::cache::admission_outcome::AdmissionOutcome;
 use crate::domain::cache::entry::CacheEntry;
 use crate::domain::cache::error::CacheError;
 use crate::domain::cache::key::CacheKey;

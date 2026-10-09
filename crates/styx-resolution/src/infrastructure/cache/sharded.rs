@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 
 use styx_core::Clock;
 
-use crate::domain::cache::admission::{AdmissionOutcome, RejectReason};
+use crate::domain::cache::admission_outcome::{AdmissionOutcome, RejectReason};
 use crate::domain::cache::bytes::HeapBytes;
 use crate::domain::cache::capacity::CacheCapacity;
 use crate::domain::cache::entry::CacheEntry;
@@ -139,6 +139,25 @@ impl<C: Clock> ShardedAnswerCache<C> {
         self.shards.get(idx)
     }
 
+    /// Logs and counts what admission refused. An outcome is one answer: forged
+    /// records count one each, and an answer refused whole counts once and logs once,
+    /// whatever the number of records it carried.
+    fn record_rejections(&self, outcome: &AdmissionOutcome) {
+        for rej in &outcome.rejected {
+            if rej.reason == RejectReason::OutOfBailiwick {
+                tracing::warn!(owner = %rej.owner, rtype = ?rej.rtype, "rejected out-of-bailiwick record");
+                self.counters.inc_rejected_out_of_bailiwick(1);
+            }
+        }
+        if outcome.refusal == Some(RejectReason::IncompleteChain) {
+            tracing::debug!(
+                records = outcome.rejected.len(),
+                "refused an answer whose alias chain leads nowhere"
+            );
+            self.counters.inc_rejected_incomplete_chain(1);
+        }
+    }
+
     fn touch_key(shard: &Shard, key: &CacheKey) {
         if let Ok(mut write_guard) = shard.inner.write() {
             write_guard.recency.retain(|k| k != key);
@@ -217,12 +236,7 @@ impl<C: Clock> AnswerCache for ShardedAnswerCache<C> {
         key: &CacheKey,
         outcome: AdmissionOutcome,
     ) -> Result<AdmittedCount, CacheError> {
-        for rej in &outcome.rejected {
-            if rej.reason == RejectReason::OutOfBailiwick {
-                tracing::warn!(owner = %rej.owner, rtype = ?rej.rtype, "rejected out-of-bailiwick record");
-                self.counters.inc_rejected_out_of_bailiwick(1);
-            }
-        }
+        self.record_rejections(&outcome);
 
         if outcome.admitted.is_empty() {
             return Ok(AdmittedCount::new(0));

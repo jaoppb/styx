@@ -2,12 +2,12 @@
 
 use std::time::Instant;
 
-use styx_proto::{Message, RData, RecordClass, RecordType, ResourceRecord, ResponseCode, Ttl};
+use styx_proto::{Message, RData, RecordType, ResourceRecord, ResponseCode, Ttl};
 
 use crate::domain::answer::AnswerSource;
-use crate::domain::cache::answer_scope::AnswerScope;
+use crate::domain::cache::admission_outcome::{AdmissionOutcome, RejectReason, RejectedRecord};
 use crate::domain::cache::bailiwick::Bailiwick;
-use crate::domain::cache::chain_denial::{ends_in_denial, soa_closes_chain};
+use crate::domain::cache::chain_denial::chain_is_complete;
 use crate::domain::cache::dnssec::DnssecMetadata;
 use crate::domain::cache::entry::CacheEntry;
 use crate::domain::cache::key::CanonicalName;
@@ -16,59 +16,13 @@ use crate::domain::cache::positive_entry::{
     CachedMessage, CachedRRset, MessageFlags, PositiveEntry,
 };
 use crate::domain::cache::rrset::RRset;
+use crate::domain::cache::section_admission::{label_refused, AdmittedSections, SectionAdmission};
 use crate::domain::cache::ttl::{Deadline, TtlPolicy};
-
-/// The reason a record or response was refused admission into the answer cache.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RejectReason {
-    /// Record owner violates bailiwick boundaries of the responding authority.
-    OutOfBailiwick,
-    /// Response was synthesized locally (local record or block policy) and must not be cached.
-    ForgedAnswer,
-    /// Query asked for an uncacheable meta-qtype.
-    UncacheableQtype,
-    /// Record TTL is zero (served once, never stored).
-    ZeroTtl,
-    /// Denial response was structurally malformed.
-    MalformedDenial,
-    /// Negative response (NXDOMAIN or NODATA) lacked an authoritative SOA record.
-    NoSoaInDenial,
-    /// Provenance source is inadmissible for caching (e.g. cache hit or error).
-    InadmissibleSource,
-}
-
-/// A record rejected during cache admission evaluation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RejectedRecord {
-    /// Owner name of the rejected record.
-    pub owner: CanonicalName,
-    /// Record type of the rejected record.
-    pub rtype: RecordType,
-    /// Why the record was rejected.
-    pub reason: RejectReason,
-}
-
-/// The outcome of evaluating a response for cache admission.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct AdmissionOutcome {
-    /// Admitted entries ready for storage in the answer cache.
-    pub admitted: Vec<CacheEntry>,
-    /// Records rejected during admission evaluation.
-    pub rejected: Vec<RejectedRecord>,
-}
 
 /// Gatekeeper deciding what may enter the answer cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Admission {
     ttl: TtlPolicy,
-}
-
-struct RawRRset {
-    owner: CanonicalName,
-    rtype: RecordType,
-    rclass: RecordClass,
-    ttl: Ttl,
-    rdata: Vec<RData>,
 }
 
 impl Admission {
@@ -149,34 +103,6 @@ impl Admission {
         }
     }
 
-    fn group_records(&self, records: &[ResourceRecord]) -> Vec<RawRRset> {
-        let mut groups: Vec<RawRRset> = Vec::new();
-        for rr in records {
-            let owner = CanonicalName::canonicalize(&rr.owner);
-            match groups
-                .iter_mut()
-                .find(|g| g.owner == owner && g.rtype == rr.rtype && g.rclass == rr.rclass)
-            {
-                Some(existing) => Self::merge_record_into_group(existing, rr),
-                None => groups.push(RawRRset {
-                    owner,
-                    rtype: rr.rtype,
-                    rclass: rr.rclass,
-                    ttl: rr.ttl,
-                    rdata: vec![rr.rdata.clone()],
-                }),
-            }
-        }
-        groups
-    }
-
-    fn merge_record_into_group(existing: &mut RawRRset, rr: &ResourceRecord) {
-        if !existing.rdata.contains(&rr.rdata) {
-            existing.rdata.push(rr.rdata.clone());
-        }
-        existing.ttl = existing.ttl.min(rr.ttl);
-    }
-
     fn evaluate_denial(
         &self,
         kind: DenialKind,
@@ -246,21 +172,93 @@ impl Admission {
         now: Instant,
         outcome: &mut AdmissionOutcome,
     ) {
-        let qname = message.questions.first().map_or_else(
+        let judged = matches!(
+            message.header.rcode,
+            ResponseCode::NOERROR | ResponseCode::NXDOMAIN
+        );
+        let question = message.questions.first();
+        if judged && question.is_none() {
+            let mut records = Vec::new();
+            self.reject_all_records(message, RejectReason::MalformedResponse, &mut records);
+            outcome.refuse(RejectReason::MalformedResponse, records);
+            return;
+        }
+        let qname = question.map_or_else(
             || bailiwick.zone().clone(),
             |question| CanonicalName::canonicalize(&question.qname),
         );
         let scope = bailiwick.answer_scope(&qname, &message.answers);
-        let mut answer_rrsets = self.admit_answers(&scope, message, now, outcome);
-        if answer_rrsets.is_empty() {
+        let qtype = question.filter(|_| judged).map(|question| question.qtype);
+        if qtype.is_some_and(|qtype| !chain_is_complete(message, &scope, qtype)) {
+            outcome.refuse(
+                RejectReason::IncompleteChain,
+                label_refused(bailiwick, &scope, message),
+            );
             return;
         }
 
-        let authority_rrsets = self.admit_authorities(bailiwick, &scope, message, now, outcome);
-        let additional_rrsets = self.admit_additionals(message, &authority_rrsets, now, outcome);
+        let sections = SectionAdmission::new(&self.ttl);
+        let admitted = sections.admit(bailiwick, &scope, message, now, outcome);
+        if admitted.answers.is_empty() {
+            return;
+        }
+        if let Some(qtype) = qtype {
+            if !Self::survivors_complete(bailiwick, &qname, qtype, message, &admitted, now) {
+                outcome.refuse(
+                    RejectReason::IncompleteChain,
+                    admitted.into_rejected(RejectReason::IncompleteChain),
+                );
+                return;
+            }
+        }
+        Self::push_positive(message, admitted, now, outcome);
+    }
 
-        if answer_rrsets.len() == 1 && authority_rrsets.is_empty() && additional_rrsets.is_empty() {
-            if let Some(rrset) = answer_rrsets.pop() {
+    /// Whether what admission kept of `message` still ends its alias chain where it
+    /// should. A link dropped after the chain looked complete (a zero TTL, say) leaves
+    /// a bare alias or an address nothing points to, and must not be stored.
+    fn survivors_complete(
+        bailiwick: &Bailiwick,
+        qname: &CanonicalName,
+        qtype: RecordType,
+        message: &Message,
+        admitted: &AdmittedSections,
+        now: Instant,
+    ) -> bool {
+        let records_of = |rrsets: &[CachedRRset]| -> Option<Vec<ResourceRecord>> {
+            let mut records = Vec::new();
+            for rrset in rrsets {
+                records.extend(rrset.to_resource_records(now).ok()?);
+            }
+            Some(records)
+        };
+        let (Some(answers), Some(authorities)) = (
+            records_of(&admitted.answers),
+            records_of(&admitted.authorities),
+        ) else {
+            return false;
+        };
+        let mut survivors = message.clone();
+        survivors.answers = answers;
+        survivors.authorities = authorities;
+        survivors.additionals.clear();
+        let scope = bailiwick.answer_scope(qname, &survivors.answers);
+        chain_is_complete(&survivors, &scope, qtype)
+    }
+
+    fn push_positive(
+        message: &Message,
+        admitted: AdmittedSections,
+        now: Instant,
+        outcome: &mut AdmissionOutcome,
+    ) {
+        let AdmittedSections {
+            mut answers,
+            authorities,
+            additionals,
+        } = admitted;
+        if answers.len() == 1 && authorities.is_empty() && additionals.is_empty() {
+            if let Some(rrset) = answers.pop() {
                 outcome
                     .admitted
                     .push(CacheEntry::Positive(PositiveEntry::RRset(rrset)));
@@ -276,10 +274,10 @@ impl Admission {
             },
         };
 
-        let earliest_deadline = answer_rrsets
+        let earliest_deadline = answers
             .iter()
-            .chain(&authority_rrsets)
-            .chain(&additional_rrsets)
+            .chain(&authorities)
+            .chain(&additionals)
             .map(|r| r.deadline())
             .min()
             .unwrap_or(fallback_deadline);
@@ -290,9 +288,9 @@ impl Admission {
                 authoritative: message.header.authoritative,
                 authentic_data: message.header.authentic_data,
             },
-            answer_rrsets,
-            authority_rrsets,
-            additional_rrsets,
+            answers,
+            authorities,
+            additionals,
             earliest_deadline,
         );
 
@@ -300,163 +298,4 @@ impl Admission {
             .admitted
             .push(CacheEntry::Positive(PositiveEntry::Message(cached_msg)));
     }
-
-    fn admit_answers(
-        &self,
-        scope: &AnswerScope,
-        message: &Message,
-        now: Instant,
-        outcome: &mut AdmissionOutcome,
-    ) -> Vec<CachedRRset> {
-        let raw_rrsets = self.group_records(&message.answers);
-        let mut admitted = Vec::new();
-
-        for raw in raw_rrsets {
-            if !scope.permits(&raw.owner, raw.rtype) {
-                outcome.rejected.push(RejectedRecord {
-                    owner: raw.owner,
-                    rtype: raw.rtype,
-                    reason: RejectReason::OutOfBailiwick,
-                });
-                continue;
-            }
-
-            if raw.ttl == Ttl::ZERO {
-                outcome.rejected.push(RejectedRecord {
-                    owner: raw.owner,
-                    rtype: raw.rtype,
-                    reason: RejectReason::ZeroTtl,
-                });
-                continue;
-            }
-
-            if let Some(cached) = self.to_cached_rrset(raw, now) {
-                admitted.push(cached);
-            }
-        }
-
-        admitted
-    }
-
-    fn admit_authorities(
-        &self,
-        bailiwick: &Bailiwick,
-        scope: &AnswerScope,
-        message: &Message,
-        now: Instant,
-        outcome: &mut AdmissionOutcome,
-    ) -> Vec<CachedRRset> {
-        let raw_rrsets = self.group_records(&message.authorities);
-        let denial = ends_in_denial(message, scope);
-        let mut admitted = Vec::new();
-
-        for mut raw in raw_rrsets {
-            if !authority_permitted(bailiwick, scope, &raw, denial) {
-                outcome.rejected.push(RejectedRecord {
-                    owner: raw.owner,
-                    rtype: raw.rtype,
-                    reason: RejectReason::OutOfBailiwick,
-                });
-                continue;
-            }
-
-            if denial && raw.rtype == RecordType::SOA {
-                raw.ttl = self.negative_ttl(&raw);
-            }
-            if raw.ttl == Ttl::ZERO {
-                outcome.rejected.push(RejectedRecord {
-                    owner: raw.owner,
-                    rtype: raw.rtype,
-                    reason: RejectReason::ZeroTtl,
-                });
-                continue;
-            }
-
-            if let Some(cached) = self.to_cached_rrset(raw, now) {
-                admitted.push(cached);
-            }
-        }
-
-        admitted
-    }
-
-    /// RFC 2308 section 5: a negative answer lives for the smaller of the SOA's own
-    /// TTL and its MINIMUM field.
-    fn negative_ttl(&self, raw: &RawRRset) -> Ttl {
-        let minimum = raw.rdata.iter().find_map(|rdata| match rdata {
-            RData::Soa(soa) => Some(soa.minimum()),
-            _ => None,
-        });
-        minimum.map_or(raw.ttl, |minimum| {
-            self.ttl.effective_negative_ttl_raw(raw.ttl, minimum)
-        })
-    }
-
-    fn admit_additionals(
-        &self,
-        message: &Message,
-        authority_rrsets: &[CachedRRset],
-        now: Instant,
-        outcome: &mut AdmissionOutcome,
-    ) -> Vec<CachedRRset> {
-        let raw_rrsets = self.group_records(&message.additionals);
-        let mut admitted = Vec::new();
-
-        for raw in raw_rrsets {
-            let is_address = matches!(raw.rtype, RecordType::A | RecordType::AAAA);
-            let is_glue = is_address
-                && authority_rrsets.iter().any(|auth| {
-                    auth.rtype() == RecordType::NS && raw.owner.is_subdomain_of(auth.owner())
-                });
-
-            if !is_glue {
-                outcome.rejected.push(RejectedRecord {
-                    owner: raw.owner,
-                    rtype: raw.rtype,
-                    reason: RejectReason::OutOfBailiwick,
-                });
-                continue;
-            }
-
-            if raw.ttl == Ttl::ZERO {
-                outcome.rejected.push(RejectedRecord {
-                    owner: raw.owner,
-                    rtype: raw.rtype,
-                    reason: RejectReason::ZeroTtl,
-                });
-                continue;
-            }
-
-            if let Some(cached) = self.to_cached_rrset(raw, now) {
-                admitted.push(cached);
-            }
-        }
-
-        admitted
-    }
-
-    fn to_cached_rrset(&self, raw: RawRRset, now: Instant) -> Option<CachedRRset> {
-        let clamped_ttl = self.ttl.clamp(raw.ttl);
-        let deadline = Deadline::from_ttl(now, clamped_ttl).ok()?;
-        let rrset = RRset::new(raw.owner, raw.rtype, raw.rclass, raw.rdata).ok()?;
-        Some(CachedRRset::new(rrset, raw.ttl, deadline))
-    }
-}
-
-/// Whether an authority RRset may be cached with this response: an SOA or NS at or
-/// above the bailiwick zone, or an SOA that closes the alias chain the answer ends
-/// in a denial of (ADR 0020).
-fn authority_permitted(
-    bailiwick: &Bailiwick,
-    scope: &AnswerScope,
-    raw: &RawRRset,
-    denial: bool,
-) -> bool {
-    if !matches!(raw.rtype, RecordType::SOA | RecordType::NS) {
-        return false;
-    }
-    let in_or_above = bailiwick.permits(&raw.owner) || bailiwick.zone().is_subdomain_of(&raw.owner);
-    let closes_chain =
-        denial && raw.rtype == RecordType::SOA && soa_closes_chain(scope, &raw.owner);
-    in_or_above || closes_chain
 }
