@@ -36,11 +36,15 @@ fn name(text: &str) -> Name {
 }
 
 fn record(owner: &str, rdata: RData) -> ResourceRecord {
+    record_with_ttl(owner, rdata, 300)
+}
+
+fn record_with_ttl(owner: &str, rdata: RData, seconds: u32) -> ResourceRecord {
     ResourceRecord::new(
         name(owner),
         rdata.rtype(),
         RecordClass::In,
-        Ttl::from_secs(300),
+        Ttl::from_secs(seconds),
         rdata,
     )
 }
@@ -255,6 +259,85 @@ async fn test_cname_query_answered_by_bare_cname_is_cached() {
     assert_eq!(owners(&second), [QNAME]);
     assert_eq!(fixture.upstream_queries_for(QNAME), 1);
     assert_eq!(fixture.cache.stats().hits, 1);
+
+    fixture.shutdown().await.expect("shutdown");
+}
+
+/// Asks twice and asserts the answer was refused both times: nothing was stored, so
+/// the upstream saw both queries, and each refusal counted once.
+async fn assert_refused_as_incomplete(script: ZoneScript) -> Result<(), HarnessError> {
+    let fixture = Fixture::boot(script).await?;
+
+    fixture.ask(QNAME, RecordType::A).await?;
+    fixture.ask(QNAME, RecordType::A).await?;
+
+    assert_eq!(fixture.upstream_queries_for(QNAME), 2, "half chain cached");
+    assert_eq!(fixture.cache.stats().hits, 0);
+    assert_eq!(fixture.cache.stats().rejected_incomplete_chain, 2);
+
+    fixture.shutdown().await
+}
+
+/// A zero-TTL link is dropped by admission after the chain looked complete: what is
+/// left is an address whose owner is not the qname, and no alias to reach it.
+#[tokio::test]
+async fn test_zero_ttl_cname_leaves_no_half_cached_chain() {
+    let script = ZoneScript::new().answer(
+        QNAME,
+        RecordType::A,
+        vec![
+            record_with_ttl(QNAME, RData::Cname(name(TARGET)), 0),
+            address_record(TARGET, 10),
+        ],
+    );
+    assert_refused_as_incomplete(script)
+        .await
+        .expect("refused twice");
+}
+
+/// The bug of #77 by another road: a zero-TTL terminal A leaves a bare CNAME.
+#[tokio::test]
+async fn test_zero_ttl_terminal_address_leaves_no_bare_cname() {
+    let script = ZoneScript::new().answer(
+        QNAME,
+        RecordType::A,
+        vec![
+            alias_record(),
+            record_with_ttl(TARGET, RData::A(Ipv4Addr::new(192, 0, 2, 10)), 0),
+        ],
+    );
+    assert_refused_as_incomplete(script)
+        .await
+        .expect("refused twice");
+}
+
+/// A chain that loops back on itself leads nowhere however many records it carries.
+#[tokio::test]
+async fn test_cyclic_cname_chain_is_not_cached() {
+    let script = ZoneScript::new()
+        .answer(QNAME, RecordType::CNAME, vec![alias_record()])
+        .answer(
+            TARGET,
+            RecordType::CNAME,
+            vec![record(TARGET, RData::Cname(name(QNAME)))],
+        );
+    assert_refused_as_incomplete(script)
+        .await
+        .expect("refused twice");
+}
+
+/// An answer made only of records the chain has no standing to carry is refused as
+/// both: forged records, and no answer at all.
+#[tokio::test]
+async fn test_answer_of_only_off_chain_records_counts_both_refusals() {
+    let script =
+        ZoneScript::new().answer(QNAME, RecordType::A, vec![address_record(UNRELATED, 66)]);
+    let fixture = Fixture::boot(script).await.expect("boot fixture");
+
+    fixture.ask(QNAME, RecordType::A).await.expect("query");
+
+    assert_eq!(fixture.cache.stats().rejected_out_of_bailiwick, 1);
+    assert_eq!(fixture.cache.stats().rejected_incomplete_chain, 1);
 
     fixture.shutdown().await.expect("shutdown");
 }

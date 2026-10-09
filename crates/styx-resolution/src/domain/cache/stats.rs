@@ -17,7 +17,9 @@ pub struct CacheStats {
     pub admitted: u64,
     /// Number of records rejected due to bailiwick rule violations.
     pub rejected_out_of_bailiwick: u64,
-    /// Number of whole answers refused because their alias chain led nowhere.
+    /// Number of whole answers refused because their alias chain led nowhere, counted
+    /// once per answer whatever the number of its records, and including an answer
+    /// whose records were also refused as out of bailiwick.
     pub rejected_incomplete_chain: u64,
     /// Number of entries removed due to TTL expiration.
     pub expired: u64,

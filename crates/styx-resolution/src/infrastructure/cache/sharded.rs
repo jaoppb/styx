@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 
 use styx_core::Clock;
 
-use crate::domain::cache::admission::{AdmissionOutcome, RejectReason};
+use crate::domain::cache::admission_outcome::{AdmissionOutcome, RejectReason};
 use crate::domain::cache::bytes::HeapBytes;
 use crate::domain::cache::capacity::CacheCapacity;
 use crate::domain::cache::entry::CacheEntry;
@@ -139,23 +139,21 @@ impl<C: Clock> ShardedAnswerCache<C> {
         self.shards.get(idx)
     }
 
-    /// Logs and counts what admission refused. An outcome is one answer, and a refused
-    /// answer rejects every record in it, so an incomplete chain counts once.
+    /// Logs and counts what admission refused. An outcome is one answer: forged
+    /// records count one each, and an answer refused whole counts once and logs once,
+    /// whatever the number of records it carried.
     fn record_rejections(&self, outcome: &AdmissionOutcome) {
         for rej in &outcome.rejected {
             if rej.reason == RejectReason::OutOfBailiwick {
                 tracing::warn!(owner = %rej.owner, rtype = ?rej.rtype, "rejected out-of-bailiwick record");
                 self.counters.inc_rejected_out_of_bailiwick(1);
             }
-            if rej.reason == RejectReason::IncompleteChain {
-                tracing::debug!(owner = %rej.owner, rtype = ?rej.rtype, "refused record of an incomplete alias chain");
-            }
         }
-        if outcome
-            .rejected
-            .iter()
-            .any(|rej| rej.reason == RejectReason::IncompleteChain)
-        {
+        if outcome.refusal == Some(RejectReason::IncompleteChain) {
+            tracing::debug!(
+                records = outcome.rejected.len(),
+                "refused an answer whose alias chain leads nowhere"
+            );
             self.counters.inc_rejected_incomplete_chain(1);
         }
     }

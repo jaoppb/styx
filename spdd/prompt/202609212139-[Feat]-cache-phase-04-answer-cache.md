@@ -396,12 +396,29 @@ class Admission {
     +ttl() &TtlPolicy
     +evaluate(&Bailiwick, &Message, AnswerSource, Instant) AdmissionOutcome
     -check_source_eligibility(AnswerSource) Option~RejectReason~
-    -answers_the_question(&Message, &AnswerScope) bool
+    -evaluate_positive(&Bailiwick, &Message, Instant, &mut AdmissionOutcome)
+    -survivors_complete(&Bailiwick, &CanonicalName, RecordType, &Message, &AdmittedSections, Instant) bool
+    -push_positive(&Message, AdmittedSections, Instant, &mut AdmissionOutcome)
+}
+
+class SectionAdmission {
+    <<pub(crate)>>
+    -TtlPolicy ttl
+    +admit(&Bailiwick, &AnswerScope, &Message, Instant, &mut AdmissionOutcome) AdmittedSections
+}
+
+class AdmittedSections {
+    <<pub(crate)>>
+    +Vec~CachedRRset~ answers
+    +Vec~CachedRRset~ authorities
+    +Vec~CachedRRset~ additionals
+    +into_rejected(RejectReason) Vec~RejectedRecord~
 }
 
 class AdmissionOutcome {
     +Vec~CacheEntry~ admitted
     +Vec~RejectedRecord~ rejected
+    +Option~RejectReason~ refusal
 }
 
 class RejectedRecord {
@@ -419,6 +436,8 @@ class RejectReason {
     MalformedDenial
     NoSoaInDenial
     IncompleteChain
+    MalformedResponse
+    Unstorable
     InadmissibleSource
 }
 
@@ -576,6 +595,8 @@ DnssecMetadata ..> SecurityStatus : status
 Admission "1" --> "1" TtlPolicy : clamps with
 Admission "1" ..> "1" Bailiwick : consults
 Admission "1" ..> "1" AnswerScope : judges chains with
+Admission "1" ..> "1" SectionAdmission : admits sections with
+SectionAdmission "1" --> "1" AdmittedSections : produces
 Bailiwick "1" ..> "1" AnswerScope : derives
 Admission "1" --> "1" AdmissionOutcome : produces
 Admission "1" ..> "1" AnswerSource : rejects forged
@@ -712,14 +733,25 @@ Eviction "1" --> "1" EvictionReport : reports
   no address behind it hands a stub an answer it cannot follow. A NOERROR or NXDOMAIN
   answer must therefore end in a record of the asked type owned by the chain's last name,
   or in a denial closed by an SOA whose zone encloses that name; otherwise every record
-  is refused (`RejectReason::IncompleteChain`) and nothing is cached. CNAME, DNAME and ANY
-  questions are exempt, being complete as answered. A chain that loops back on itself has
-  no last name and is never complete. A response with no question cannot be shown to
-  answer anything, so it fails closed. An error rcode carries nothing to admit and is not
+  is refused (`RejectReason::IncompleteChain`) and nothing is cached (ADR 0022). CNAME,
+  DNAME and ANY questions are exempt, being complete as answered. A chain that loops
+  back on itself has no last name and is never complete. A response with no question
+  cannot be shown to answer anything, so it fails closed as
+  `RejectReason::MalformedResponse`. An error rcode carries nothing to admit and is not
   judged. A cross-zone denial that does close its chain is cached under the qname only,
-  never as a negative entry for the target (ADR 0020). When a refused answer carries a
-  record the scope does not permit, such as a foreign SOA beside the chain, that record
-  keeps `RejectReason::OutOfBailiwick`, so the forgery stays counted and logged.
+  never as a negative entry for the target (ADR 0020).
+- **Completeness is judged twice.** Once on the message as received, and again on what
+  admission kept: a zero-TTL RRset, or one that cannot be represented in the cache, is
+  dropped after the chain looked complete, leaving a bare alias or an address nothing
+  points to. The kept RRsets are turned back into a message and judged by the same
+  predicate; if the chain no longer ends where it should, nothing is stored. Dropped
+  records keep their own reason (`ZeroTtl`, `Unstorable`) and the survivors are
+  `IncompleteChain`.
+- **A refused answer is labelled by the rule of each section.** Answer records by the
+  answer scope, authority records by the SOA and NS rule, additional records by the glue
+  rule, so a legitimate NS and its glue are never reported as forgeries. A record the
+  answer had no standing to carry, such as a foreign SOA beside the chain, keeps
+  `RejectReason::OutOfBailiwick`, so the forgery stays counted and logged.
 - **Forged answers are refused by the cache itself.** `Admission` rejects
   `AnswerSource::LocalRecord` and `AnswerSource::Blocked` with
   `RejectReason::ForgedAnswer`. The pipeline already short-circuits both ahead of the
@@ -783,7 +815,8 @@ Eviction "1" --> "1" EvictionReport : reports
   that hook exists precisely so the product half does not rewrite the hot path later.
 - `CacheStats` counts hits, misses, negative hits, admissions,
   **out-of-bailiwick rejections**, **incomplete-chain refusals** (once per refused
-  answer, not once per record), expiries, evictions, entries and bytes, from day one.
+  answer, not once per record, and also for an answer whose records were all out of
+  bailiwick), expiries, evictions, entries and bytes, from day one.
   This is a direct mitigation for the accepted consequence that **cache behaviour gets no
   operational feedback until the cutover, which is the last phase** — when the household
   finally moves over, the data must already be being collected.
@@ -834,10 +867,12 @@ styx-resolution/
         bytes.rs           HeapBytes
         bailiwick.rs       Bailiwick
         answer_scope.rs    AnswerScope (the qname-rooted alias walk)
-        chain_denial.rs    pub(crate) fns: ends_in_denial, soa_closes_chain,
-                           chain_is_complete, refused_records
-        admission.rs       Admission, AdmissionOutcome, RejectedRecord,
-                           RejectReason (AnswerSource imported from domain::answer)
+        chain_denial.rs    pub(crate) predicates only: ends_in_denial, soa_closes_chain,
+                           chain_is_complete (imports nothing from admission)
+        admission_outcome.rs  AdmissionOutcome, RejectedRecord, RejectReason
+        section_admission.rs  SectionAdmission, AdmittedSections, label_refused
+                           (private mod; RawRRset, authority_permitted, is_glue)
+        admission.rs       Admission (AnswerSource imported from domain::answer)
         port.rs            trait AnswerCache, Lookup, AdmittedCount, PurgedCount
         capacity.rs        CacheCapacity
         stats.rs           CacheStats, AtomicCacheCounters
@@ -1143,15 +1178,15 @@ client query
      DNAME and ANY questions; `false` for a cyclic chain; otherwise `true` when a record
      of the asked type is owned by the chain's end, or the answer ends in a denial and an
      authority SOA closes the chain.
-   - `refused_records(&Message, &AnswerScope) -> Vec<RejectedRecord>`: every record of a
-     refused answer, tagged `RejectReason::OutOfBailiwick` when the scope does not permit
-     its owner and `RejectReason::IncompleteChain` otherwise.
+   - These are predicates only and return plain verdicts. Labelling what is refused is
+     admission's concern and lives in `section_admission::label_refused`, so this module
+     never imports `admission`.
 4. **Constraints**: no indexing and no unchecked arithmetic; the walk is linear in the
    records. A denial that ends a chain is admitted only inside the qname's composite
    entry, never as a negative entry for the target name, because the answering zone may
    vouch for what its own name resolves to and nothing more.
 
-### 7. Create `domain::cache::admission` — `Admission`, `AdmissionOutcome`
+### 7. Create `domain::cache::admission`, `admission_outcome`, `section_admission`
 
 1. **Responsibility**: the complete answer to "may this be cached at all?", of which the
    bailiwick rule is one clause.
@@ -1170,42 +1205,55 @@ client query
      the cache is global, so a cached forgery would be served to clients in groups where
      the block does not apply; and blocked replies carry a deliberately short TTL so
      unblocking takes effect quickly, which caching would defeat.
-   - Group records into RRsets by `(owner, type, class)` using `group_records` and
-     `merge_record_into_group`.
-   - Apply the per-section bailiwick rule via `admit_answers`, `admit_authorities`,
-     `admit_additionals`; out-of-bailiwick RRsets go to `rejected` with
+   - In `evaluate_positive`, an NOERROR or NXDOMAIN response with no question is refused
+     whole as `RejectReason::MalformedResponse` (`AdmissionOutcome::refuse`). An error
+     rcode is not judged.
+   - Before admitting any record of such a response, ask `chain_is_complete` for the
+     question's type. On failure the answer is refused whole as
+     `RejectReason::IncompleteChain`, its records labelled by `label_refused`, and
+     `evaluate_positive` returns.
+   - Group records into RRsets by `(owner, type, class)` and apply the per-section rule
+     through `SectionAdmission::admit` (`admit_answers`, `admit_authorities`,
+     `admit_additionals`); out-of-bailiwick RRsets go to `rejected` with
      `RejectReason::OutOfBailiwick`. **Partial admission**: the in-bailiwick parts of a
-     mixed-validity response are still admitted.
-   - Before admitting any record of a positive response, call the private
-     `answers_the_question(message, scope)`. It passes an error rcode untouched, fails a
-     response with no question, and otherwise asks `chain_is_complete` for the question's
-     type. On failure `evaluate_positive` extends `rejected` with `refused_records` and
-     returns, so the answer is refused whole.
-   - Reject TTL-zero RRsets with `RejectReason::ZeroTtl` — served once, never stored.
+     mixed-validity response are still admitted. The authority and additional sections
+     are only considered once the answer section yields an RRset.
+   - Reject TTL-zero RRsets with `RejectReason::ZeroTtl` — served once, never stored. An
+     RRset that cannot be represented (deadline overflow, invalid RRset) is rejected as
+     `RejectReason::Unstorable` instead of vanishing.
    - Clamp surviving TTLs via `TtlPolicy` and compute each `Deadline` from `now` using
      `to_cached_rrset`.
+   - Call the private `survivors_complete(...)`: rebuild the answer and authority
+     sections from the admitted RRsets (`to_resource_records`), derive a fresh
+     `AnswerScope` from them, and ask `chain_is_complete` again. If it fails, or an RRset
+     cannot be rebuilt, `AdmittedSections::into_rejected(IncompleteChain)` turns every
+     admitted RRset into a rejection, `refuse` records the refusal, and nothing is stored.
    - For a denial (NXDOMAIN, or NOERROR with an empty answer section), build a
      `NegativeEntry` with the kind and the SOA-derived lifetime via `evaluate_denial`;
      with no SOA present, reject with `RejectReason::NoSoaInDenial` and cache nothing.
    - Decide RRset-vs-message shape: an answer that reduces to one RRset of the queried
      type becomes a `CachedRRset`; anything else — a CNAME chain, a referral-shaped
      response — becomes a `CachedMessage`.
-3. **`AdmissionOutcome`**: the admitted entries and the rejected records with reasons. The
-   rejection list is not decoration: it drives the `rejected_out_of_bailiwick` and
-   `rejected_incomplete_chain` counters and is what the store-introspection tests assert
-   against.
+3. **`AdmissionOutcome`** (`admission_outcome.rs`, all fields `pub`): the admitted entries,
+   the rejected records with reasons, and `refusal: Option<RejectReason>`, set when the
+   answer was refused whole rather than record by record. The rejection list drives the
+   `rejected_out_of_bailiwick` counter and the store-introspection tests; `refusal`
+   drives `rejected_incomplete_chain`, so an answer counts once however many records it
+   carried. `refuse(&mut self, reason, records)` is `pub(crate)`.
 4. **`Admission` accessors**: `ttl(&self) -> &TtlPolicy`.
 5. **Constraints**: `Admission` is the **only** path into the store. The `AnswerCache`
    trait accepts an `AdmissionOutcome`, never a raw `Message`, so there is no way to
    insert unvetted data.
 6. **Shape constraint** *(amendment, 2026-09-24)*: `evaluate` is a thin composition of
    named, guard-claused helpers — `check_source_eligibility`, `reject_all_records`,
-   `evaluate_denial`, `evaluate_positive`, `answers_the_question`, `admit_answers`,
-   `admit_authorities`, `admit_additionals`, and `to_cached_rrset` — rather than one function holding every
-   step inline. Each helper returns early on its own reject reason instead of nesting the
-   next step inside its success branch. This is what keeps the security-critical path clear
-   of both `excessive_nesting` (threshold 4) and `too_many_lines` (threshold 60), per
-   Phase 0 Approach §10.
+   `evaluate_denial`, `evaluate_positive`, `survivors_complete` and `push_positive` in
+   `admission.rs`, and `admit`, `admit_answers`, `admit_authorities`, `admit_additionals`,
+   `store`, `to_cached_rrset` and `label_refused` in `section_admission.rs` — rather than
+   one function holding every step inline. The split also keeps each file under the
+   400-line module-size cap. Each helper returns early on its own reject reason instead
+   of nesting the next step inside its success branch. This is what keeps the
+   security-critical path clear of both `excessive_nesting` (threshold 4) and
+   `too_many_lines` (threshold 60), per Phase 0 Approach §10.
 
 ### 8. Create `domain::cache::port`, `capacity`, `stats` — the `AnswerCache` trait
 
@@ -1280,8 +1328,9 @@ client query
 9. **Instrumentation**: `tracing` spans on `lookup` and `admit`; a `warn`-level event
    whenever a record is rejected as out of bailiwick, because that is either a broken
    upstream or an attack and either way somebody should be able to see it.
-   `record_rejections` also logs each record of a refused chain at `debug` and counts
-   `rejected_incomplete_chain` once per answer, since a refusal tags every record of it.
+   `record_rejections` counts `rejected_out_of_bailiwick` once per forged record, and when
+   `AdmissionOutcome::refusal` is `IncompleteChain` it counts `rejected_incomplete_chain`
+   and logs at `debug` once per answer, with the number of records.
 10. **Constraints**: no lock held across an `await`; no `unwrap`/`expect` on lock results
    (poisoning is handled explicitly and degrades to a miss); no I/O of any kind —
    arch-lint's `no-sync-io` applies.
@@ -1348,7 +1397,14 @@ client query
      denial, in an unrelated zone's SOA, in a loop, with no question, and under an error
      rcode: SERVFAIL, REFUSED and FORMERR are not refused as incomplete chains), checking
      the reason each record is refused for, `OutOfBailiwick` for the foreign SOA and
-     `IncompleteChain` for the rest.
+     `IncompleteChain` for the rest; a response with no question is `MalformedResponse`;
+     a zero-TTL closing SOA leaves no stored chain; a refused answer's legitimate NS and
+     glue are `IncompleteChain` and a foreign additional stays `OutOfBailiwick`; ANY and
+     CNAME questions are not refused; a DNAME without its synthesised CNAME is.
+   - `cname_chain_cache` (pipeline): a forwarder's chain is served whole from cache; an
+     off-chain record is rejected; a dangling, cyclic, zero-TTL-CNAME and zero-TTL-A
+     chain is never stored and counts once per refused answer; an answer of only
+     off-chain records counts both refusals.
    - `answer_scope`: link following, DNAME synthesis, a CNAME that is not a link of the
      chain, and a loop setting `is_cyclic`.
 2. **Socket-level tests** against the Phase 2 in-process fakes over real sockets: a second
@@ -1457,7 +1513,10 @@ And the phase scope, verbatim:
 - NXDOMAIN and NODATA are cached separately and remain distinguishable on retrieval.
 - A denial with no SOA is not cached.
 - A positive answer whose alias chain ends in neither the asked type nor an SOA-closed
-  denial, or loops, or arrives with no question, is refused whole and not cached.
+  denial, or loops, is refused whole and not cached; one that arrives with no question is
+  refused whole as `MalformedResponse`.
+- A chain that is no longer complete once its dropped links (zero TTL, unrepresentable)
+  are removed is not stored either.
 - A TTL-zero record is served but not stored.
 - Meta-qtypes (`ANY`, `AXFR`, `IXFR`, `OPT`) never form a key.
 - `purge_all` exists and empties the store completely.

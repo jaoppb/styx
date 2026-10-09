@@ -559,7 +559,8 @@ fn test_an_error_rcode_is_not_refused_as_an_incomplete_chain() {
 }
 
 /// A response with no question cannot be shown to answer anything, so a dangling
-/// alias in it is refused rather than admitted on the strength of the zone name.
+/// alias in it is refused rather than admitted on the strength of the zone name, and
+/// as the malformed response it is, not as an incomplete chain.
 #[test]
 fn test_a_response_without_a_question_is_refused() {
     let (question, mut msg) = chain_message(ResponseCode::NOERROR, "bank.com.", false);
@@ -572,7 +573,8 @@ fn test_a_response_without_a_question_is_refused() {
     assert!(outcome
         .rejected
         .iter()
-        .any(|rejected| rejected.reason == RejectReason::IncompleteChain));
+        .any(|rejected| rejected.reason == RejectReason::MalformedResponse));
+    assert_eq!(outcome.refusal, Some(RejectReason::MalformedResponse));
 }
 
 /// An alias loop leads nowhere: data owned by a name inside the loop, or an SOA
@@ -626,4 +628,141 @@ fn test_a_foreign_soa_beside_data_is_not_a_chain_ending() {
         .iter()
         .any(|rejected| rejected.owner.to_string() == "bank.com."
             && rejected.reason == RejectReason::OutOfBailiwick));
+}
+
+/// An NXDOMAIN chain whose closing SOA has a zero TTL: admission drops the SOA after
+/// the chain looked closed, and storing what is left would cache a chain with no ending.
+#[test]
+fn test_zero_ttl_closing_soa_leaves_no_chain_without_an_ending() {
+    let (question, mut msg) = chain_message(ResponseCode::NXDOMAIN, "bank.com.", false);
+    for record in &mut msg.authorities {
+        record.ttl = Ttl::ZERO;
+    }
+
+    let outcome = evaluate_chain(&question, &msg);
+
+    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
+    assert_eq!(outcome.refusal, Some(RejectReason::IncompleteChain));
+    let reason_of = |rtype: RecordType| {
+        outcome
+            .rejected
+            .iter()
+            .find(|rejected| rejected.rtype == rtype)
+            .map(|rejected| rejected.reason)
+    };
+    assert_eq!(reason_of(RecordType::SOA), Some(RejectReason::ZeroTtl));
+    assert_eq!(
+        reason_of(RecordType::CNAME),
+        Some(RejectReason::IncompleteChain)
+    );
+}
+
+fn dangling_chain_with_zone_records() -> (Question, Message) {
+    let question = Question::new(name("www.example.com."), RecordType::A, RecordClass::In);
+    let record = |owner: &str, rdata: RData| {
+        ResourceRecord::new(
+            name(owner),
+            rdata.rtype(),
+            RecordClass::In,
+            Ttl::from_secs(300),
+            rdata,
+        )
+    };
+    let mut msg = Message::response_to(0x2004, question.clone());
+    msg.answers.push(record(
+        "www.example.com.",
+        RData::Cname(name("cdn.provider.net.")),
+    ));
+    msg.authorities
+        .push(record("example.com.", RData::Ns(name("ns1.example.com."))));
+    msg.additionals.push(record(
+        "ns1.example.com.",
+        RData::A(Ipv4Addr::new(192, 0, 2, 53)),
+    ));
+    (question, msg)
+}
+
+/// A refused answer is labelled by the rules of its own section: the zone's own NS
+/// and its glue are legitimate, so only the answer is refused, and nothing in it is
+/// reported as a forgery.
+#[test]
+fn test_refused_answer_does_not_report_legitimate_authority_and_glue_as_forgery() {
+    let (question, msg) = dangling_chain_with_zone_records();
+
+    let outcome = evaluate_chain(&question, &msg);
+
+    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
+    assert_eq!(outcome.refusal, Some(RejectReason::IncompleteChain));
+    assert_eq!(outcome.rejected.len(), 3);
+    assert!(
+        outcome
+            .rejected
+            .iter()
+            .all(|rejected| rejected.reason == RejectReason::IncompleteChain),
+        "{:?}",
+        outcome.rejected
+    );
+}
+
+/// An address for an unrelated name is out of bailiwick in a refused answer exactly as
+/// it would be in an admitted one.
+#[test]
+fn test_refused_answer_still_reports_a_foreign_additional_as_forgery() {
+    let (question, mut msg) = dangling_chain_with_zone_records();
+    msg.additionals.push(ResourceRecord::new(
+        name("ns1.other.net."),
+        RecordType::A,
+        RecordClass::In,
+        Ttl::from_secs(300),
+        RData::A(Ipv4Addr::new(192, 0, 2, 66)),
+    ));
+
+    let outcome = evaluate_chain(&question, &msg);
+
+    let forged: Vec<String> = outcome
+        .rejected
+        .iter()
+        .filter(|rejected| rejected.reason == RejectReason::OutOfBailiwick)
+        .map(|rejected| rejected.owner.to_string())
+        .collect();
+    assert_eq!(forged, ["ns1.other.net."]);
+}
+
+/// Asking for every type, or for the alias itself, is complete as answered; and a
+/// DNAME is not an ending for an address question either.
+#[test]
+fn test_any_and_alias_questions_are_not_refused_as_incomplete() {
+    for qtype in [RecordType::ANY, RecordType::CNAME] {
+        let (_, mut msg) = chain_message(ResponseCode::NOERROR, "example.com.", false);
+        msg.authorities.clear();
+        let question = Question::new(name("www.example.com."), qtype, RecordClass::In);
+        msg.questions = vec![question.clone()];
+
+        let outcome = evaluate_chain(&question, &msg);
+
+        assert_eq!(outcome.refusal, None, "{qtype:?}");
+        assert_eq!(outcome.admitted.len(), 1, "{qtype:?}");
+    }
+}
+
+/// A DNAME whose synthesized CNAME is missing proves nothing and ends no chain.
+#[test]
+fn test_dname_without_its_synthesized_cname_is_refused() {
+    let question = Question::new(name("www.example.com."), RecordType::A, RecordClass::In);
+    let mut msg = Message::response_to(0x2005, question.clone());
+    msg.answers.push(ResourceRecord::new(
+        name("example.com."),
+        RecordType::DNAME,
+        RecordClass::In,
+        Ttl::from_secs(300),
+        RData::Unknown(styx_proto::UnknownRdata::new(
+            RecordType::DNAME,
+            name("example.net.").as_wire_bytes().to_vec(),
+        )),
+    ));
+
+    let outcome = evaluate_chain(&question, &msg);
+
+    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
+    assert_eq!(outcome.refusal, Some(RejectReason::IncompleteChain));
 }

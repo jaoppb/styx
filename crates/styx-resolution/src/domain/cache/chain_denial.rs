@@ -1,5 +1,7 @@
-//! A denial that ends an alias chain: `www.example.com CNAME www.bank.com`, then
-//! NXDOMAIN or NODATA for `www.bank.com`, with the SOA of `bank.com`.
+//! Whether an alias chain ends where it should: in a denial (`www.example.com CNAME
+//! www.bank.com`, then NXDOMAIN or NODATA for `www.bank.com`, with the SOA of
+//! `bank.com`) or in data of the asked type. Pure predicates over a message and its
+//! [`AnswerScope`]; labelling what is refused is admission's concern.
 //!
 //! The SOA belongs to another zone than the one that answered, so the bailiwick rule
 //! would refuse it, and the chain could not be cached with its ending. It is
@@ -10,7 +12,6 @@
 
 use styx_proto::{Message, RData, RecordType, ResponseCode};
 
-use crate::domain::cache::admission::{RejectReason, RejectedRecord};
 use crate::domain::cache::answer_scope::AnswerScope;
 use crate::domain::cache::key::CanonicalName;
 
@@ -66,30 +67,4 @@ fn has_closing_soa(message: &Message, scope: &AnswerScope) -> bool {
         record.rtype == RecordType::SOA
             && soa_closes_chain(scope, &CanonicalName::canonicalize(&record.owner))
     })
-}
-
-/// Every record of a refused answer, each with the reason it is refused for: a record
-/// the answer had no standing to carry (a foreign SOA beside an alias chain, say) is
-/// out of bailiwick, as it would be in any other answer, so the forgery stays visible;
-/// the rest are refused only because the chain they belong to leads nowhere.
-pub(crate) fn refused_records(message: &Message, scope: &AnswerScope) -> Vec<RejectedRecord> {
-    message
-        .answers
-        .iter()
-        .chain(&message.authorities)
-        .chain(&message.additionals)
-        .map(|record| {
-            let owner = CanonicalName::canonicalize(&record.owner);
-            let reason = if scope.permits(&owner, record.rtype) {
-                RejectReason::IncompleteChain
-            } else {
-                RejectReason::OutOfBailiwick
-            };
-            RejectedRecord {
-                owner,
-                rtype: record.rtype,
-                reason,
-            }
-        })
-        .collect()
 }
