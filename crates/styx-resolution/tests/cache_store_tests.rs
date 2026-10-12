@@ -728,11 +728,11 @@ fn test_refused_answer_still_reports_a_foreign_additional_as_forgery() {
     assert_eq!(forged, ["ns1.other.net."]);
 }
 
-/// Asking for every type, or for the alias itself, is complete as answered; and a
-/// DNAME is not an ending for an address question either.
+/// Asking for every type, or for the alias itself (CNAME or DNAME), is complete as
+/// answered; and a DNAME is not an ending for an address question either.
 #[test]
 fn test_any_and_alias_questions_are_not_refused_as_incomplete() {
-    for qtype in [RecordType::ANY, RecordType::CNAME] {
+    for qtype in [RecordType::ANY, RecordType::CNAME, RecordType::DNAME] {
         let (_, mut msg) = chain_message(ResponseCode::NOERROR, "example.com.", false);
         msg.authorities.clear();
         let question = Question::new(name("www.example.com."), qtype, RecordClass::In);
