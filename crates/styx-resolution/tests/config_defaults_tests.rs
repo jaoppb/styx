@@ -1,10 +1,12 @@
-//! First-run configuration: a minimal config is accepted with every default left alone, and
-//! `config/styx.example.toml` stays parseable and lists every key the resolution schema accepts.
+//! First-run configuration: a minimal config is accepted with every default left alone,
+//! and every omitted value takes the default its own type states.
 
-use std::collections::BTreeSet;
 use std::time::Duration;
 
-use styx_resolution::{ServerConfig, Timeouts};
+use styx_resolution::{
+    CircuitConfig, ConfigError, EdnsBufferSize, PoolConfig, ProbeConfig, ServerConfig, Timeouts,
+    UpstreamConfig, Weight,
+};
 
 const MINIMAL_CONFIG: &str = r#"
 [upstream]
@@ -16,129 +18,19 @@ kind = "forwarder"
 addr = "9.9.9.9:53"
 "#;
 
-/// Top-level keys accepted by `RawConfig` (`server.rs`).
-const SERVER_KEYS: &[&str] = &[
-    "listen_addrs",
-    "udp_payload_size_default",
-    "tcp_idle_timeout_secs",
-    "query_timeout_secs",
-    "max_in_flight_queries",
-    "max_tcp_connections",
-];
-
-/// Keys accepted by `RawSupervisorConfig` (`server.rs`), under `[supervisor]`.
-const SUPERVISOR_KEYS: &[&str] = &[
-    "initial_backoff_ms",
-    "max_backoff_secs",
-    "healthy_threshold_secs",
-];
-
-/// Keys accepted by `RawPoolConfig` (`domain/config.rs`), under `[upstream]`.
-const POOL_KEYS: &[&str] = &["strategy"];
-
-/// Keys accepted by `RawUpstreamConfig` (`domain/config.rs`), under `[[upstream.members]]`.
-const MEMBER_KEYS: &[&str] = &[
-    "name",
-    "kind",
-    "addr",
-    "weight",
-    "edns_buffer",
-    "udp_timeout_ms",
-    "tcp_timeout_ms",
-];
-
-/// Keys accepted by `RawCanaryConfig` (`domain/config.rs`), under `[upstream.members.canary]`.
-const CANARY_KEYS: &[&str] = &["qname", "qtype", "timeout_ms"];
-
-/// Keys accepted by `RawProbeConfig` (`domain/config.rs`), under `[upstream.probe]`.
-const PROBE_KEYS: &[&str] = &["idle_window_secs", "down_retry_secs", "tick_secs"];
-
-/// Keys accepted by `RawCircuitConfig` (`domain/config.rs`), under `[upstream.circuit]`.
-const CIRCUIT_KEYS: &[&str] = &[
-    "failure_threshold",
-    "open_cooldown_secs",
-    "half_open_successes",
-];
-
-/// Each table of the schema the example must cover, and the keys it accepts. The empty header is
-/// the top level of the file.
-const SCHEMA: &[(&str, &[&str])] = &[
-    ("", SERVER_KEYS),
-    ("[supervisor]", SUPERVISOR_KEYS),
-    ("[upstream]", POOL_KEYS),
-    ("[[upstream.members]]", MEMBER_KEYS),
-    ("[upstream.members.canary]", CANARY_KEYS),
-    ("[upstream.probe]", PROBE_KEYS),
-    ("[upstream.circuit]", CIRCUIT_KEYS),
-];
-
-const EXAMPLE_CONFIG: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../config/styx.example.toml"
-));
-
-/// The line with a leading comment marker removed, if it has one.
-fn uncommented(line: &str) -> &str {
-    let trimmed = line.trim_start();
-    trimmed
-        .strip_prefix('#')
-        .map_or(trimmed, |rest| rest.trim_start())
+fn pool_with_one_member(kind: &str, extra: &str) -> String {
+    format!(
+        "strategy = \"ordered_failover\"\n\
+         [[members]]\nname = \"a\"\nkind = \"{kind}\"\naddr = \"9.9.9.9:53\"\n{extra}\n"
+    )
 }
 
-/// The table header a line starts, and whether it is a live header rather than a commented-out
-/// schema header.
-fn header_of(line: &str) -> Option<(String, bool)> {
-    let trimmed = line.trim();
-    if trimmed.starts_with('[') {
-        return Some((trimmed.to_string(), true));
-    }
-    let candidate = uncommented(line).trim_end();
-    SCHEMA
-        .iter()
-        .any(|(header, _)| !header.is_empty() && candidate == *header)
-        .then(|| (candidate.to_string(), false))
-}
-
-fn key_of(line: &str) -> Option<String> {
-    let (key, _) = uncommented(line).split_once(" =")?;
-    (!key.is_empty() && key.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
-        .then(|| key.to_string())
-}
-
-/// The `header:key` entries the example mentions, live or commented out.
-fn mentioned_keys(text: &str) -> BTreeSet<String> {
-    let mut section = String::new();
-    let mut found = BTreeSet::new();
-    for line in text.lines() {
-        if let Some((header, _)) = header_of(line) {
-            section = header;
-        } else if let Some(key) = key_of(line) {
-            found.insert(format!("{section}:{key}"));
-        }
-    }
-    found
-}
-
-fn is_schema_key(section: &str, key: &str) -> bool {
-    SCHEMA
-        .iter()
-        .any(|(header, keys)| *header == section && keys.contains(&key))
-}
-
-/// The example with every commented-out schema key and table header switched on.
-fn with_schema_keys_enabled(text: &str) -> String {
-    let mut section = String::new();
-    let mut lines = Vec::new();
-    for line in text.lines() {
-        if let Some((header, _)) = header_of(line) {
-            lines.push(header.clone());
-            section = header;
-            continue;
-        }
-        let enable = key_of(line).is_some_and(|key| is_schema_key(&section, &key));
-        lines.push(if enable { uncommented(line) } else { line }.to_string());
-    }
-    lines.join("\n")
+fn only_member(pool: &str) -> Result<UpstreamConfig, ConfigError> {
+    let pool = PoolConfig::from_toml_str(pool)?;
+    pool.members
+        .into_iter()
+        .next()
+        .ok_or(ConfigError::EmptyPool)
 }
 
 #[test]
@@ -153,44 +45,104 @@ fn default_query_timeout_outlasts_every_default_member_timeout() {
     let config = ServerConfig::from_toml_str(MINIMAL_CONFIG).expect("minimal config");
     let defaults = Timeouts::default();
     assert!(config.query_timeout > defaults.udp.max(defaults.tcp));
-    assert!(config.query_timeout > Duration::from_secs(4));
+    assert_eq!(config.query_timeout, Duration::from_secs(5));
 }
 
 #[test]
-fn member_without_timeout_keys_takes_the_documented_defaults() {
-    let config = ServerConfig::from_toml_str(MINIMAL_CONFIG).expect("minimal config");
-    let pool = config.upstream.expect("upstream section");
-    let member = pool.members.first().expect("one member");
+fn member_without_weight_edns_or_timeouts_takes_the_type_defaults() {
+    let member = only_member(&pool_with_one_member("forwarder", "")).expect("a valid member");
+    assert_eq!(member.weight, Weight::default());
+    assert_eq!(member.edns_buffer, EdnsBufferSize::default());
     assert_eq!(member.timeouts, Timeouts::default());
 }
 
 #[test]
-fn example_config_parses() {
-    let config = ServerConfig::from_toml_str(EXAMPLE_CONFIG).expect("example config parses");
-    assert!(config.upstream.is_some());
+fn pool_without_probe_or_circuit_tables_takes_the_type_defaults() {
+    let pool =
+        PoolConfig::from_toml_str(&pool_with_one_member("forwarder", "")).expect("a valid pool");
+    assert_eq!(pool.probe, ProbeConfig::default());
+    assert_eq!(pool.circuit, CircuitConfig::default());
 }
 
 #[test]
-fn example_config_lists_every_schema_key() {
-    let mentioned = mentioned_keys(EXAMPLE_CONFIG);
-    let missing: Vec<String> = SCHEMA
-        .iter()
-        .flat_map(|(header, keys)| keys.iter().map(move |key| format!("{header}:{key}")))
-        .filter(|entry| !mentioned.contains(entry))
-        .collect();
-    assert!(missing.is_empty(), "example is missing: {missing:?}");
+fn probe_table_setting_one_key_keeps_the_defaults_of_the_others() {
+    let pool = PoolConfig::from_toml_str(&format!(
+        "{}\n[probe]\ntick_secs = 7\n",
+        pool_with_one_member("forwarder", "")
+    ))
+    .expect("a valid pool");
+    let defaults = ProbeConfig::default();
+    assert_eq!(pool.probe.tick, Duration::from_secs(7));
+    assert_eq!(pool.probe.idle_window, defaults.idle_window);
+    assert_eq!(pool.probe.down_retry_interval, defaults.down_retry_interval);
 }
 
 #[test]
-fn example_config_still_parses_with_every_schema_key_switched_on() {
-    let enabled = with_schema_keys_enabled(EXAMPLE_CONFIG);
-    let config = ServerConfig::from_toml_str(&enabled)
-        .expect("the commented keys in the example parse once switched on");
-    let canary = config
-        .upstream
-        .and_then(|pool| pool.members.into_iter().find_map(|member| member.canary));
-    assert!(
-        canary.is_some(),
-        "the commented canary table was not enabled"
+fn circuit_table_setting_one_key_keeps_the_defaults_of_the_others() {
+    let pool = PoolConfig::from_toml_str(&format!(
+        "{}\n[circuit]\nfailure_threshold = 9\n",
+        pool_with_one_member("forwarder", "")
+    ))
+    .expect("a valid pool");
+    let defaults = CircuitConfig::default();
+    assert_eq!(pool.circuit.failure_threshold, 9);
+    assert_eq!(pool.circuit.open_cooldown, defaults.open_cooldown);
+    assert_eq!(
+        pool.circuit.half_open_successes,
+        defaults.half_open_successes
     );
+}
+
+const FORWARDER_CANARY: &str =
+    "[members.canary]\nqname = \"probe.canary.invalid.\"\nqtype = \"A\"\n";
+const RECURSOR_CANARY: &str =
+    "[members.canary]\nqname = \"root-canary.iana.org.\"\nqtype = \"NS\"\n";
+
+fn canary_timeout(kind: &str, canary: &str) -> Result<Duration, ConfigError> {
+    only_member(&pool_with_one_member(kind, canary))?
+        .canary
+        .map(|canary| canary.timeout)
+        .ok_or_else(|| ConfigError::Invalid("the member sets no canary table".into()))
+}
+
+#[test]
+fn forwarder_canary_without_timeout_takes_two_seconds() {
+    assert_eq!(
+        canary_timeout("forwarder", FORWARDER_CANARY).expect("the member sets a canary table"),
+        Duration::from_secs(2)
+    );
+}
+
+#[test]
+fn recursor_canary_without_timeout_takes_five_seconds() {
+    assert_eq!(
+        canary_timeout("recursor", RECURSOR_CANARY).expect("the member sets a canary table"),
+        Duration::from_secs(5)
+    );
+}
+
+#[test]
+fn explicit_canary_timeout_wins_for_both_kinds() {
+    let forwarder = format!("{FORWARDER_CANARY}timeout_ms = 750\n");
+    let recursor = format!("{RECURSOR_CANARY}timeout_ms = 750\n");
+    assert_eq!(
+        canary_timeout("forwarder", &forwarder).expect("the member sets a canary table"),
+        Duration::from_millis(750)
+    );
+    assert_eq!(
+        canary_timeout("recursor", &recursor).expect("the member sets a canary table"),
+        Duration::from_millis(750)
+    );
+}
+
+#[test]
+fn recursor_canary_naming_the_root_or_one_label_is_still_rejected() {
+    for qname in [".", "com."] {
+        let canary = format!("[members.canary]\nqname = \"{qname}\"\nqtype = \"NS\"\n");
+        let result = PoolConfig::from_toml_str(&pool_with_one_member("recursor", &canary));
+        assert!(
+            matches!(result, Err(ConfigError::CanaryNotDescending)),
+            "{qname} must not be accepted as a recursor canary"
+        );
+    }
 }

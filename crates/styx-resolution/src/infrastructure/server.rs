@@ -34,6 +34,9 @@ use crate::infrastructure::tcp::{TcpListener, DEFAULT_TCP_IDLE_TIMEOUT};
 use crate::infrastructure::udp::UdpListener;
 use crate::infrastructure::udp_socket::default_socket_count;
 
+mod deadline;
+mod strays;
+
 const DEFAULT_UDP_PAYLOAD_SIZE: u16 = 1232;
 /// Must stay above `Timeouts::default()`'s longest member timeout, or a config that leaves every
 /// timeout unset is rejected by `check_deadline_covers`.
@@ -44,6 +47,7 @@ fn default_listen_addrs() -> Vec<SocketAddr> {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawSupervisorConfig {
     initial_backoff_ms: Option<u64>,
     max_backoff_secs: Option<u64>,
@@ -68,6 +72,9 @@ struct RawConfig {
     supervisor: Option<RawSupervisorConfig>,
     #[serde(default)]
     upstream: Option<toml::Value>,
+    /// Every other top-level key. Tables belong to other features' parsers.
+    #[serde(flatten)]
+    other: toml::Table,
 }
 
 const fn default_udp_size() -> u16 {
@@ -117,6 +124,7 @@ impl ServerConfig {
     /// Returns [`ConfigError`] on invalid syntax or schema mismatches.
     pub fn from_toml_str(content: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = toml::from_str(content)?;
+        strays::reject_stray_keys(&raw.other)?;
         if raw.listen_addrs.is_empty() {
             return Err(ConfigError::Invalid("listen_addrs cannot be empty".into()));
         }
@@ -158,30 +166,6 @@ impl ServerConfig {
         }
 
         Ok(config)
-    }
-
-    /// Checks that `query_timeout` outlasts every pool member's own timeout, so the
-    /// pool always settles its health accounting before the pipeline deadline fires.
-    ///
-    /// # Errors
-    /// Returns [`ConfigError::Invalid`] naming both durations when some member's UDP or
-    /// TCP timeout is not strictly shorter than `query_timeout`.
-    pub fn check_deadline_covers(&self, pool: &PoolConfig) -> Result<(), ConfigError> {
-        let longest = pool
-            .members
-            .iter()
-            .map(|member| member.timeouts.udp.max(member.timeouts.tcp))
-            .max();
-        match longest {
-            Some(member_timeout) if member_timeout >= self.query_timeout => {
-                Err(ConfigError::Invalid(format!(
-                    "query_timeout ({}ms) must exceed the longest upstream member timeout ({}ms)",
-                    self.query_timeout.as_millis(),
-                    member_timeout.as_millis()
-                )))
-            }
-            _ => Ok(()),
-        }
     }
 }
 
@@ -385,3 +369,6 @@ impl<L, F, O, C, T> Server<L, F, O, C, T> {
         first_error.map_or(Ok(()), Err)
     }
 }
+
+#[cfg(test)]
+mod schema_keys;

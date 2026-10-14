@@ -3,8 +3,15 @@
 //! Encapsulates relative selection weight with bounds-checked arithmetic.
 
 /// Validated relative weight assigned to an upstream in a pool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Weight(u32);
+
+impl Default for Weight {
+    /// A member that sets no weight counts once under the `weighted` strategy.
+    fn default() -> Self {
+        Self(1)
+    }
+}
 
 impl Weight {
     /// Creates a new `Weight`.
@@ -38,6 +45,11 @@ impl Weight {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_weight_is_one() {
+        assert_eq!(Weight::default().value(), 1);
+    }
 
     #[test]
     fn test_weight_sum_overflow() {

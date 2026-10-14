@@ -1126,6 +1126,7 @@ dependencies = [
  "styx-proto",
  "styx-recursion",
  "styx-resolution",
+ "styx-testkit",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1211,6 +1212,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
+ "toml",
 ]
 
 [[package]]

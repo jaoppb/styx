@@ -39,8 +39,10 @@ this document revises.
   source port, connected socket, response matching). No other crate opens an outbound
   DNS socket.
 - **`styx-testkit` is a dev-dependency only.** It holds the hickory-based fake DNS
-  servers shared by every crate's socket tests, names no feature crate, and must never
-  appear on a normal or build path — the `hickory-dev-only` gate rejects one.
+  servers shared by every crate's socket tests, and the scanner that checks
+  `config/styx.example.toml` against the keys each crate parses. It names no feature
+  crate, and must never appear on a normal or build path — the `hickory-dev-only` gate
+  rejects one.
 - **Errors are `thiserror` enums.** Every fallible operation returns `Result<T, E>` with a
   crate-owned error enum. No `Box<dyn Error>` on a public boundary, no stringly-typed
   errors. `anyhow` is reserved for the composition root (the `styx` binary's own startup
@@ -108,7 +110,8 @@ styx/
 │   │   └── src/
 │   │       ├── domain/         # Exchanged, ExchangeError
 │   │       └── infrastructure/ # Do53Client (UDP, TCP on TC), TCP framing
-│   ├── styx-testkit/           # Dev-only: hickory fake servers, DnsClient, TestClock
+│   ├── styx-testkit/           # Dev-only: hickory fake servers, DnsClient, TestClock,
+│   │                           # example-config scanner (config_example)
 │   │   └── src/
 │   ├── styx-resolution/        # DNS resolution engine and upstream forwarding
 │   │   └── src/

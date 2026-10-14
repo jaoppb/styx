@@ -13,6 +13,11 @@ pub enum ConfigError {
     #[error("configuration TOML parse error: {0}")]
     Toml(#[from] toml::de::Error),
 
+    /// A top-level key is not one the server reads, and is not a table another feature
+    /// could own, so it is most likely a misspelling.
+    #[error("unknown top-level key `{0}`; check it for a typo")]
+    UnknownKey(String),
+
     /// A configuration value failed validation invariants.
     #[error("invalid configuration: {0}")]
     Invalid(String),

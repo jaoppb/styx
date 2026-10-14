@@ -125,6 +125,9 @@ impl RecursionConfig {
 }
 
 #[cfg(test)]
+mod schema_keys;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
