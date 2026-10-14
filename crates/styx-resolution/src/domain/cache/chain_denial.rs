@@ -1,5 +1,7 @@
-//! A denial that ends an alias chain: `www.example.com CNAME www.bank.com`, then
-//! NXDOMAIN or NODATA for `www.bank.com`, with the SOA of `bank.com`.
+//! Whether an alias chain ends where it should: in a denial (`www.example.com CNAME
+//! www.bank.com`, then NXDOMAIN or NODATA for `www.bank.com`, with the SOA of
+//! `bank.com`) or in data of the asked type. Pure predicates over a message and its
+//! [`AnswerScope`]; labelling what is refused is admission's concern.
 //!
 //! The SOA belongs to another zone than the one that answered, so the bailiwick rule
 //! would refuse it, and the chain could not be cached with its ending. It is
@@ -36,4 +38,33 @@ fn holds_data_at(owner: styx_proto::Name, rdata: &RData, scope: &AnswerScope) ->
 /// zone must enclose the exact name the chain ends at.
 pub(crate) fn soa_closes_chain(scope: &AnswerScope, soa_owner: &CanonicalName) -> bool {
     scope.chain_end().is_subdomain_of(soa_owner)
+}
+
+/// Whether a positive answer ends its alias chain in what was asked for: a record of
+/// `qtype` owned by the chain's last name, or a denial closed by an SOA that
+/// encloses it. Anything else is a chain that leads nowhere, and served from cache
+/// it would hand a stub a CNAME with no address to follow. A question about the
+/// alias itself (CNAME, DNAME) or about every type (ANY) is complete as answered. A
+/// chain that loops back on itself has no last name, so it is never complete.
+pub(crate) fn chain_is_complete(message: &Message, scope: &AnswerScope, qtype: RecordType) -> bool {
+    if matches!(
+        qtype,
+        RecordType::CNAME | RecordType::DNAME | RecordType::ANY
+    ) {
+        return true;
+    }
+    if scope.is_cyclic() {
+        return false;
+    }
+    let has_wanted_data = message.answers.iter().any(|record| {
+        record.rtype == qtype && CanonicalName::canonicalize(&record.owner) == *scope.chain_end()
+    });
+    has_wanted_data || (ends_in_denial(message, scope) && has_closing_soa(message, scope))
+}
+
+fn has_closing_soa(message: &Message, scope: &AnswerScope) -> bool {
+    message.authorities.iter().any(|record| {
+        record.rtype == RecordType::SOA
+            && soa_closes_chain(scope, &CanonicalName::canonicalize(&record.owner))
+    })
 }
