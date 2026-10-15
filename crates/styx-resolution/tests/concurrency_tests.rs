@@ -396,10 +396,13 @@ fn deadline_must_exceed_every_member_timeout() {
     )
     .unwrap();
     let equal = ServerConfig::from_toml_str("query_timeout_secs = 2").unwrap();
-    assert!(matches!(
-        equal.check_deadline_covers(&pool),
-        Err(ConfigError::Invalid(_))
-    ));
+    match equal.check_deadline_covers(&pool) {
+        Err(ConfigError::Invalid(message)) => {
+            assert!(message.contains("`cf`"), "{message}");
+            assert!(message.contains("2000ms"), "{message}");
+        }
+        other => panic!("expected Invalid naming the member, got {other:?}"),
+    }
     let longer = ServerConfig::from_toml_str("query_timeout_secs = 3").unwrap();
     assert!(longer.check_deadline_covers(&pool).is_ok());
 }

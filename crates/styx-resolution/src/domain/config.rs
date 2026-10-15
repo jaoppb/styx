@@ -102,28 +102,49 @@ impl PoolConfig {
             members.push(parse_member(m)?);
         }
 
-        let probe = ProbeConfig {
-            idle_window: Duration::from_secs(raw.probe.idle_window_secs.unwrap_or(60)),
-            down_retry_interval: Duration::from_secs(raw.probe.down_retry_secs.unwrap_or(10)),
-            tick: Duration::from_secs(raw.probe.tick_secs.unwrap_or(1)),
-        };
-
-        let circuit = CircuitConfig {
-            failure_threshold: raw.circuit.failure_threshold.unwrap_or(3),
-            open_cooldown: Duration::from_secs(raw.circuit.open_cooldown_secs.unwrap_or(30)),
-            half_open_successes: raw.circuit.half_open_successes.unwrap_or(2),
-        };
-
         Ok(Self {
             strategy: raw.strategy,
             members,
-            probe,
-            circuit,
+            probe: resolve_probe(raw.probe),
+            circuit: resolve_circuit(raw.circuit),
         })
     }
 }
 
-fn parse_canary(kind: RawUpstreamKind, raw: RawCanaryConfig) -> Result<CanaryConfig, ConfigError> {
+fn resolve_probe(raw: RawProbeConfig) -> ProbeConfig {
+    let defaults = ProbeConfig::default();
+    ProbeConfig {
+        idle_window: raw
+            .idle_window_secs
+            .map_or(defaults.idle_window, Duration::from_secs),
+        down_retry_interval: raw
+            .down_retry_secs
+            .map_or(defaults.down_retry_interval, Duration::from_secs),
+        tick: raw.tick_secs.map_or(defaults.tick, Duration::from_secs),
+    }
+}
+
+fn resolve_circuit(raw: RawCircuitConfig) -> CircuitConfig {
+    let defaults = CircuitConfig::default();
+    CircuitConfig {
+        failure_threshold: raw.failure_threshold.unwrap_or(defaults.failure_threshold),
+        open_cooldown: raw
+            .open_cooldown_secs
+            .map_or(defaults.open_cooldown, Duration::from_secs),
+        half_open_successes: raw
+            .half_open_successes
+            .unwrap_or(defaults.half_open_successes),
+    }
+}
+
+const fn upstream_kind(raw: RawUpstreamKind) -> UpstreamKind {
+    match raw {
+        RawUpstreamKind::Forwarder => UpstreamKind::Forwarder,
+        RawUpstreamKind::Recursor => UpstreamKind::Recursor,
+    }
+}
+
+fn parse_canary(kind: UpstreamKind, raw: RawCanaryConfig) -> Result<CanaryConfig, ConfigError> {
     let qname = Name::from_ascii(&raw.qname)
         .map_err(|e| ConfigError::Invalid(format!("invalid canary name: {e}")))?;
     let qtype = match raw.qtype.to_uppercase().as_str() {
@@ -137,14 +158,17 @@ fn parse_canary(kind: RawUpstreamKind, raw: RawCanaryConfig) -> Result<CanaryCon
             )))
         }
     };
-    let timeout = Duration::from_millis(raw.timeout_ms.unwrap_or(2000));
+    let timeout = raw.timeout_ms.map_or_else(
+        || CanaryConfig::for_kind(kind).timeout,
+        Duration::from_millis,
+    );
     let canary = CanaryConfig {
         qname,
         qtype,
         timeout,
     };
 
-    if kind == RawUpstreamKind::Recursor
+    if matches!(kind, UpstreamKind::Recursor)
         && (canary.qname == Name::root() || canary.qname.labels().len() < 2)
     {
         return Err(ConfigError::CanaryNotDescending);
@@ -154,29 +178,32 @@ fn parse_canary(kind: RawUpstreamKind, raw: RawCanaryConfig) -> Result<CanaryCon
 }
 
 fn parse_member(m: RawUpstreamConfig) -> Result<UpstreamConfig, ConfigError> {
-    let edns_octets = m.edns_buffer.unwrap_or(1232);
-    let edns_buffer = EdnsBufferSize::new(edns_octets)?;
-
-    let canary = match m.canary {
-        Some(raw_c) => Some(parse_canary(m.kind, raw_c)?),
-        None => None,
+    let kind = upstream_kind(m.kind);
+    let edns_buffer = match m.edns_buffer {
+        Some(octets) => EdnsBufferSize::new(octets)?,
+        None => EdnsBufferSize::default(),
     };
 
+    let canary = m
+        .canary
+        .map(|raw_canary| parse_canary(kind, raw_canary))
+        .transpose()?;
+
+    let default_timeouts = Timeouts::default();
     let timeouts = Timeouts {
-        udp: Duration::from_millis(m.udp_timeout_ms.unwrap_or(2000)),
-        tcp: Duration::from_millis(m.tcp_timeout_ms.unwrap_or(3000)),
-    };
-
-    let kind = match m.kind {
-        RawUpstreamKind::Forwarder => UpstreamKind::Forwarder,
-        RawUpstreamKind::Recursor => UpstreamKind::Recursor,
+        udp: m
+            .udp_timeout_ms
+            .map_or(default_timeouts.udp, Duration::from_millis),
+        tcp: m
+            .tcp_timeout_ms
+            .map_or(default_timeouts.tcp, Duration::from_millis),
     };
 
     Ok(UpstreamConfig {
         name: m.name,
         kind,
         addr: m.addr,
-        weight: Weight::new(m.weight.unwrap_or(1)),
+        weight: m.weight.map_or_else(Weight::default, Weight::new),
         canary,
         timeouts,
         edns_buffer,
@@ -184,6 +211,7 @@ fn parse_member(m: RawUpstreamConfig) -> Result<UpstreamConfig, ConfigError> {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawPoolConfig {
     strategy: StrategyName,
     #[serde(default)]
@@ -202,6 +230,7 @@ enum RawUpstreamKind {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawUpstreamConfig {
     name: String,
     kind: RawUpstreamKind,
@@ -214,6 +243,7 @@ struct RawUpstreamConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawCanaryConfig {
     qname: String,
     qtype: String,
@@ -221,6 +251,7 @@ struct RawCanaryConfig {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawProbeConfig {
     idle_window_secs: Option<u64>,
     down_retry_secs: Option<u64>,
@@ -228,11 +259,15 @@ struct RawProbeConfig {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawCircuitConfig {
     failure_threshold: Option<u32>,
     open_cooldown_secs: Option<u64>,
     half_open_successes: Option<u32>,
 }
+
+#[cfg(test)]
+mod schema_keys;
 
 #[cfg(test)]
 mod tests {

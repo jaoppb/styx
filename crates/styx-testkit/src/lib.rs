@@ -7,12 +7,17 @@
 //! dependency of this crate, and this crate must never be one of any shipping crate:
 //! the `hickory-dev-only` gate rejects any normal or build path that reaches it.
 //!
+//! `config_example` is the one piece that is not about DNS: a scanner for the example
+//! configuration file, shared so that every crate that parses a table of it can check
+//! the example against its own keys without naming another feature crate.
+//!
 //! Harness pieces that wrap a feature crate's own types (such as a booted
 //! `styx-resolution` server) stay in that crate's tests: this crate names no
 //! feature crate, so every feature crate can depend on it without a cycle.
 
 pub mod client;
 pub mod commandable;
+pub mod config_example;
 mod convert;
 pub mod error;
 pub mod fake;
@@ -21,6 +26,7 @@ pub mod script;
 
 pub use client::DnsClient;
 pub use commandable::{CommandableUpstream, UpstreamBehavior};
+pub use config_example::{ExampleDocument, ExampleEntry, SchemaMismatch, SchemaTable};
 pub use error::HarnessError;
 pub use fake::{FakeNameServer, FakeRole};
 pub use responder::ReceivedQuery;

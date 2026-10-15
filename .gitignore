@@ -26,3 +26,6 @@ oom-*
 # Local environment overrides
 .env
 .env.local
+
+# Local config copied from config/styx.example.toml
+/styx.toml

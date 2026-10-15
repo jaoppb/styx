@@ -34,5 +34,8 @@ anyhow.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix.workspace = true
 
+[dev-dependencies]
+styx-testkit = { path = "../styx-testkit" }
+
 [lints]
 workspace = true

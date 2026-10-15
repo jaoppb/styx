@@ -64,13 +64,29 @@ cause problems, and that lets you disable IPv6.
    cd styx
    ```
 
-3. Build and start the server. Without arguments it reads `styx.toml` from the current
-   directory if present, and otherwise listens on `127.0.0.1:1053`; a different config
-   file can be passed as the first argument:
+3. Copy the example configuration. It sets up the iterative recursor with Quad9 as a
+   standby and listens on `127.0.0.1:5300`, so it needs no elevated rights:
+
+   ```sh
+   cp config/styx.example.toml styx.toml
+   ```
+
+4. Build and start the server. Without arguments it reads `styx.toml` from the current
+   directory; a different config file can be passed as the first argument:
 
    ```sh
    cargo run --release --package styx
    ```
+
+   styx has no built-in fallback: with no `styx.toml` and no argument it exits at startup
+   with "no configuration file found". A config that sets no `listen_addrs` listens on
+   `127.0.0.1:53`, which needs elevated rights on most systems. The whole-query deadline,
+   `query_timeout_secs`, defaults to 5 seconds and must exceed every upstream member's own
+   timeout. A misspelled key is a startup error, not a silently ignored line.
+   `config/styx.example.toml` lists every key the server, supervisor, upstream and
+   recursion sections accept, with its built-in default. Its `root_hints` path is relative
+   to the directory styx is started from, so run styx from the repository root or change
+   the path to an absolute one.
 
 ## 🤝 Contributors
 
