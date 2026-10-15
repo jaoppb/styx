@@ -182,7 +182,7 @@ async fn test_capacity_eviction_expired_before_fresh_lru() {
             clock.now_monotonic(),
         )
         .expect("request");
-        let outcome = admission.evaluate(&request);
+        let outcome = admission.evaluate(request);
         cache.admit(outcome).expect("admit");
     };
 
@@ -256,7 +256,7 @@ fn run_worker(c: Arc<ShardedAnswerCache<TestClock>>, clk: Arc<TestClock>, task_i
         else {
             continue;
         };
-        let outcome = admission.evaluate(&request);
+        let outcome = admission.evaluate(request);
         let _ = c.admit(outcome);
         let _ = c.lookup(&key);
     }
@@ -337,14 +337,14 @@ fn test_cross_zone_cname_chain_is_admitted_whole() {
         clock.now_monotonic(),
     )
     .expect("request");
-    let outcome = admission.evaluate(&request);
+    let outcome = admission.evaluate(request);
 
-    assert_eq!(outcome.admitted.len(), 1, "one composite entry");
-    let Some(CacheEntry::Positive(PositiveEntry::Message(cached))) = outcome.admitted.first()
+    assert_eq!(outcome.admitted().len(), 1, "one composite entry");
+    let Some(CacheEntry::Positive(PositiveEntry::Message(cached))) = outcome.admitted().first()
     else {
         panic!(
             "expected a composite message entry, got {:?}",
-            outcome.admitted
+            outcome.admitted()
         );
     };
     let owners: Vec<String> = cached
@@ -354,8 +354,8 @@ fn test_cross_zone_cname_chain_is_admitted_whole() {
         .collect();
     assert_eq!(owners, ["www.example.com.", "x.cdn.net."]);
 
-    assert_eq!(outcome.rejected.len(), 1);
-    let rejected = outcome.rejected.first().expect("one rejection");
+    assert_eq!(outcome.rejected().len(), 1);
+    let rejected = outcome.rejected().first().expect("one rejection");
     assert_eq!(rejected.reason, RejectReason::OutOfBailiwick);
     assert_eq!(rejected.owner.to_string(), "evil.example.");
 }
@@ -403,10 +403,10 @@ fn test_in_zone_cname_off_the_chain_cannot_poison_a_foreign_name() {
         clock.now_monotonic(),
     )
     .expect("request");
-    let outcome = admission.evaluate(&request);
+    let outcome = admission.evaluate(request);
 
     assert!(outcome
-        .rejected
+        .rejected()
         .iter()
         .any(|rejected| rejected.owner.to_string() == "www.bank.com."
             && rejected.reason == RejectReason::OutOfBailiwick));
@@ -469,7 +469,7 @@ fn evaluate_chain(
         AnswerSource::Recursion,
         clock.now_monotonic(),
     )?;
-    Ok(admission.evaluate(&request))
+    Ok(admission.evaluate(request))
 }
 
 /// A cross-zone chain that ends in NXDOMAIN is cached whole, under the qname only:
@@ -482,13 +482,13 @@ fn test_cross_zone_chain_ending_in_nxdomain_is_cached_under_the_qname_only() {
     let outcome = evaluate_chain(&question, &msg).expect("request");
 
     assert_eq!(
-        outcome.admitted.len(),
+        outcome.admitted().len(),
         1,
         "one composite entry, nothing for the target"
     );
-    let Some(CacheEntry::Positive(PositiveEntry::Message(cached))) = outcome.admitted.first()
+    let Some(CacheEntry::Positive(PositiveEntry::Message(cached))) = outcome.admitted().first()
     else {
-        panic!("expected a composite entry, got {:?}", outcome.admitted);
+        panic!("expected a composite entry, got {:?}", outcome.admitted());
     };
     assert_eq!(cached.rcode(), ResponseCode::NXDOMAIN);
     assert_eq!(cached.answer().len(), 1);
@@ -498,7 +498,7 @@ fn test_cross_zone_chain_ending_in_nxdomain_is_cached_under_the_qname_only() {
         .map(|rrset| rrset.owner().to_string())
         .collect();
     assert_eq!(authority, ["bank.com."]);
-    assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+    assert!(outcome.rejected().is_empty(), "{:?}", outcome.rejected());
 }
 
 /// The SOA must enclose the name the chain ends at: another zone's SOA does not close
@@ -510,10 +510,10 @@ fn test_chain_denial_with_an_unrelated_soa_is_not_admitted() {
 
     let outcome = evaluate_chain(&question, &msg).expect("request");
 
-    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
+    assert!(outcome.admitted().is_empty(), "{:?}", outcome.admitted());
     let reason_of = |owner: &str| {
         outcome
-            .rejected
+            .rejected()
             .iter()
             .find(|rejected| rejected.owner.to_string() == owner)
             .map(|rejected| rejected.reason)
@@ -550,11 +550,15 @@ fn test_an_error_rcode_is_not_refused_as_an_incomplete_chain() {
 
         let outcome = evaluate_chain(&question, &msg).expect("request");
 
-        assert!(outcome.admitted.is_empty(), "{rcode:?}");
+        assert!(outcome.admitted().is_empty(), "{rcode:?}");
+        assert_eq!(outcome.refusal(), None, "{rcode:?}");
         assert!(
-            outcome.rejected.is_empty(),
+            outcome
+                .rejected()
+                .iter()
+                .all(|r| r.reason == RejectReason::ErrorResponse),
             "{rcode:?}: {:?}",
-            outcome.rejected
+            outcome.rejected()
         );
     }
 }
@@ -570,12 +574,15 @@ fn test_a_response_without_a_question_is_refused() {
 
     let outcome = evaluate_chain(&question, &msg).expect("request");
 
-    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
+    assert!(outcome.admitted().is_empty(), "{:?}", outcome.admitted());
     assert!(outcome
-        .rejected
+        .rejected()
         .iter()
         .any(|rejected| rejected.reason == RejectReason::QuestionMismatch));
-    assert_eq!(outcome.refusal, Some(RejectReason::QuestionMismatch));
+    assert_eq!(
+        outcome.refusal_reason(),
+        Some(RejectReason::QuestionMismatch)
+    );
 }
 
 /// An alias loop leads nowhere: data owned by a name inside the loop, or an SOA
@@ -608,12 +615,12 @@ fn test_a_cyclic_alias_chain_is_refused() {
 
     let outcome = evaluate_chain(&question, &msg).expect("request");
 
-    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
+    assert!(outcome.admitted().is_empty(), "{:?}", outcome.admitted());
     assert!(outcome
-        .rejected
+        .rejected()
         .iter()
         .all(|rejected| rejected.reason == RejectReason::IncompleteChain));
-    assert_eq!(outcome.rejected.len(), 3);
+    assert_eq!(outcome.rejected().len(), 3);
 }
 
 /// A foreign SOA is a chain's ending only when the answer is a denial: beside real
@@ -625,7 +632,7 @@ fn test_a_foreign_soa_beside_data_is_not_a_chain_ending() {
     let outcome = evaluate_chain(&question, &msg).expect("request");
 
     assert!(outcome
-        .rejected
+        .rejected()
         .iter()
         .any(|rejected| rejected.owner.to_string() == "bank.com."
             && rejected.reason == RejectReason::OutOfBailiwick));
@@ -642,11 +649,14 @@ fn test_zero_ttl_closing_soa_leaves_no_chain_without_an_ending() {
 
     let outcome = evaluate_chain(&question, &msg).expect("request");
 
-    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
-    assert_eq!(outcome.refusal, Some(RejectReason::IncompleteChain));
+    assert!(outcome.admitted().is_empty(), "{:?}", outcome.admitted());
+    assert_eq!(
+        outcome.refusal_reason(),
+        Some(RejectReason::IncompleteChain)
+    );
     let reason_of = |rtype: RecordType| {
         outcome
-            .rejected
+            .rejected()
             .iter()
             .find(|rejected| rejected.rtype == rtype)
             .map(|rejected| rejected.reason)
@@ -692,16 +702,19 @@ fn test_refused_answer_does_not_report_legitimate_authority_and_glue_as_forgery(
 
     let outcome = evaluate_chain(&question, &msg).expect("request");
 
-    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
-    assert_eq!(outcome.refusal, Some(RejectReason::IncompleteChain));
-    assert_eq!(outcome.rejected.len(), 3);
+    assert!(outcome.admitted().is_empty(), "{:?}", outcome.admitted());
+    assert_eq!(
+        outcome.refusal_reason(),
+        Some(RejectReason::IncompleteChain)
+    );
+    assert_eq!(outcome.rejected().len(), 3);
     assert!(
         outcome
-            .rejected
+            .rejected()
             .iter()
             .all(|rejected| rejected.reason == RejectReason::IncompleteChain),
         "{:?}",
-        outcome.rejected
+        outcome.rejected()
     );
 }
 
@@ -721,7 +734,7 @@ fn test_refused_answer_still_reports_a_foreign_additional_as_forgery() {
     let outcome = evaluate_chain(&question, &msg).expect("request");
 
     let forged: Vec<String> = outcome
-        .rejected
+        .rejected()
         .iter()
         .filter(|rejected| rejected.reason == RejectReason::OutOfBailiwick)
         .map(|rejected| rejected.owner.to_string())
@@ -741,8 +754,8 @@ fn test_alias_questions_are_not_refused_as_incomplete() {
 
         let outcome = evaluate_chain(&question, &msg).expect("request");
 
-        assert_eq!(outcome.refusal, None, "{qtype:?}");
-        assert_eq!(outcome.admitted.len(), 1, "{qtype:?}");
+        assert_eq!(outcome.refusal_reason(), None, "{qtype:?}");
+        assert_eq!(outcome.admitted().len(), 1, "{qtype:?}");
     }
 }
 
@@ -764,6 +777,9 @@ fn test_dname_without_its_synthesized_cname_is_refused() {
 
     let outcome = evaluate_chain(&question, &msg).expect("request");
 
-    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
-    assert_eq!(outcome.refusal, Some(RejectReason::IncompleteChain));
+    assert!(outcome.admitted().is_empty(), "{:?}", outcome.admitted());
+    assert_eq!(
+        outcome.refusal_reason(),
+        Some(RejectReason::IncompleteChain)
+    );
 }

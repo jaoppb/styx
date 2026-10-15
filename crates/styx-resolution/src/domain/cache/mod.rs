@@ -15,6 +15,7 @@ pub mod key;
 pub mod negative_entry;
 pub mod port;
 pub mod positive_entry;
+pub mod refusal;
 pub mod rrset;
 mod section_admission;
 pub mod stats;
@@ -33,6 +34,7 @@ pub use key::{CacheKey, CanonicalName};
 pub use negative_entry::{DenialKind, NegativeEntry};
 pub use port::{AdmittedCount, AnswerCache, Lookup, PurgedCount};
 pub use positive_entry::{CachedMessage, CachedRRset, MessageFlags, PositiveEntry};
+pub use refusal::{check_question, Refusal};
 pub use rrset::RRset;
 pub use stats::{AtomicCacheCounters, CacheStats};
 pub use ttl::{

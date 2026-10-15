@@ -73,14 +73,14 @@ fn evaluate(client: &Question, message: &Message) -> Result<AdmissionOutcome, Ca
         AnswerSource::Upstream,
         clock.now_monotonic(),
     )?;
-    Ok(Admission::new(TtlPolicy::default()).evaluate(&request))
+    Ok(Admission::new(TtlPolicy::default()).evaluate(request))
 }
 
 fn assert_refused_whole(outcome: &AdmissionOutcome, reason: RejectReason) {
-    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
-    assert_eq!(outcome.refusal, Some(reason));
-    assert!(!outcome.rejected.is_empty());
-    assert!(outcome.rejected.iter().all(|r| r.reason == reason));
+    assert!(outcome.admitted().is_empty(), "{:?}", outcome.admitted());
+    assert_eq!(outcome.refusal_reason(), Some(reason));
+    assert!(!outcome.rejected().is_empty());
+    assert!(outcome.rejected().iter().all(|r| r.reason == reason));
 }
 
 #[test]
@@ -119,8 +119,8 @@ fn test_an_echoed_name_differing_only_in_case_is_admitted() {
     let client = ask("www.example.com.", RecordType::A);
     let message = address_answer(&client, vec![ask("WwW.ExAmPlE.CoM.", RecordType::A)]);
     let outcome = evaluate(&client, &message).expect("request");
-    assert_eq!(outcome.refusal, None);
-    assert_eq!(outcome.admitted.len(), 1);
+    assert_eq!(outcome.refusal_reason(), None);
+    assert_eq!(outcome.admitted().len(), 1);
 }
 
 #[test]
@@ -134,17 +134,17 @@ fn test_a_judged_response_echoing_no_question_is_refused() {
     for message in &messages {
         let outcome = evaluate(&client, message).expect("request");
         assert_eq!(
-            outcome.refusal,
+            outcome.refusal_reason(),
             Some(RejectReason::QuestionMismatch),
             "{:?}",
             message.header.rcode
         );
-        assert!(outcome.admitted.is_empty());
+        assert!(outcome.admitted().is_empty());
     }
 }
 
 #[test]
-fn test_an_error_response_admits_nothing_and_is_not_a_mismatch() {
+fn test_an_error_response_admits_nothing_and_is_recorded_as_one() {
     let client = ask("www.example.com.", RecordType::A);
     let echoes = [Vec::new(), vec![ask("evil.example.net.", RecordType::A)]];
     for rcode in [
@@ -157,11 +157,20 @@ fn test_an_error_response_admits_nothing_and_is_not_a_mismatch() {
             message.header.rcode = rcode;
             let outcome = evaluate(&client, &message).expect("request");
             assert!(
-                outcome.admitted.is_empty(),
+                outcome.admitted().is_empty(),
                 "{rcode:?}: {:?}",
-                outcome.admitted
+                outcome.admitted()
             );
-            assert_eq!(outcome.refusal, None, "{rcode:?}");
+            assert_eq!(outcome.refusal(), None, "{rcode:?}");
+            assert_eq!(outcome.rejected().len(), 1, "{rcode:?}");
+            assert!(
+                outcome
+                    .rejected()
+                    .iter()
+                    .all(|r| r.reason == RejectReason::ErrorResponse),
+                "{rcode:?}: {:?}",
+                outcome.rejected()
+            );
         }
     }
 }
@@ -175,7 +184,7 @@ fn test_a_response_echoing_two_questions_is_refused_even_if_the_first_matches() 
     );
     assert_refused_whole(
         &evaluate(&client, &message).expect("request"),
-        RejectReason::MalformedResponse,
+        RejectReason::MultipleQuestions,
     );
 }
 
@@ -241,7 +250,7 @@ fn test_a_mismatch_is_counted_once_per_answer_and_stores_nothing() {
     .expect("request");
 
     let admitted = cache
-        .admit(Admission::new(TtlPolicy::default()).evaluate(&request))
+        .admit(Admission::new(TtlPolicy::default()).evaluate(request))
         .expect("admit");
 
     assert_eq!(admitted.count(), 0);
@@ -256,7 +265,7 @@ fn test_an_outcome_carries_the_key_it_was_judged_for() {
     let client = ask("www.example.com.", RecordType::A);
     let message = address_answer(&client, vec![client.clone()]);
     let outcome = evaluate(&client, &message).expect("request");
-    assert_eq!(Ok(outcome.key.clone()), CacheKey::from_question(&client));
+    assert_eq!(Ok(outcome.key().clone()), CacheKey::from_question(&client));
 }
 
 #[test]
@@ -273,13 +282,13 @@ fn test_an_ineligible_source_is_refused_whole_and_not_as_a_mismatch() {
     for (source, reason) in expected {
         let request = AdmissionRequest::new(&client, &message, source, clock.now_monotonic())
             .expect("request");
-        let outcome = Admission::new(TtlPolicy::default()).evaluate(&request);
+        let outcome = Admission::new(TtlPolicy::default()).evaluate(request);
         assert_refused_whole(&outcome, reason);
     }
 }
 
 #[test]
-fn test_a_malformed_response_is_counted_once_and_stores_nothing() {
+fn test_an_answer_echoing_two_questions_is_counted_once_and_stores_nothing() {
     let clock = Arc::new(TestClock::new());
     let cache = ShardedAnswerCache::new(
         Arc::clone(&clock),
@@ -301,11 +310,11 @@ fn test_a_malformed_response_is_counted_once_and_stores_nothing() {
     .expect("request");
 
     let admitted = cache
-        .admit(Admission::new(TtlPolicy::default()).evaluate(&request))
+        .admit(Admission::new(TtlPolicy::default()).evaluate(request))
         .expect("admit");
 
     assert_eq!(admitted.count(), 0);
-    assert_eq!(cache.stats().rejected_malformed_response, 1);
+    assert_eq!(cache.stats().rejected_multiple_questions, 1);
     assert_eq!(cache.stats().rejected_question_mismatch, 0);
 }
 
@@ -315,9 +324,29 @@ fn test_a_refusal_names_the_questions_the_response_echoed() {
     let echoed = vec![ask("evil.example.net.", RecordType::A)];
     let message = address_answer(&client, echoed.clone());
     let outcome = evaluate(&client, &message).expect("request");
-    assert_eq!(outcome.echoed_questions, echoed);
+    let refusal = outcome.refusal().expect("refused");
+    assert_eq!(refusal.reason(), RejectReason::QuestionMismatch);
+    assert_eq!(refusal.echoed(), echoed.as_slice());
 
     let matching = address_answer(&client, vec![client.clone()]);
     let admitted = evaluate(&client, &matching).expect("request");
-    assert!(admitted.echoed_questions.is_empty());
+    assert_eq!(admitted.refusal(), None);
+}
+
+/// Issue #116: a NODATA with an SOA and an empty question section was admitted under the
+/// client's key, because the denial path never looked at the echoed question.
+#[test]
+fn test_a_nodata_with_an_soa_and_no_question_is_not_admitted_under_the_clients_key() {
+    let client = ask("www.example.com.", RecordType::A);
+    let message = denial(ResponseCode::NOERROR, Vec::new());
+    let outcome = evaluate(&client, &message).expect("request");
+
+    assert_refused_whole(&outcome, RejectReason::QuestionMismatch);
+
+    let clock = Arc::new(TestClock::new());
+    let cache = ShardedAnswerCache::with_defaults(clock);
+    let stored = cache.admit(outcome).expect("admit");
+    assert_eq!(stored.count(), 0);
+    let key = CacheKey::from_question(&client).expect("key");
+    assert_eq!(cache.lookup(&key), Lookup::Miss);
 }

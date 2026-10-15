@@ -26,7 +26,7 @@ pub use domain::cache::{
     Admission, AdmissionOutcome, AdmissionRequest, AdmittedCount, AnswerCache, Bailiwick,
     CacheCapacity, CacheEntry, CacheError, CacheKey, CacheStats, CanonicalName, Deadline,
     DenialKind, DnssecMetadata, HeapBytes, Lookup, MessageFlags, NegativeEntry, PositiveEntry,
-    PurgedCount, RRset, RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
+    PurgedCount, RRset, Refusal, RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
 };
 pub use domain::circuit::{CircuitConfig, CircuitState, FailureCount};
 pub use domain::config::{PoolConfig, Timeouts, UpstreamConfig};
