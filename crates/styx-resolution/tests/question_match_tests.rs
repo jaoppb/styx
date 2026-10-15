@@ -266,3 +266,34 @@ fn test_an_ineligible_source_is_refused_whole_and_not_as_a_mismatch() {
         assert_refused_whole(&outcome, reason);
     }
 }
+
+#[test]
+fn test_a_malformed_response_is_counted_once_and_stores_nothing() {
+    let clock = Arc::new(TestClock::new());
+    let cache = ShardedAnswerCache::new(
+        Arc::clone(&clock),
+        CacheCapacity::default(),
+        TtlPolicy::default(),
+        1,
+    );
+    let client = ask("www.example.com.", RecordType::A);
+    let message = address_answer(
+        &client,
+        vec![client.clone(), ask("evil.example.net.", RecordType::A)],
+    );
+    let request = AdmissionRequest::new(
+        &client,
+        &message,
+        AnswerSource::Upstream,
+        clock.now_monotonic(),
+    )
+    .expect("request");
+
+    let admitted = cache
+        .admit(Admission::new(TtlPolicy::default()).evaluate(&request))
+        .expect("admit");
+
+    assert_eq!(admitted.count(), 0);
+    assert_eq!(cache.stats().rejected_malformed_response, 1);
+    assert_eq!(cache.stats().rejected_question_mismatch, 0);
+}

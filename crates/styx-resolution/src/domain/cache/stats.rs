@@ -24,6 +24,9 @@ pub struct CacheStats {
     /// Number of whole answers refused because they echoed a question other than the
     /// client's, counted once per answer.
     pub rejected_question_mismatch: u64,
+    /// Number of whole answers refused because they echoed more than one question,
+    /// counted once per answer.
+    pub rejected_malformed_response: u64,
     /// Number of entries removed due to TTL expiration.
     pub expired: u64,
     /// Number of fresh entries evicted due to capacity bounds.
@@ -44,6 +47,7 @@ pub struct AtomicCacheCounters {
     rejected_out_of_bailiwick: AtomicU64,
     rejected_incomplete_chain: AtomicU64,
     rejected_question_mismatch: AtomicU64,
+    rejected_malformed_response: AtomicU64,
     expired: AtomicU64,
     evicted: AtomicU64,
 }
@@ -93,6 +97,12 @@ impl AtomicCacheCounters {
             .fetch_add(count, Ordering::Relaxed);
     }
 
+    /// Increments the malformed-response refusal counter by `count` answers.
+    pub fn inc_rejected_malformed_response(&self, count: u64) {
+        self.rejected_malformed_response
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
     /// Increments the expired entry counter by `count`.
     pub fn inc_expired(&self, count: u64) {
         self.expired.fetch_add(count, Ordering::Relaxed);
@@ -114,6 +124,7 @@ impl AtomicCacheCounters {
             rejected_out_of_bailiwick: self.rejected_out_of_bailiwick.load(Ordering::Relaxed),
             rejected_incomplete_chain: self.rejected_incomplete_chain.load(Ordering::Relaxed),
             rejected_question_mismatch: self.rejected_question_mismatch.load(Ordering::Relaxed),
+            rejected_malformed_response: self.rejected_malformed_response.load(Ordering::Relaxed),
             expired: self.expired.load(Ordering::Relaxed),
             evicted: self.evicted.load(Ordering::Relaxed),
             entries,

@@ -164,6 +164,14 @@ impl<C: Clock> ShardedAnswerCache<C> {
             );
             self.counters.inc_rejected_question_mismatch(1);
         }
+        if outcome.refusal == Some(RejectReason::MalformedResponse) {
+            tracing::debug!(
+                expected = ?outcome.key,
+                records = outcome.rejected.len(),
+                "refused an answer that echoed more than one question"
+            );
+            self.counters.inc_rejected_malformed_response(1);
+        }
     }
 
     fn touch_key(shard: &Shard, key: &CacheKey) {
