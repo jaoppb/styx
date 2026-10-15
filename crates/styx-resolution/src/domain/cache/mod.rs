@@ -2,6 +2,7 @@
 
 pub mod admission;
 pub mod admission_outcome;
+pub mod admission_request;
 pub mod answer_scope;
 pub mod bailiwick;
 pub mod bytes;
@@ -21,6 +22,7 @@ pub mod ttl;
 
 pub use admission::Admission;
 pub use admission_outcome::{AdmissionOutcome, RejectReason, RejectedRecord};
+pub use admission_request::AdmissionRequest;
 pub use bailiwick::Bailiwick;
 pub use bytes::HeapBytes;
 pub use capacity::{CacheCapacity, DEFAULT_MAX_BYTES, DEFAULT_MAX_ENTRIES};

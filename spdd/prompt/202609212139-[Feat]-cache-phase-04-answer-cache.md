@@ -394,9 +394,10 @@ class Admission {
     -TtlPolicy ttl
     +new(TtlPolicy) Admission
     +ttl() &TtlPolicy
-    +evaluate(&Bailiwick, &Message, AnswerSource, Instant) AdmissionOutcome
+    +evaluate(&AdmissionRequest) AdmissionOutcome
     -check_source_eligibility(AnswerSource) Option~RejectReason~
-    -evaluate_positive(&Bailiwick, &Message, Instant, &mut AdmissionOutcome)
+    -check_question(&AdmissionRequest) Option~RejectReason~
+    -evaluate_positive(&AdmissionRequest, &mut AdmissionOutcome)
     -survivors_complete(&Bailiwick, &CanonicalName, RecordType, &Message, &AdmittedSections, Instant) bool
     -push_positive(&Message, AdmittedSections, Instant, &mut AdmissionOutcome)
 }
@@ -737,7 +738,7 @@ Eviction "1" --> "1" EvictionReport : reports
   DNAME and ANY questions are exempt, being complete as answered. A chain that loops
   back on itself has no last name and is never complete. A response with no question
   cannot be shown to answer anything, so it fails closed as
-  `RejectReason::MalformedResponse`. An error rcode carries nothing to admit and is not
+  `RejectReason::QuestionMismatch`. An error rcode carries nothing to admit and is not
   judged. A cross-zone denial that does close its chain is cached under the qname only,
   never as a negative entry for the target (ADR 0020).
 - **Completeness is judged twice.** Once on the message as received, and again on what
@@ -1190,7 +1191,12 @@ client query
 
 1. **Responsibility**: the complete answer to "may this be cached at all?", of which the
    bailiwick rule is one clause.
-2. **`evaluate(&self, bailiwick: &Bailiwick, message: &Message, source: AnswerSource, now: Instant) -> AdmissionOutcome`**
+2. **`evaluate(&self, request: &AdmissionRequest<'_>) -> AdmissionOutcome`** *(amendment, ADR 0023)*:
+   `AdmissionRequest::new(question, message, source, now)` derives the `CacheKey` and the
+   `Bailiwick` from the client's question, so a response is judged against the question
+   that was asked. A response with more than one question is refused whole as
+   `MalformedResponse` (RFC 9619), one with none or a different one as `QuestionMismatch`, for
+   every rcode and before the denial/positive split.
    - Refuse outright when `source` is `AnswerSource::LocalRecord` or
      `AnswerSource::Blocked` → every record rejected with
      `RejectReason::ForgedAnswer`. The test is the private helper
@@ -1205,9 +1211,10 @@ client query
      the cache is global, so a cached forgery would be served to clients in groups where
      the block does not apply; and blocked replies carry a deliberately short TTL so
      unblocking takes effect quickly, which caching would defeat.
-   - In `evaluate_positive`, an NOERROR or NXDOMAIN response with no question is refused
-     whole as `RejectReason::MalformedResponse` (`AdmissionOutcome::refuse`). An error
-     rcode is not judged.
+   - `check_question` refuses a response with more than one question as
+     `RejectReason::MalformedResponse` (RFC 9619), and one with none, or another than the
+     client's, as `RejectReason::QuestionMismatch` (`AdmissionOutcome::refuse`), for every
+     rcode. An error rcode is not judged for chain completeness.
    - Before admitting any record of such a response, ask `chain_is_complete` for the
      question's type. On failure the answer is refused whole as
      `RejectReason::IncompleteChain`, its records labelled by `label_refused`, and
@@ -1370,8 +1377,8 @@ client query
      `ResolvedSource::CacheHit`.
    - On `Lookup::Miss` or `Lookup::Expired`, resolve through `self.pool.resolve(question)`.
    - Map upstream kind to `AnswerSource` (`Forwarder` → `Upstream`, `Recursor` → `Recursion`),
-     derive `Bailiwick::of_response`, evaluate admission via `self.admission.evaluate`,
-     `self.cache.admit(key, admission_outcome)`, set query ID, and return `ResolutionOutcome::Resolved`
+     build an `AdmissionRequest` (which derives `Bailiwick::of_response`), evaluate admission via
+     `self.admission.evaluate(&request)`, `self.cache.admit(request.key(), admission_outcome)`, set query ID, and return `ResolutionOutcome::Resolved`
      with `ResolvedSource::Upstream` or `ResolvedSource::Recursion`.
 4. **Outcome emission**: report hit / miss / negative-hit into the query-log observer hook
    declared in Phase 2, so Phase 10's pipeline gets the data with no hot-path rewrite.
@@ -1397,7 +1404,7 @@ client query
      denial, in an unrelated zone's SOA, in a loop, with no question, and under an error
      rcode: SERVFAIL, REFUSED and FORMERR are not refused as incomplete chains), checking
      the reason each record is refused for, `OutOfBailiwick` for the foreign SOA and
-     `IncompleteChain` for the rest; a response with no question is `MalformedResponse`;
+     `IncompleteChain` for the rest; a response with no question is `QuestionMismatch`;
      a zero-TTL closing SOA leaves no stored chain; a refused answer's legitimate NS and
      glue are `IncompleteChain` and a foreign additional stays `OutOfBailiwick`; ANY and
      CNAME questions are not refused; a DNAME without its synthesised CNAME is.
@@ -1514,7 +1521,7 @@ And the phase scope, verbatim:
 - A denial with no SOA is not cached.
 - A positive answer whose alias chain ends in neither the asked type nor an SOA-closed
   denial, or loops, is refused whole and not cached; one that arrives with no question is
-  refused whole as `MalformedResponse`.
+  refused whole as `QuestionMismatch`.
 - A chain that is no longer complete once its dropped links (zero TTL, unrepresentable)
   are removed is not stored either.
 - A TTL-zero record is served but not stored.

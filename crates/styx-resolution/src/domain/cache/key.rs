@@ -91,6 +91,15 @@ impl CacheKey {
         })
     }
 
+    /// Whether `question` asks for exactly what this key stands for: the same name up to
+    /// letter case, the same type and the same class.
+    #[must_use]
+    pub fn matches_question(&self, question: &Question) -> bool {
+        self.qname == CanonicalName::canonicalize(&question.qname)
+            && self.qtype == question.qtype
+            && self.qclass == question.qclass
+    }
+
     /// Returns a reference to the canonical query name.
     #[must_use]
     pub const fn qname(&self) -> &CanonicalName {

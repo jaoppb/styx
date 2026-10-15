@@ -6,6 +6,7 @@ use styx_proto::{Message, RData, RecordType, ResourceRecord, ResponseCode, Ttl};
 
 use crate::domain::answer::AnswerSource;
 use crate::domain::cache::admission_outcome::{AdmissionOutcome, RejectReason, RejectedRecord};
+use crate::domain::cache::admission_request::AdmissionRequest;
 use crate::domain::cache::bailiwick::Bailiwick;
 use crate::domain::cache::chain_denial::chain_is_complete;
 use crate::domain::cache::dnssec::DnssecMetadata;
@@ -38,19 +39,24 @@ impl Admission {
         &self.ttl
     }
 
-    /// Evaluates a DNS message and its provenance source for cache admission.
+    /// Evaluates a DNS response and its provenance for cache admission.
+    ///
+    /// The response must echo exactly the client question the request was built from;
+    /// otherwise it is refused whole, before any record is judged.
     #[must_use]
-    pub fn evaluate(
-        &self,
-        bailiwick: &Bailiwick,
-        message: &Message,
-        source: AnswerSource,
-        now: Instant,
-    ) -> AdmissionOutcome {
+    pub fn evaluate(&self, request: &AdmissionRequest<'_>) -> AdmissionOutcome {
+        let message = request.message();
         let mut outcome = AdmissionOutcome::default();
 
-        if let Some(reason) = self.check_source_eligibility(source) {
+        if let Some(reason) = self.check_source_eligibility(request.source()) {
             self.reject_all_records(message, reason, &mut outcome.rejected);
+            return outcome;
+        }
+
+        if let Some(reason) = Self::check_question(request) {
+            let mut records = Vec::new();
+            self.reject_all_records(message, reason, &mut records);
+            outcome.refuse(reason, records);
             return outcome;
         }
 
@@ -66,13 +72,22 @@ impl Admission {
             } else {
                 DenialKind::NoData
             };
-            self.evaluate_denial(kind, message, now, &mut outcome);
+            self.evaluate_denial(kind, request, &mut outcome);
             return outcome;
         }
 
         // Positive response processing
-        self.evaluate_positive(bailiwick, message, now, &mut outcome);
+        self.evaluate_positive(request, &mut outcome);
         outcome
+    }
+
+    /// Why the response cannot be shown to answer the client's question, if it cannot.
+    fn check_question(request: &AdmissionRequest<'_>) -> Option<RejectReason> {
+        match request.message().questions.as_slice() {
+            [echoed] if request.key().matches_question(echoed) => None,
+            [] | [_] => Some(RejectReason::QuestionMismatch),
+            _ => Some(RejectReason::MalformedResponse),
+        }
     }
 
     fn check_source_eligibility(&self, source: AnswerSource) -> Option<RejectReason> {
@@ -106,22 +121,18 @@ impl Admission {
     fn evaluate_denial(
         &self,
         kind: DenialKind,
-        message: &Message,
-        now: Instant,
+        request: &AdmissionRequest<'_>,
         outcome: &mut AdmissionOutcome,
     ) {
+        let message = request.message();
+        let now = request.now();
         let soa_record = message
             .authorities
             .iter()
             .find(|rr| rr.rtype == RecordType::SOA);
         let Some(rr) = soa_record else {
             outcome.rejected.push(RejectedRecord {
-                owner: CanonicalName::canonicalize(
-                    &message
-                        .questions
-                        .first()
-                        .map_or_else(styx_proto::Name::root, |q| q.qname.clone()),
-                ),
+                owner: request.key().qname().clone(),
                 rtype: RecordType::SOA,
                 reason: RejectReason::NoSoaInDenial,
             });
@@ -165,30 +176,17 @@ impl Admission {
         outcome.admitted.push(CacheEntry::Negative(negative_entry));
     }
 
-    fn evaluate_positive(
-        &self,
-        bailiwick: &Bailiwick,
-        message: &Message,
-        now: Instant,
-        outcome: &mut AdmissionOutcome,
-    ) {
+    fn evaluate_positive(&self, request: &AdmissionRequest<'_>, outcome: &mut AdmissionOutcome) {
+        let message = request.message();
+        let bailiwick = request.bailiwick();
+        let now = request.now();
+        let qname = request.key().qname();
         let judged = matches!(
             message.header.rcode,
             ResponseCode::NOERROR | ResponseCode::NXDOMAIN
         );
-        let question = message.questions.first();
-        if judged && question.is_none() {
-            let mut records = Vec::new();
-            self.reject_all_records(message, RejectReason::MalformedResponse, &mut records);
-            outcome.refuse(RejectReason::MalformedResponse, records);
-            return;
-        }
-        let qname = question.map_or_else(
-            || bailiwick.zone().clone(),
-            |question| CanonicalName::canonicalize(&question.qname),
-        );
-        let scope = bailiwick.answer_scope(&qname, &message.answers);
-        let qtype = question.filter(|_| judged).map(|question| question.qtype);
+        let scope = bailiwick.answer_scope(qname, &message.answers);
+        let qtype = judged.then(|| request.key().qtype());
         if qtype.is_some_and(|qtype| !chain_is_complete(message, &scope, qtype)) {
             outcome.refuse(
                 RejectReason::IncompleteChain,
@@ -203,7 +201,7 @@ impl Admission {
             return;
         }
         if let Some(qtype) = qtype {
-            if !Self::survivors_complete(bailiwick, &qname, qtype, message, &admitted, now) {
+            if !Self::survivors_complete(bailiwick, qname, qtype, message, &admitted, now) {
                 outcome.refuse(
                     RejectReason::IncompleteChain,
                     admitted.into_rejected(RejectReason::IncompleteChain),

@@ -23,10 +23,10 @@ pub use domain::answer::{
     ResolutionResponseParts, ResolvedSource,
 };
 pub use domain::cache::{
-    Admission, AdmissionOutcome, AdmittedCount, AnswerCache, Bailiwick, CacheCapacity, CacheEntry,
-    CacheError, CacheKey, CacheStats, CanonicalName, Deadline, DenialKind, DnssecMetadata,
-    HeapBytes, Lookup, MessageFlags, NegativeEntry, PositiveEntry, PurgedCount, RRset,
-    RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
+    Admission, AdmissionOutcome, AdmissionRequest, AdmittedCount, AnswerCache, Bailiwick,
+    CacheCapacity, CacheEntry, CacheError, CacheKey, CacheStats, CanonicalName, Deadline,
+    DenialKind, DnssecMetadata, HeapBytes, Lookup, MessageFlags, NegativeEntry, PositiveEntry,
+    PurgedCount, RRset, RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
 };
 pub use domain::circuit::{CircuitConfig, CircuitState, FailureCount};
 pub use domain::config::{PoolConfig, Timeouts, UpstreamConfig};

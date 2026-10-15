@@ -24,8 +24,12 @@ pub enum RejectReason {
     /// Positive answer whose alias chain ends in neither the asked type nor a denial,
     /// whether it looked that way as received or became so when a link was not stored.
     IncompleteChain,
-    /// Response carried data but echoed no question, so it cannot be shown to answer anything.
+    /// Response carried more than one question, which RFC 9619 makes an incorrectly
+    /// formatted message.
     MalformedResponse,
+    /// Response echoed no question, or one other than the client's, so it cannot be shown
+    /// to answer the key it would be stored under.
+    QuestionMismatch,
     /// Record could not be represented in the cache (TTL deadline overflow or invalid RRset).
     Unstorable,
     /// Provenance source is inadmissible for caching (e.g. cache hit or error).

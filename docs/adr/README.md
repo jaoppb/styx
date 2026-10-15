@@ -34,3 +34,4 @@ As defined in [`AGENTS.md`](../../AGENTS.md):
 | [0020](0020-recursor-failure-classification-and-qname-rooted-alias-scope.md) | Recursor failure classification and the qname-rooted alias scope | Phase 5 — Recursion | 2026-10-06 | Accepted |
 | [0021](0021-priming-validation-and-one-label-nxdomain-confirmation.md) | Priming validation and one-label NXDOMAIN confirmation | Phase 5 — Recursion | 2026-10-07 | Accepted |
 | [0022](0022-incomplete-alias-chains-and-forwarder-qname-scope.md) | Incomplete alias chains and the forwarder qname scope | Phase 4 — Answer cache | 2026-10-08 | Accepted |
+| [0023](0023-admission-judges-the-response-against-the-clients-question.md) | Admission judges the response against the client's question | Phase 4 — Answer cache | 2026-10-14 | Accepted |

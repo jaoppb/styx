@@ -44,13 +44,10 @@ pub(crate) fn soa_closes_chain(scope: &AnswerScope, soa_owner: &CanonicalName) -
 /// `qtype` owned by the chain's last name, or a denial closed by an SOA that
 /// encloses it. Anything else is a chain that leads nowhere, and served from cache
 /// it would hand a stub a CNAME with no address to follow. A question about the
-/// alias itself (CNAME, DNAME) or about every type (ANY) is complete as answered. A
+/// alias itself (CNAME, DNAME) is complete as answered. A
 /// chain that loops back on itself has no last name, so it is never complete.
 pub(crate) fn chain_is_complete(message: &Message, scope: &AnswerScope, qtype: RecordType) -> bool {
-    if matches!(
-        qtype,
-        RecordType::CNAME | RecordType::DNAME | RecordType::ANY
-    ) {
+    if matches!(qtype, RecordType::CNAME | RecordType::DNAME) {
         return true;
     }
     if scope.is_cyclic() {

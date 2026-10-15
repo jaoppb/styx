@@ -9,7 +9,7 @@ use crate::application::pool::UpstreamPool;
 use crate::application::terminal::TerminalHandler;
 use crate::domain::answer::{AnswerSource, ResolutionOutcome, ResolutionResponse, ResolvedSource};
 use crate::domain::cache::admission::Admission;
-use crate::domain::cache::bailiwick::Bailiwick;
+use crate::domain::cache::admission_request::AdmissionRequest;
 use crate::domain::cache::entry::CacheEntry;
 use crate::domain::cache::error::CacheError;
 use crate::domain::cache::key::CacheKey;
@@ -132,7 +132,6 @@ where
         &self,
         query_id: u16,
         question: &styx_proto::Question,
-        key: &CacheKey,
         deadline: std::time::Instant,
     ) -> Result<ResolutionResponse, PipelineError> {
         let upstream_resp = self.pool.resolve(question, deadline).await?;
@@ -143,12 +142,11 @@ where
             UpstreamKind::Recursor => AnswerSource::Recursion,
         };
 
-        let bailiwick = Bailiwick::of_response(question, &upstream_resp.message);
-        let admission_outcome =
-            self.admission
-                .evaluate(&bailiwick, &upstream_resp.message, answer_source, now);
+        let request = AdmissionRequest::new(question, &upstream_resp.message, answer_source, now)
+            .map_err(|e| PipelineError::Internal(e.to_string()))?;
+        let admission_outcome = self.admission.evaluate(&request);
 
-        let _ = self.cache.admit(key, admission_outcome);
+        let _ = self.cache.admit(request.key(), admission_outcome);
 
         let mut message = upstream_resp.message;
         message.header.id = query_id;
@@ -204,7 +202,7 @@ where
         match self.cache.lookup(&key) {
             Lookup::Hit(entry) => self.handle_cache_hit(ctx.query.header.id, &key, entry),
             Lookup::Miss | Lookup::Expired => {
-                self.resolve_and_admit(ctx.query.header.id, question, &key, deadline)
+                self.resolve_and_admit(ctx.query.header.id, question, deadline)
                     .await
             }
         }
