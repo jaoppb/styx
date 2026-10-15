@@ -68,6 +68,7 @@ impl Admission {
             let mut records = Vec::new();
             self.reject_all_records(message, reason, &mut records);
             outcome.refuse(reason, records);
+            outcome.echoed_questions.clone_from(&message.questions);
             return outcome;
         }
 

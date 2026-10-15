@@ -1,7 +1,7 @@
 //! What admission decided about a response: the entries it let in, and the records
 //! and answers it refused, each with the reason.
 
-use styx_proto::RecordType;
+use styx_proto::{Question, RecordType};
 
 use crate::domain::cache::entry::CacheEntry;
 use crate::domain::cache::key::{CacheKey, CanonicalName};
@@ -70,6 +70,9 @@ pub struct AdmissionOutcome {
     /// record: the reason it was refused for. Counted once per answer, whatever
     /// the number of records it carried.
     pub refusal: Option<RejectReason>,
+    /// The questions the response carried, kept only when it was refused for them
+    /// (`QuestionMismatch`, `MalformedResponse`) so the refusal can say what it saw.
+    pub echoed_questions: Vec<Question>,
 }
 
 impl AdmissionOutcome {
@@ -80,6 +83,7 @@ impl AdmissionOutcome {
             admitted: Vec::new(),
             rejected: Vec::new(),
             refusal: None,
+            echoed_questions: Vec::new(),
         }
     }
 

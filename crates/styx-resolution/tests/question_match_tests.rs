@@ -193,17 +193,28 @@ fn test_a_denial_echoing_another_question_is_not_stored_under_the_clients_key() 
 }
 
 #[test]
-fn test_a_meta_type_question_cannot_become_a_request() {
-    let client = ask("www.example.com.", RecordType::ANY);
-    let message = address_answer(&client, vec![client.clone()]);
+fn test_a_meta_type_question_cannot_become_a_key_or_a_request() {
     let clock = TestClock::new();
-    let built = AdmissionRequest::new(
-        &client,
-        &message,
-        AnswerSource::Upstream,
-        clock.now_monotonic(),
-    );
-    assert!(matches!(built, Err(CacheError::UncacheableQuestion(_))));
+    for qtype in [
+        RecordType::ANY,
+        RecordType::AXFR,
+        RecordType::IXFR,
+        RecordType::OPT,
+    ] {
+        let client = ask("www.example.com.", qtype);
+        let message = address_answer(&client, vec![client.clone()]);
+        assert!(matches!(
+            CacheKey::from_question(&client),
+            Err(CacheError::UncacheableQuestion(_))
+        ));
+        let built = AdmissionRequest::new(
+            &client,
+            &message,
+            AnswerSource::Upstream,
+            clock.now_monotonic(),
+        );
+        assert!(matches!(built, Err(CacheError::UncacheableQuestion(_))));
+    }
 }
 
 #[test]
@@ -296,4 +307,17 @@ fn test_a_malformed_response_is_counted_once_and_stores_nothing() {
     assert_eq!(admitted.count(), 0);
     assert_eq!(cache.stats().rejected_malformed_response, 1);
     assert_eq!(cache.stats().rejected_question_mismatch, 0);
+}
+
+#[test]
+fn test_a_refusal_names_the_questions_the_response_echoed() {
+    let client = ask("www.example.com.", RecordType::A);
+    let echoed = vec![ask("evil.example.net.", RecordType::A)];
+    let message = address_answer(&client, echoed.clone());
+    let outcome = evaluate(&client, &message).expect("request");
+    assert_eq!(outcome.echoed_questions, echoed);
+
+    let matching = address_answer(&client, vec![client.clone()]);
+    let admitted = evaluate(&client, &matching).expect("request");
+    assert!(admitted.echoed_questions.is_empty());
 }

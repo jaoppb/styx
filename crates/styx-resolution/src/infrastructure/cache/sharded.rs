@@ -159,6 +159,7 @@ impl<C: Clock> ShardedAnswerCache<C> {
         if outcome.refusal == Some(RejectReason::QuestionMismatch) {
             tracing::warn!(
                 expected = ?outcome.key,
+                echoed = ?outcome.echoed_questions,
                 records = outcome.rejected.len(),
                 "refused an answer that echoed a question other than the client's"
             );
@@ -167,6 +168,7 @@ impl<C: Clock> ShardedAnswerCache<C> {
         if outcome.refusal == Some(RejectReason::MalformedResponse) {
             tracing::debug!(
                 expected = ?outcome.key,
+                echoed = ?outcome.echoed_questions,
                 records = outcome.rejected.len(),
                 "refused an answer that echoed more than one question"
             );
