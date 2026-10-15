@@ -86,14 +86,14 @@ pub trait AnswerCache: Send + Sync {
     /// If an entry is expired, it is removed and [`Lookup::Expired`] is returned.
     fn lookup(&self, key: &CacheKey) -> Lookup;
 
-    /// Stores admitted cache entries from an [`AdmissionOutcome`].
+    /// Stores admitted cache entries from an [`AdmissionOutcome`] under the key the
+    /// outcome was judged for.
     ///
     /// Returns the count of entries successfully admitted into storage.
     ///
     /// # Errors
     /// Returns [`CacheError`] if byte accounting overflows.
-    fn admit(&self, key: &CacheKey, outcome: AdmissionOutcome)
-        -> Result<AdmittedCount, CacheError>;
+    fn admit(&self, outcome: AdmissionOutcome) -> Result<AdmittedCount, CacheError>;
 
     /// Purges all entries from the cache, returning the total count of removed entries.
     fn purge_all(&self) -> PurgedCount;

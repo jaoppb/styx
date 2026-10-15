@@ -4,7 +4,7 @@
 use styx_proto::RecordType;
 
 use crate::domain::cache::entry::CacheEntry;
-use crate::domain::cache::key::CanonicalName;
+use crate::domain::cache::key::{CacheKey, CanonicalName};
 
 /// The reason a record or response was refused admission into the answer cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -58,8 +58,10 @@ impl RejectedRecord {
 }
 
 /// The outcome of evaluating a response for cache admission.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdmissionOutcome {
+    /// The key the response was judged for, and the one its entries are stored under.
+    pub key: CacheKey,
     /// Admitted entries ready for storage in the answer cache.
     pub admitted: Vec<CacheEntry>,
     /// Records rejected during admission evaluation.
@@ -71,6 +73,16 @@ pub struct AdmissionOutcome {
 }
 
 impl AdmissionOutcome {
+    /// An outcome for `key` that has admitted and refused nothing yet.
+    pub(crate) const fn new(key: CacheKey) -> Self {
+        Self {
+            key,
+            admitted: Vec::new(),
+            rejected: Vec::new(),
+            refusal: None,
+        }
+    }
+
     /// Refuses the whole answer for `reason`, recording each of its `records`.
     pub(crate) fn refuse(&mut self, reason: RejectReason, records: Vec<RejectedRecord>) {
         self.refusal = Some(reason);

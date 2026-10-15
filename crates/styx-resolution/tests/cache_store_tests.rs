@@ -165,7 +165,6 @@ async fn test_capacity_eviction_expired_before_fresh_lru() {
     let admit_record = |name: &str, ttl_secs: u32| {
         let qname = Name::from_ascii(name).expect("qname");
         let question = Question::new(qname.clone(), RecordType::A, RecordClass::In);
-        let key = CacheKey::from_question(&question).expect("key");
 
         let mut msg = Message::response_to(0x1000, question.clone());
         msg.answers.push(ResourceRecord::new(
@@ -184,7 +183,7 @@ async fn test_capacity_eviction_expired_before_fresh_lru() {
         )
         .expect("request");
         let outcome = admission.evaluate(&request);
-        cache.admit(&key, outcome).expect("admit");
+        cache.admit(outcome).expect("admit");
     };
 
     // 1. Populate with 3 entries: k1 (TTL 10), k2 (TTL 100), k3 (TTL 100)
@@ -258,7 +257,7 @@ fn run_worker(c: Arc<ShardedAnswerCache<TestClock>>, clk: Arc<TestClock>, task_i
             continue;
         };
         let outcome = admission.evaluate(&request);
-        let _ = c.admit(&key, outcome);
+        let _ = c.admit(outcome);
         let _ = c.lookup(&key);
     }
 }

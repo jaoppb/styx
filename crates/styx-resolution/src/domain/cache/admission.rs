@@ -46,7 +46,7 @@ impl Admission {
     #[must_use]
     pub fn evaluate(&self, request: &AdmissionRequest<'_>) -> AdmissionOutcome {
         let message = request.message();
-        let mut outcome = AdmissionOutcome::default();
+        let mut outcome = AdmissionOutcome::new(request.key().clone());
 
         if let Some(reason) = self.check_source_eligibility(request.source()) {
             self.reject_all_records(message, reason, &mut outcome.rejected);

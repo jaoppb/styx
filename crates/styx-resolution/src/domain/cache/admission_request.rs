@@ -16,7 +16,7 @@ use crate::domain::cache::key::CacheKey;
 /// The cache key and the bailiwick are derived from the client's question here, once,
 /// so admission judges the response against the question that was asked and the key it
 /// will be stored under cannot disagree with it.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AdmissionRequest<'a> {
     key: CacheKey,
     bailiwick: Bailiwick,
@@ -37,13 +37,32 @@ impl<'a> AdmissionRequest<'a> {
         source: AnswerSource,
         now: Instant,
     ) -> Result<Self, CacheError> {
-        Ok(Self {
-            key: CacheKey::from_question(question)?,
-            bailiwick: Bailiwick::of_response(question, message),
+        Ok(Self::for_key(
+            CacheKey::from_question(question)?,
             message,
             source,
             now,
-        })
+        ))
+    }
+
+    /// Builds the request for `message`, the response to the question `key` stands for.
+    ///
+    /// Takes the key by value so a caller that already derived it for its lookup hands it
+    /// over instead of deriving it a second time.
+    #[must_use]
+    pub fn for_key(
+        key: CacheKey,
+        message: &'a Message,
+        source: AnswerSource,
+        now: Instant,
+    ) -> Self {
+        Self {
+            bailiwick: Bailiwick::of_response(key.qname(), message),
+            key,
+            message,
+            source,
+            now,
+        }
     }
 
     /// The key the response is admitted under, derived from the client's question.

@@ -131,6 +131,7 @@ where
     async fn resolve_and_admit(
         &self,
         query_id: u16,
+        key: CacheKey,
         question: &styx_proto::Question,
         deadline: std::time::Instant,
     ) -> Result<ResolutionResponse, PipelineError> {
@@ -142,11 +143,10 @@ where
             UpstreamKind::Recursor => AnswerSource::Recursion,
         };
 
-        let request = AdmissionRequest::new(question, &upstream_resp.message, answer_source, now)
-            .map_err(|e| PipelineError::Internal(e.to_string()))?;
+        let request = AdmissionRequest::for_key(key, &upstream_resp.message, answer_source, now);
         let admission_outcome = self.admission.evaluate(&request);
 
-        let _ = self.cache.admit(request.key(), admission_outcome);
+        let _ = self.cache.admit(admission_outcome);
 
         let mut message = upstream_resp.message;
         message.header.id = query_id;
@@ -202,7 +202,7 @@ where
         match self.cache.lookup(&key) {
             Lookup::Hit(entry) => self.handle_cache_hit(ctx.query.header.id, &key, entry),
             Lookup::Miss | Lookup::Expired => {
-                self.resolve_and_admit(ctx.query.header.id, question, deadline)
+                self.resolve_and_admit(ctx.query.header.id, key, question, deadline)
                     .await
             }
         }

@@ -95,7 +95,7 @@ impl CacheKey {
     /// letter case, the same type and the same class.
     #[must_use]
     pub fn matches_question(&self, question: &Question) -> bool {
-        self.qname == CanonicalName::canonicalize(&question.qname)
+        self.qname.inner().eq_ignore_case(&question.qname)
             && self.qtype == question.qtype
             && self.qclass == question.qclass
     }

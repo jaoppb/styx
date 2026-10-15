@@ -230,10 +230,7 @@ fn test_a_mismatch_is_counted_once_per_answer_and_stores_nothing() {
     .expect("request");
 
     let admitted = cache
-        .admit(
-            request.key(),
-            Admission::new(TtlPolicy::default()).evaluate(&request),
-        )
+        .admit(Admission::new(TtlPolicy::default()).evaluate(&request))
         .expect("admit");
 
     assert_eq!(admitted.count(), 0);
@@ -241,4 +238,12 @@ fn test_a_mismatch_is_counted_once_per_answer_and_stores_nothing() {
     assert_eq!(cache.stats().rejected_incomplete_chain, 0);
     let key = CacheKey::from_question(&client).expect("key");
     assert_eq!(cache.lookup(&key), Lookup::Miss);
+}
+
+#[test]
+fn test_an_outcome_carries_the_key_it_was_judged_for() {
+    let client = ask("www.example.com.", RecordType::A);
+    let message = address_answer(&client, vec![client.clone()]);
+    let outcome = evaluate(&client, &message).expect("request");
+    assert_eq!(Ok(outcome.key.clone()), CacheKey::from_question(&client));
 }

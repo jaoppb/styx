@@ -142,7 +142,7 @@ impl<C: Clock> ShardedAnswerCache<C> {
     /// Logs and counts what admission refused. An outcome is one answer: forged
     /// records count one each, and an answer refused whole counts once and logs once,
     /// whatever the number of records it carried.
-    fn record_rejections(&self, key: &CacheKey, outcome: &AdmissionOutcome) {
+    fn record_rejections(&self, outcome: &AdmissionOutcome) {
         for rej in &outcome.rejected {
             if rej.reason == RejectReason::OutOfBailiwick {
                 tracing::warn!(owner = %rej.owner, rtype = ?rej.rtype, "rejected out-of-bailiwick record");
@@ -158,7 +158,7 @@ impl<C: Clock> ShardedAnswerCache<C> {
         }
         if outcome.refusal == Some(RejectReason::QuestionMismatch) {
             tracing::warn!(
-                expected = ?key,
+                expected = ?outcome.key,
                 records = outcome.rejected.len(),
                 "refused an answer that echoed a question other than the client's"
             );
@@ -239,12 +239,9 @@ impl<C: Clock> AnswerCache for ShardedAnswerCache<C> {
         }
     }
 
-    fn admit(
-        &self,
-        key: &CacheKey,
-        outcome: AdmissionOutcome,
-    ) -> Result<AdmittedCount, CacheError> {
-        self.record_rejections(key, &outcome);
+    fn admit(&self, outcome: AdmissionOutcome) -> Result<AdmittedCount, CacheError> {
+        self.record_rejections(&outcome);
+        let key = &outcome.key;
 
         if outcome.admitted.is_empty() {
             return Ok(AdmittedCount::new(0));
