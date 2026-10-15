@@ -31,7 +31,7 @@ pub use answer::{
 pub use cache::{
     Admission, AdmissionOutcome, AdmittedCount, AnswerCache, Bailiwick, CacheCapacity, CacheEntry,
     CacheError, CacheKey, CacheStats, CanonicalName, Deadline, DenialKind, DnssecMetadata,
-    HeapBytes, Lookup, MessageFlags, NegativeEntry, PositiveEntry, PurgedCount, RRset,
+    HeapBytes, Lookup, MessageFlags, NegativeEntry, PositiveEntry, PurgedCount, RRset, Refusal,
     RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
 };
 pub use circuit::{CircuitConfig, CircuitState, FailureCount};

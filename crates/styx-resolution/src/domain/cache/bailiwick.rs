@@ -4,7 +4,7 @@
 //! Permitting arbitrary records into the answer cache without bailiwick verification
 //! creates a classic cache-poisoning vulnerability.
 
-use styx_proto::{Message, Question, RecordType, ResourceRecord};
+use styx_proto::{Message, RecordType, ResourceRecord};
 
 use crate::domain::cache::answer_scope::AnswerScope;
 use crate::domain::cache::key::CanonicalName;
@@ -22,25 +22,26 @@ impl Bailiwick {
         Self { zone }
     }
 
-    /// Derives the bailiwick zone of authority from a query question and its response message.
+    /// Derives the bailiwick zone of authority from the canonical query name and its response
+    /// message.
     ///
     /// Determination order:
     /// 1. SOA record in the authority section (its owner is the authoritative zone).
     /// 2. Deepest NS record in the authority section whose owner is at or above the qname.
     /// 3. The query name itself as fallback.
     #[must_use]
-    pub fn of_response(question: &Question, message: &Message) -> Self {
-        let qname_canon = CanonicalName::canonicalize(&question.qname);
-
-        if let Some(zone) = Self::find_soa_zone(&qname_canon, message) {
+    pub fn of_response(qname: &CanonicalName, message: &Message) -> Self {
+        if let Some(zone) = Self::find_soa_zone(qname, message) {
             return Self { zone };
         }
 
-        if let Some(zone) = Self::find_deepest_ns_zone(&qname_canon, message) {
+        if let Some(zone) = Self::find_deepest_ns_zone(qname, message) {
             return Self { zone };
         }
 
-        Self { zone: qname_canon }
+        Self {
+            zone: qname.clone(),
+        }
     }
 
     fn find_soa_zone(qname: &CanonicalName, message: &Message) -> Option<CanonicalName> {

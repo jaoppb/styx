@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use styx_proto::{Message, RData, RecordClass, RecordType, ResourceRecord, Ttl};
 
-use crate::domain::cache::admission_outcome::{AdmissionOutcome, RejectReason, RejectedRecord};
+use crate::domain::cache::admission_outcome::{RejectReason, RejectedRecord, Tally};
 use crate::domain::cache::answer_scope::AnswerScope;
 use crate::domain::cache::bailiwick::Bailiwick;
 use crate::domain::cache::chain_denial::{ends_in_denial, soa_closes_chain};
@@ -66,14 +66,14 @@ impl<'a> SectionAdmission<'a> {
         scope: &AnswerScope,
         message: &Message,
         now: Instant,
-        outcome: &mut AdmissionOutcome,
+        tally: &mut Tally,
     ) -> AdmittedSections {
-        let answers = self.admit_answers(scope, message, now, outcome);
+        let answers = self.admit_answers(scope, message, now, tally);
         if answers.is_empty() {
             return AdmittedSections::default();
         }
-        let authorities = self.admit_authorities(bailiwick, scope, message, now, outcome);
-        let additionals = self.admit_additionals(message, &authorities, now, outcome);
+        let authorities = self.admit_authorities(bailiwick, scope, message, now, tally);
+        let additionals = self.admit_additionals(message, &authorities, now, tally);
         AdmittedSections {
             answers,
             authorities,
@@ -86,17 +86,15 @@ impl<'a> SectionAdmission<'a> {
         scope: &AnswerScope,
         message: &Message,
         now: Instant,
-        outcome: &mut AdmissionOutcome,
+        tally: &mut Tally,
     ) -> Vec<CachedRRset> {
         let mut admitted = Vec::new();
         for raw in group_records(&message.answers) {
             if !scope.permits(&raw.owner, raw.rtype) {
-                outcome
-                    .rejected
-                    .push(raw.rejected(RejectReason::OutOfBailiwick));
+                tally.reject(raw.rejected(RejectReason::OutOfBailiwick));
                 continue;
             }
-            admitted.extend(self.store(raw, now, outcome));
+            admitted.extend(self.store(raw, now, tally));
         }
         admitted
     }
@@ -107,21 +105,19 @@ impl<'a> SectionAdmission<'a> {
         scope: &AnswerScope,
         message: &Message,
         now: Instant,
-        outcome: &mut AdmissionOutcome,
+        tally: &mut Tally,
     ) -> Vec<CachedRRset> {
         let denial = ends_in_denial(message, scope);
         let mut admitted = Vec::new();
         for mut raw in group_records(&message.authorities) {
             if !authority_permitted(bailiwick, scope, &raw.owner, raw.rtype, denial) {
-                outcome
-                    .rejected
-                    .push(raw.rejected(RejectReason::OutOfBailiwick));
+                tally.reject(raw.rejected(RejectReason::OutOfBailiwick));
                 continue;
             }
             if denial && raw.rtype == RecordType::SOA {
                 raw.ttl = self.negative_ttl(&raw);
             }
-            admitted.extend(self.store(raw, now, outcome));
+            admitted.extend(self.store(raw, now, tally));
         }
         admitted
     }
@@ -143,7 +139,7 @@ impl<'a> SectionAdmission<'a> {
         message: &Message,
         authorities: &[CachedRRset],
         now: Instant,
-        outcome: &mut AdmissionOutcome,
+        tally: &mut Tally,
     ) -> Vec<CachedRRset> {
         let name_servers: Vec<CanonicalName> = authorities
             .iter()
@@ -153,34 +149,25 @@ impl<'a> SectionAdmission<'a> {
         let mut admitted = Vec::new();
         for raw in group_records(&message.additionals) {
             if !is_glue(&raw.owner, raw.rtype, &name_servers) {
-                outcome
-                    .rejected
-                    .push(raw.rejected(RejectReason::OutOfBailiwick));
+                tally.reject(raw.rejected(RejectReason::OutOfBailiwick));
                 continue;
             }
-            admitted.extend(self.store(raw, now, outcome));
+            admitted.extend(self.store(raw, now, tally));
         }
         admitted
     }
 
     /// Turns an RRset that passed its section's rule into a cache RRset, or records
     /// why it cannot be stored: a zero TTL is served once and never kept.
-    fn store(
-        &self,
-        raw: RawRRset,
-        now: Instant,
-        outcome: &mut AdmissionOutcome,
-    ) -> Option<CachedRRset> {
+    fn store(&self, raw: RawRRset, now: Instant, tally: &mut Tally) -> Option<CachedRRset> {
         if raw.ttl == Ttl::ZERO {
-            outcome.rejected.push(raw.rejected(RejectReason::ZeroTtl));
+            tally.reject(raw.rejected(RejectReason::ZeroTtl));
             return None;
         }
         let (owner, rtype) = (raw.owner.clone(), raw.rtype);
         let cached = self.to_cached_rrset(raw, now);
         if cached.is_none() {
-            outcome
-                .rejected
-                .push(RejectedRecord::new(owner, rtype, RejectReason::Unstorable));
+            tally.reject(RejectedRecord::new(owner, rtype, RejectReason::Unstorable));
         }
         cached
     }

@@ -21,6 +21,12 @@ pub struct CacheStats {
     /// once per answer whatever the number of its records, and including an answer
     /// whose records were also refused as out of bailiwick.
     pub rejected_incomplete_chain: u64,
+    /// Number of whole answers refused because they echoed a question other than the
+    /// client's, counted once per answer.
+    pub rejected_question_mismatch: u64,
+    /// Number of whole answers refused because they echoed more than one question,
+    /// counted once per answer.
+    pub rejected_multiple_questions: u64,
     /// Number of entries removed due to TTL expiration.
     pub expired: u64,
     /// Number of fresh entries evicted due to capacity bounds.
@@ -40,6 +46,8 @@ pub struct AtomicCacheCounters {
     admitted: AtomicU64,
     rejected_out_of_bailiwick: AtomicU64,
     rejected_incomplete_chain: AtomicU64,
+    rejected_question_mismatch: AtomicU64,
+    rejected_multiple_questions: AtomicU64,
     expired: AtomicU64,
     evicted: AtomicU64,
 }
@@ -83,6 +91,18 @@ impl AtomicCacheCounters {
             .fetch_add(count, Ordering::Relaxed);
     }
 
+    /// Increments the question-mismatch refusal counter by `count` answers.
+    pub fn inc_rejected_question_mismatch(&self, count: u64) {
+        self.rejected_question_mismatch
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Increments the multiple-questions refusal counter by `count` answers.
+    pub fn inc_rejected_multiple_questions(&self, count: u64) {
+        self.rejected_multiple_questions
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
     /// Increments the expired entry counter by `count`.
     pub fn inc_expired(&self, count: u64) {
         self.expired.fetch_add(count, Ordering::Relaxed);
@@ -103,6 +123,8 @@ impl AtomicCacheCounters {
             admitted: self.admitted.load(Ordering::Relaxed),
             rejected_out_of_bailiwick: self.rejected_out_of_bailiwick.load(Ordering::Relaxed),
             rejected_incomplete_chain: self.rejected_incomplete_chain.load(Ordering::Relaxed),
+            rejected_question_mismatch: self.rejected_question_mismatch.load(Ordering::Relaxed),
+            rejected_multiple_questions: self.rejected_multiple_questions.load(Ordering::Relaxed),
             expired: self.expired.load(Ordering::Relaxed),
             evicted: self.evicted.load(Ordering::Relaxed),
             entries,

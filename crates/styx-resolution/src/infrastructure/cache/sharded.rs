@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 
 use styx_core::Clock;
 
-use crate::domain::cache::admission_outcome::{AdmissionOutcome, RejectReason};
+use crate::domain::cache::admission_outcome::{AdmissionOutcome, AdmittedEntries, RejectReason};
 use crate::domain::cache::bytes::HeapBytes;
 use crate::domain::cache::capacity::CacheCapacity;
 use crate::domain::cache::entry::CacheEntry;
@@ -143,18 +143,48 @@ impl<C: Clock> ShardedAnswerCache<C> {
     /// records count one each, and an answer refused whole counts once and logs once,
     /// whatever the number of records it carried.
     fn record_rejections(&self, outcome: &AdmissionOutcome) {
-        for rej in &outcome.rejected {
-            if rej.reason == RejectReason::OutOfBailiwick {
-                tracing::warn!(owner = %rej.owner, rtype = ?rej.rtype, "rejected out-of-bailiwick record");
-                self.counters.inc_rejected_out_of_bailiwick(1);
+        for rej in outcome.rejected() {
+            match rej.reason {
+                RejectReason::OutOfBailiwick => {
+                    tracing::warn!(owner = %rej.owner, rtype = ?rej.rtype, "rejected out-of-bailiwick record");
+                    self.counters.inc_rejected_out_of_bailiwick(1);
+                }
+                RejectReason::ErrorResponse => {
+                    tracing::debug!(owner = %rej.owner, rtype = ?rej.rtype, "dropped a record carried by an error reply");
+                }
+                _ => {}
             }
         }
-        if outcome.refusal == Some(RejectReason::IncompleteChain) {
-            tracing::debug!(
-                records = outcome.rejected.len(),
-                "refused an answer whose alias chain leads nowhere"
-            );
-            self.counters.inc_rejected_incomplete_chain(1);
+        let Some(refusal) = outcome.refusal() else {
+            return;
+        };
+        match refusal.reason() {
+            RejectReason::IncompleteChain => {
+                tracing::debug!(
+                    records = outcome.rejected().len(),
+                    "refused an answer whose alias chain leads nowhere"
+                );
+                self.counters.inc_rejected_incomplete_chain(1);
+            }
+            RejectReason::QuestionMismatch => {
+                tracing::debug!(
+                    expected = ?outcome.key(),
+                    echoed = ?refusal.echoed(),
+                    records = outcome.rejected().len(),
+                    "refused an answer that echoed a question other than the client's"
+                );
+                self.counters.inc_rejected_question_mismatch(1);
+            }
+            RejectReason::MultipleQuestions => {
+                tracing::debug!(
+                    expected = ?outcome.key(),
+                    echoed = ?refusal.echoed(),
+                    records = outcome.rejected().len(),
+                    "refused an answer that echoed more than one question"
+                );
+                self.counters.inc_rejected_multiple_questions(1);
+            }
+            _ => {}
         }
     }
 
@@ -231,14 +261,12 @@ impl<C: Clock> AnswerCache for ShardedAnswerCache<C> {
         }
     }
 
-    fn admit(
-        &self,
-        key: &CacheKey,
-        outcome: AdmissionOutcome,
-    ) -> Result<AdmittedCount, CacheError> {
+    fn admit(&self, outcome: AdmissionOutcome) -> Result<AdmittedCount, CacheError> {
         self.record_rejections(&outcome);
+        let AdmittedEntries { key, entries } = outcome.into_admitted();
+        let key = &key;
 
-        if outcome.admitted.is_empty() {
+        if entries.is_empty() {
             return Ok(AdmittedCount::new(0));
         }
 
@@ -253,7 +281,7 @@ impl<C: Clock> AnswerCache for ShardedAnswerCache<C> {
         let now = self.clock.now_monotonic();
         let mut count: usize = 0;
 
-        for entry in outcome.admitted {
+        for entry in entries {
             let entry_bytes = entry.heap_size();
             let new_bytes = match guard.bytes.checked_add(entry_bytes) {
                 Ok(b) => b,

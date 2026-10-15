@@ -13,10 +13,10 @@ use styx_proto::{
     ResponseCode, Ttl,
 };
 use styx_resolution::{
-    Admission, AllowAllFilter, AnswerCache, AnswerSource, Bailiwick, CacheCapacity, CacheEntry,
-    CacheKey, CacheStage, CircuitConfig, DiscardObserver, Do53Forwarder, EdnsBufferSize, HeapBytes,
-    Lookup, NoLocalRecords, OrderedFailover, PoolMember, PositiveEntry, ProbeConfig, ProbePolicy,
-    RejectReason, ShardedAnswerCache, TtlPolicy, UpstreamPool,
+    Admission, AdmissionRequest, AllowAllFilter, AnswerCache, AnswerSource, CacheCapacity,
+    CacheEntry, CacheKey, CacheStage, CircuitConfig, DiscardObserver, Do53Forwarder,
+    EdnsBufferSize, HeapBytes, Lookup, NoLocalRecords, OrderedFailover, PoolMember, PositiveEntry,
+    ProbeConfig, ProbePolicy, RejectReason, ShardedAnswerCache, TtlPolicy, UpstreamPool,
 };
 
 fn make_query(name: &str, rtype: RecordType) -> Message {
@@ -165,7 +165,6 @@ async fn test_capacity_eviction_expired_before_fresh_lru() {
     let admit_record = |name: &str, ttl_secs: u32| {
         let qname = Name::from_ascii(name).expect("qname");
         let question = Question::new(qname.clone(), RecordType::A, RecordClass::In);
-        let key = CacheKey::from_question(&question).expect("key");
 
         let mut msg = Message::response_to(0x1000, question.clone());
         msg.answers.push(ResourceRecord::new(
@@ -176,14 +175,15 @@ async fn test_capacity_eviction_expired_before_fresh_lru() {
             RData::A(Ipv4Addr::new(1, 2, 3, 4)),
         ));
 
-        let bailiwick = Bailiwick::of_response(&question, &msg);
-        let outcome = admission.evaluate(
-            &bailiwick,
+        let request = AdmissionRequest::new(
+            &question,
             &msg,
             AnswerSource::Upstream,
             clock.now_monotonic(),
-        );
-        cache.admit(&key, outcome).expect("admit");
+        )
+        .expect("request");
+        let outcome = admission.evaluate(request);
+        cache.admit(outcome).expect("admit");
     };
 
     // 1. Populate with 3 entries: k1 (TTL 10), k2 (TTL 100), k3 (TTL 100)
@@ -251,14 +251,13 @@ fn run_worker(c: Arc<ShardedAnswerCache<TestClock>>, clk: Arc<TestClock>, task_i
             RData::A(Ipv4Addr::new(10, 0, task_idx, i)),
         ));
 
-        let bailiwick = Bailiwick::of_response(&question, &msg);
-        let outcome = admission.evaluate(
-            &bailiwick,
-            &msg,
-            AnswerSource::Upstream,
-            clk.now_monotonic(),
-        );
-        let _ = c.admit(&key, outcome);
+        let Ok(request) =
+            AdmissionRequest::new(&question, &msg, AnswerSource::Upstream, clk.now_monotonic())
+        else {
+            continue;
+        };
+        let outcome = admission.evaluate(request);
+        let _ = c.admit(outcome);
         let _ = c.lookup(&key);
     }
 }
@@ -331,20 +330,21 @@ fn test_cross_zone_cname_chain_is_admitted_whole() {
         RData::A(Ipv4Addr::new(6, 6, 6, 6)),
     ));
 
-    let bailiwick = Bailiwick::of_response(&question, &msg);
-    let outcome = admission.evaluate(
-        &bailiwick,
+    let request = AdmissionRequest::new(
+        &question,
         &msg,
         AnswerSource::Recursion,
         clock.now_monotonic(),
-    );
+    )
+    .expect("request");
+    let outcome = admission.evaluate(request);
 
-    assert_eq!(outcome.admitted.len(), 1, "one composite entry");
-    let Some(CacheEntry::Positive(PositiveEntry::Message(cached))) = outcome.admitted.first()
+    assert_eq!(outcome.admitted().len(), 1, "one composite entry");
+    let Some(CacheEntry::Positive(PositiveEntry::Message(cached))) = outcome.admitted().first()
     else {
         panic!(
             "expected a composite message entry, got {:?}",
-            outcome.admitted
+            outcome.admitted()
         );
     };
     let owners: Vec<String> = cached
@@ -354,8 +354,8 @@ fn test_cross_zone_cname_chain_is_admitted_whole() {
         .collect();
     assert_eq!(owners, ["www.example.com.", "x.cdn.net."]);
 
-    assert_eq!(outcome.rejected.len(), 1);
-    let rejected = outcome.rejected.first().expect("one rejection");
+    assert_eq!(outcome.rejected().len(), 1);
+    let rejected = outcome.rejected().first().expect("one rejection");
     assert_eq!(rejected.reason, RejectReason::OutOfBailiwick);
     assert_eq!(rejected.owner.to_string(), "evil.example.");
 }
@@ -396,16 +396,17 @@ fn test_in_zone_cname_off_the_chain_cannot_poison_a_foreign_name() {
         RData::Ns(Name::from_ascii("ns.example.com.").expect("ns")),
     ));
 
-    let bailiwick = Bailiwick::of_response(&question, &msg);
-    let outcome = admission.evaluate(
-        &bailiwick,
+    let request = AdmissionRequest::new(
+        &question,
         &msg,
         AnswerSource::Recursion,
         clock.now_monotonic(),
-    );
+    )
+    .expect("request");
+    let outcome = admission.evaluate(request);
 
     assert!(outcome
-        .rejected
+        .rejected()
         .iter()
         .any(|rejected| rejected.owner.to_string() == "www.bank.com."
             && rejected.reason == RejectReason::OutOfBailiwick));
@@ -459,16 +460,16 @@ fn chain_message(
 fn evaluate_chain(
     question: &Question,
     msg: &Message,
-) -> styx_resolution::domain::cache::AdmissionOutcome {
+) -> Result<styx_resolution::domain::cache::AdmissionOutcome, styx_resolution::CacheError> {
     let clock = TestClock::new();
     let admission = Admission::new(TtlPolicy::default());
-    let bailiwick = Bailiwick::of_response(question, msg);
-    admission.evaluate(
-        &bailiwick,
+    let request = AdmissionRequest::new(
+        question,
         msg,
         AnswerSource::Recursion,
         clock.now_monotonic(),
-    )
+    )?;
+    Ok(admission.evaluate(request))
 }
 
 /// A cross-zone chain that ends in NXDOMAIN is cached whole, under the qname only:
@@ -478,16 +479,16 @@ fn evaluate_chain(
 fn test_cross_zone_chain_ending_in_nxdomain_is_cached_under_the_qname_only() {
     let (question, msg) = chain_message(ResponseCode::NXDOMAIN, "bank.com.", false);
 
-    let outcome = evaluate_chain(&question, &msg);
+    let outcome = evaluate_chain(&question, &msg).expect("request");
 
     assert_eq!(
-        outcome.admitted.len(),
+        outcome.admitted().len(),
         1,
         "one composite entry, nothing for the target"
     );
-    let Some(CacheEntry::Positive(PositiveEntry::Message(cached))) = outcome.admitted.first()
+    let Some(CacheEntry::Positive(PositiveEntry::Message(cached))) = outcome.admitted().first()
     else {
-        panic!("expected a composite entry, got {:?}", outcome.admitted);
+        panic!("expected a composite entry, got {:?}", outcome.admitted());
     };
     assert_eq!(cached.rcode(), ResponseCode::NXDOMAIN);
     assert_eq!(cached.answer().len(), 1);
@@ -497,7 +498,7 @@ fn test_cross_zone_chain_ending_in_nxdomain_is_cached_under_the_qname_only() {
         .map(|rrset| rrset.owner().to_string())
         .collect();
     assert_eq!(authority, ["bank.com."]);
-    assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+    assert!(outcome.rejected().is_empty(), "{:?}", outcome.rejected());
 }
 
 /// The SOA must enclose the name the chain ends at: another zone's SOA does not close
@@ -507,12 +508,12 @@ fn test_cross_zone_chain_ending_in_nxdomain_is_cached_under_the_qname_only() {
 fn test_chain_denial_with_an_unrelated_soa_is_not_admitted() {
     let (question, msg) = chain_message(ResponseCode::NXDOMAIN, "attacker.org.", false);
 
-    let outcome = evaluate_chain(&question, &msg);
+    let outcome = evaluate_chain(&question, &msg).expect("request");
 
-    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
+    assert!(outcome.admitted().is_empty(), "{:?}", outcome.admitted());
     let reason_of = |owner: &str| {
         outcome
-            .rejected
+            .rejected()
             .iter()
             .find(|rejected| rejected.owner.to_string() == owner)
             .map(|rejected| rejected.reason)
@@ -547,34 +548,41 @@ fn test_an_error_rcode_is_not_refused_as_an_incomplete_chain() {
             RData::Ns(name("ns.example.com.")),
         ));
 
-        let outcome = evaluate_chain(&question, &msg);
+        let outcome = evaluate_chain(&question, &msg).expect("request");
 
-        assert!(outcome.admitted.is_empty(), "{rcode:?}");
+        assert!(outcome.admitted().is_empty(), "{rcode:?}");
+        assert_eq!(outcome.refusal(), None, "{rcode:?}");
         assert!(
-            outcome.rejected.is_empty(),
+            outcome
+                .rejected()
+                .iter()
+                .all(|r| r.reason == RejectReason::ErrorResponse),
             "{rcode:?}: {:?}",
-            outcome.rejected
+            outcome.rejected()
         );
     }
 }
 
 /// A response with no question cannot be shown to answer anything, so a dangling
 /// alias in it is refused rather than admitted on the strength of the zone name, and
-/// as the malformed response it is, not as an incomplete chain.
+/// as a question mismatch, not as an incomplete chain.
 #[test]
 fn test_a_response_without_a_question_is_refused() {
     let (question, mut msg) = chain_message(ResponseCode::NOERROR, "bank.com.", false);
     msg.authorities.clear();
     msg.questions.clear();
 
-    let outcome = evaluate_chain(&question, &msg);
+    let outcome = evaluate_chain(&question, &msg).expect("request");
 
-    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
+    assert!(outcome.admitted().is_empty(), "{:?}", outcome.admitted());
     assert!(outcome
-        .rejected
+        .rejected()
         .iter()
-        .any(|rejected| rejected.reason == RejectReason::MalformedResponse));
-    assert_eq!(outcome.refusal, Some(RejectReason::MalformedResponse));
+        .any(|rejected| rejected.reason == RejectReason::QuestionMismatch));
+    assert_eq!(
+        outcome.refusal_reason(),
+        Some(RejectReason::QuestionMismatch)
+    );
 }
 
 /// An alias loop leads nowhere: data owned by a name inside the loop, or an SOA
@@ -605,14 +613,14 @@ fn test_a_cyclic_alias_chain_is_refused() {
         RData::A(Ipv4Addr::new(192, 0, 2, 7)),
     ));
 
-    let outcome = evaluate_chain(&question, &msg);
+    let outcome = evaluate_chain(&question, &msg).expect("request");
 
-    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
+    assert!(outcome.admitted().is_empty(), "{:?}", outcome.admitted());
     assert!(outcome
-        .rejected
+        .rejected()
         .iter()
         .all(|rejected| rejected.reason == RejectReason::IncompleteChain));
-    assert_eq!(outcome.rejected.len(), 3);
+    assert_eq!(outcome.rejected().len(), 3);
 }
 
 /// A foreign SOA is a chain's ending only when the answer is a denial: beside real
@@ -621,10 +629,10 @@ fn test_a_cyclic_alias_chain_is_refused() {
 fn test_a_foreign_soa_beside_data_is_not_a_chain_ending() {
     let (question, msg) = chain_message(ResponseCode::NOERROR, "bank.com.", true);
 
-    let outcome = evaluate_chain(&question, &msg);
+    let outcome = evaluate_chain(&question, &msg).expect("request");
 
     assert!(outcome
-        .rejected
+        .rejected()
         .iter()
         .any(|rejected| rejected.owner.to_string() == "bank.com."
             && rejected.reason == RejectReason::OutOfBailiwick));
@@ -639,13 +647,16 @@ fn test_zero_ttl_closing_soa_leaves_no_chain_without_an_ending() {
         record.ttl = Ttl::ZERO;
     }
 
-    let outcome = evaluate_chain(&question, &msg);
+    let outcome = evaluate_chain(&question, &msg).expect("request");
 
-    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
-    assert_eq!(outcome.refusal, Some(RejectReason::IncompleteChain));
+    assert!(outcome.admitted().is_empty(), "{:?}", outcome.admitted());
+    assert_eq!(
+        outcome.refusal_reason(),
+        Some(RejectReason::IncompleteChain)
+    );
     let reason_of = |rtype: RecordType| {
         outcome
-            .rejected
+            .rejected()
             .iter()
             .find(|rejected| rejected.rtype == rtype)
             .map(|rejected| rejected.reason)
@@ -689,18 +700,21 @@ fn dangling_chain_with_zone_records() -> (Question, Message) {
 fn test_refused_answer_does_not_report_legitimate_authority_and_glue_as_forgery() {
     let (question, msg) = dangling_chain_with_zone_records();
 
-    let outcome = evaluate_chain(&question, &msg);
+    let outcome = evaluate_chain(&question, &msg).expect("request");
 
-    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
-    assert_eq!(outcome.refusal, Some(RejectReason::IncompleteChain));
-    assert_eq!(outcome.rejected.len(), 3);
+    assert!(outcome.admitted().is_empty(), "{:?}", outcome.admitted());
+    assert_eq!(
+        outcome.refusal_reason(),
+        Some(RejectReason::IncompleteChain)
+    );
+    assert_eq!(outcome.rejected().len(), 3);
     assert!(
         outcome
-            .rejected
+            .rejected()
             .iter()
             .all(|rejected| rejected.reason == RejectReason::IncompleteChain),
         "{:?}",
-        outcome.rejected
+        outcome.rejected()
     );
 }
 
@@ -717,10 +731,10 @@ fn test_refused_answer_still_reports_a_foreign_additional_as_forgery() {
         RData::A(Ipv4Addr::new(192, 0, 2, 66)),
     ));
 
-    let outcome = evaluate_chain(&question, &msg);
+    let outcome = evaluate_chain(&question, &msg).expect("request");
 
     let forged: Vec<String> = outcome
-        .rejected
+        .rejected()
         .iter()
         .filter(|rejected| rejected.reason == RejectReason::OutOfBailiwick)
         .map(|rejected| rejected.owner.to_string())
@@ -728,20 +742,20 @@ fn test_refused_answer_still_reports_a_foreign_additional_as_forgery() {
     assert_eq!(forged, ["ns1.other.net."]);
 }
 
-/// Asking for every type, or for the alias itself (CNAME or DNAME), is complete as
-/// answered; and a DNAME is not an ending for an address question either.
+/// Asking for the alias itself (CNAME or DNAME) is complete as answered; and a DNAME is
+/// not an ending for an address question either.
 #[test]
-fn test_any_and_alias_questions_are_not_refused_as_incomplete() {
-    for qtype in [RecordType::ANY, RecordType::CNAME, RecordType::DNAME] {
+fn test_alias_questions_are_not_refused_as_incomplete() {
+    for qtype in [RecordType::CNAME, RecordType::DNAME] {
         let (_, mut msg) = chain_message(ResponseCode::NOERROR, "example.com.", false);
         msg.authorities.clear();
         let question = Question::new(name("www.example.com."), qtype, RecordClass::In);
         msg.questions = vec![question.clone()];
 
-        let outcome = evaluate_chain(&question, &msg);
+        let outcome = evaluate_chain(&question, &msg).expect("request");
 
-        assert_eq!(outcome.refusal, None, "{qtype:?}");
-        assert_eq!(outcome.admitted.len(), 1, "{qtype:?}");
+        assert_eq!(outcome.refusal_reason(), None, "{qtype:?}");
+        assert_eq!(outcome.admitted().len(), 1, "{qtype:?}");
     }
 }
 
@@ -761,8 +775,11 @@ fn test_dname_without_its_synthesized_cname_is_refused() {
         )),
     ));
 
-    let outcome = evaluate_chain(&question, &msg);
+    let outcome = evaluate_chain(&question, &msg).expect("request");
 
-    assert!(outcome.admitted.is_empty(), "{:?}", outcome.admitted);
-    assert_eq!(outcome.refusal, Some(RejectReason::IncompleteChain));
+    assert!(outcome.admitted().is_empty(), "{:?}", outcome.admitted());
+    assert_eq!(
+        outcome.refusal_reason(),
+        Some(RejectReason::IncompleteChain)
+    );
 }
