@@ -394,18 +394,18 @@ class Admission {
     -TtlPolicy ttl
     +new(TtlPolicy) Admission
     +ttl() &TtlPolicy
-    +evaluate(&AdmissionRequest) AdmissionOutcome
+    +evaluate(AdmissionRequest) AdmissionOutcome
+    -judge(&AdmissionRequest, &mut Tally)
     -check_source_eligibility(AnswerSource) Option~RejectReason~
-    -check_question(&AdmissionRequest) Option~RejectReason~
-    -evaluate_positive(&AdmissionRequest, &mut AdmissionOutcome)
+    -evaluate_positive(&AdmissionRequest, &mut Tally)
     -survivors_complete(&Bailiwick, &CanonicalName, RecordType, &Message, &AdmittedSections, Instant) bool
-    -push_positive(&Message, AdmittedSections, Instant, &mut AdmissionOutcome)
+    -push_positive(&Message, AdmittedSections, Instant, &mut Tally)
 }
 
 class SectionAdmission {
     <<pub(crate)>>
     -TtlPolicy ttl
-    +admit(&Bailiwick, &AnswerScope, &Message, Instant, &mut AdmissionOutcome) AdmittedSections
+    +admit(&Bailiwick, &AnswerScope, &Message, Instant, &mut Tally) AdmittedSections
 }
 
 class AdmittedSections {
@@ -417,9 +417,20 @@ class AdmittedSections {
 }
 
 class AdmissionOutcome {
-    +Vec~CacheEntry~ admitted
-    +Vec~RejectedRecord~ rejected
-    +Option~RejectReason~ refusal
+    -CacheKey key
+    -Tally tally
+    +key() &CacheKey
+    +admitted() &[CacheEntry]
+    +rejected() &[RejectedRecord]
+    +refusal() Option~&Refusal~
+    +refusal_reason() Option~RejectReason~
+}
+
+class Refusal {
+    -RejectReason reason
+    -Arc~[Question]~ echoed
+    +reason() RejectReason
+    +echoed() &[Question]
 }
 
 class RejectedRecord {
@@ -437,10 +448,11 @@ class RejectReason {
     MalformedDenial
     NoSoaInDenial
     IncompleteChain
-    MalformedResponse
+    MultipleQuestions
     QuestionMismatch
     Unstorable
     InadmissibleSource
+    ErrorResponse
 }
 
 class AnswerSource {
@@ -603,6 +615,7 @@ Bailiwick "1" ..> "1" AnswerScope : derives
 Admission "1" --> "1" AdmissionOutcome : produces
 Admission "1" ..> "1" AnswerSource : rejects forged
 AdmissionOutcome "1" o-- "0..*" RejectedRecord : rejected
+AdmissionOutcome "1" o-- "0..1" Refusal : refusal
 RejectedRecord "1" --> "1" RejectReason : why
 AnswerCache <|.. ShardedAnswerCache : implements
 AnswerCache "1" --> "1" Lookup : returns
@@ -872,6 +885,7 @@ styx-resolution/
         chain_denial.rs    pub(crate) predicates only: ends_in_denial, soa_closes_chain,
                            chain_is_complete (imports nothing from admission)
         admission_outcome.rs  AdmissionOutcome, RejectedRecord, RejectReason
+        refusal.rs            Refusal, check_question
         section_admission.rs  SectionAdmission, AdmittedSections, label_refused
                            (private mod; RawRRset, authority_permitted, is_glue)
         admission.rs       Admission (AnswerSource imported from domain::answer)
@@ -1192,16 +1206,18 @@ client query
 
 1. **Responsibility**: the complete answer to "may this be cached at all?", of which the
    bailiwick rule is one clause.
-2. **`evaluate(&self, request: &AdmissionRequest<'_>) -> AdmissionOutcome`** *(amendment, ADR 0023)*:
-   `AdmissionRequest::new(question, message, source, now)` derives the `CacheKey` and the
-   `Bailiwick` from the client's question, so a response is judged against the question
-   that was asked. A response with more than one question is refused whole as
-   `MalformedResponse` (RFC 9619), one with none or a different one as `QuestionMismatch`,
-   for NOERROR and NXDOMAIN and before the denial/positive split; any other rcode returns
-   before the check with nothing admitted. The returned `AdmissionOutcome` carries the
-   `CacheKey` it was judged for and, on those two refusals, the questions the response
-   echoed.
-   - Refuse outright (`AdmissionOutcome::refuse`, so `refusal` is set) when `source` is
+2. **`evaluate(&self, request: AdmissionRequest<'_>) -> AdmissionOutcome`** *(amendment, ADR 0023)*:
+   `AdmissionRequest::new(question, message, source, now)` is the only constructor and
+   derives the `CacheKey` from the client's question, so a response is judged against the
+   question that was asked; the bailiwick is derived only on the positive path. The
+   request is taken by value so its key moves into the outcome. `check_question`
+   (`refusal.rs`, shared with `CacheStage`) refuses a response with more than one question
+   whole as `MultipleQuestions`, one with none or a different one as `QuestionMismatch`,
+   for NOERROR and NXDOMAIN and before the denial/positive split. Any other rcode is never
+   judged by it: its records are recorded as rejected with `ErrorResponse`, with no
+   refusal, and nothing is admitted. The returned `AdmissionOutcome` carries the
+   `CacheKey` it was judged for and, as a `Refusal`, the questions the response echoed.
+   - Refuse outright (`Tally::refuse`, so `refusal` is set) when `source` is
      `AnswerSource::LocalRecord` or `AnswerSource::Blocked` → every record rejected with
      `RejectReason::ForgedAnswer`. The test is the private helper
      `check_source_eligibility(&self, source: AnswerSource) -> Option<RejectReason>`.
@@ -1216,8 +1232,8 @@ client query
      the block does not apply; and blocked replies carry a deliberately short TTL so
      unblocking takes effect quickly, which caching would defeat.
    - `check_question` refuses a response with more than one question as
-     `RejectReason::MalformedResponse` (RFC 9619), and one with none, or another than the
-     client's, as `RejectReason::QuestionMismatch` (`AdmissionOutcome::refuse`), for NOERROR
+     `RejectReason::MultipleQuestions` (the conservative reading of RFC 9619), and one with
+     none, or another than the client's, as `RejectReason::QuestionMismatch`, for NOERROR
      and NXDOMAIN only. An error rcode admits nothing and is not judged.
    - Before admitting any record of such a response, ask `chain_is_complete` for the
      question's type. On failure the answer is refused whole as
@@ -1245,12 +1261,17 @@ client query
    - Decide RRset-vs-message shape: an answer that reduces to one RRset of the queried
      type becomes a `CachedRRset`; anything else — a CNAME chain, a referral-shaped
      response — becomes a `CachedMessage`.
-3. **`AdmissionOutcome`** (`admission_outcome.rs`, all fields `pub`): the admitted entries,
-   the rejected records with reasons, and `refusal: Option<RejectReason>`, set when the
-   answer was refused whole rather than record by record. The rejection list drives the
+3. **`AdmissionOutcome`** (`admission_outcome.rs`, all fields private): the key it was judged
+   for, the admitted entries, the rejected records with reasons, and `refusal:
+   Option<Refusal>`, set when the answer was refused whole rather than record by record.
+   A `Refusal` is the reason plus the echoed questions (`Arc<[Question]>`), built in one
+   step. Everything is read through accessors, and `AnswerCache::admit` consumes the
+   outcome, so it cannot be stored under another key. While evaluating, the entries,
+   rejections and refusal accumulate in the crate-private `Tally`, which the outcome takes
+   together with the key at the end. The rejection list drives the
    `rejected_out_of_bailiwick` counter and the store-introspection tests; `refusal`
-   drives `rejected_incomplete_chain`, so an answer counts once however many records it
-   carried. `refuse(&mut self, reason, records)` is `pub(crate)`.
+   drives `rejected_incomplete_chain`, `rejected_question_mismatch` and
+   `rejected_multiple_questions`, so an answer counts once however many records it carried.
 4. **`Admission` accessors**: `ttl(&self) -> &TtlPolicy`.
 5. **Constraints**: `Admission` is the **only** path into the store. The `AnswerCache`
    trait accepts an `AdmissionOutcome`, never a raw `Message`, so there is no way to
@@ -1340,9 +1361,10 @@ client query
 9. **Instrumentation**: `tracing` spans on `lookup` and `admit`; a `warn`-level event
    whenever a record is rejected as out of bailiwick, because that is either a broken
    upstream or an attack and either way somebody should be able to see it.
-   `record_rejections` counts `rejected_out_of_bailiwick` once per forged record, and when
-   `AdmissionOutcome::refusal` is `IncompleteChain` it counts `rejected_incomplete_chain`
-   and logs at `debug` once per answer, with the number of records.
+   `record_rejections` counts `rejected_out_of_bailiwick` once per forged record, and for a
+   refusal of `IncompleteChain`, `QuestionMismatch` or `MultipleQuestions` it counts the
+   matching counter and logs at `debug` once per answer, with the number of records (and,
+   for the two question reasons, the echoed questions).
 10. **Constraints**: no lock held across an `await`; no `unwrap`/`expect` on lock results
    (poisoning is handled explicitly and degrades to a miss); no I/O of any kind —
    arch-lint's `no-sync-io` applies.
@@ -1382,10 +1404,16 @@ client query
      `ResolvedSource::CacheHit`.
    - On `Lookup::Miss` or `Lookup::Expired`, resolve through `self.pool.resolve(question)`.
    - Map upstream kind to `AnswerSource` (`Forwarder` → `Upstream`, `Recursor` → `Recursion`),
-     build an `AdmissionRequest::for_key` from the `CacheKey` already derived for the lookup
-     (which derives `Bailiwick::of_response` from its qname), evaluate admission via
-     `self.admission.evaluate(&request)`, `self.cache.admit(admission_outcome)`, set query ID, and return `ResolutionOutcome::Resolved`
-     with `ResolvedSource::Upstream` or `ResolvedSource::Recursion`.
+     build `AdmissionRequest::new(question, ...)` (which derives the `CacheKey` again, the
+     price of not passing a key and a question that could differ), evaluate admission via
+     `self.admission.evaluate(request)` and `self.cache.admit(admission_outcome)`. If the
+     outcome was refused for its question (`RejectReason::concerns_question`), return
+     `PipelineError::UntrustedResponse`, which maps to SERVFAIL, instead of the reply.
+     Otherwise set the query ID and return `ResolutionOutcome::Resolved` with
+     `ResolvedSource::Upstream` or `ResolvedSource::Recursion`.
+   - The uncacheable path (`resolve_uncacheable`) never reaches admission, so it calls
+     `check_question` itself and returns the same `UntrustedResponse` for a reply that does
+     not answer the question.
 4. **Outcome emission**: report hit / miss / negative-hit into the query-log observer hook
    declared in Phase 2, so Phase 10's pipeline gets the data with no hot-path rewrite.
 5. **Constraints**: this stage never calls `LocalRecords` or `FilterPolicy` itself — they
@@ -1410,7 +1438,8 @@ client query
      denial, in an unrelated zone's SOA, in a loop, with no question, and under an error
      rcode: SERVFAIL, REFUSED and FORMERR are not refused as incomplete chains), checking
      the reason each record is refused for, `OutOfBailiwick` for the foreign SOA and
-     `IncompleteChain` for the rest; a response with no question is `QuestionMismatch`;
+     `IncompleteChain` for the rest; a response with no question is `QuestionMismatch`, one with two is `MultipleQuestions`,
+     and an error rcode records its records as `ErrorResponse`;
      a zero-TTL closing SOA leaves no stored chain; a refused answer's legitimate NS and
      glue are `IncompleteChain` and a foreign additional stays `OutOfBailiwick`; ANY and
      CNAME questions are not refused; a DNAME without its synthesised CNAME is.
@@ -1418,6 +1447,10 @@ client query
      off-chain record is rejected; a dangling, cyclic, zero-TTL-CNAME and zero-TTL-A
      chain is never stored and counts once per refused answer; an answer of only
      off-chain records counts both refusals.
+   - `stage_question` (`CacheStage` over a scripted upstream): a reply echoing another
+     question, two, or none is SERVFAIL on the cacheable and the meta-type path, a second
+     query goes upstream again, nothing is stored and the counters move; a matching reply
+     is served and cached; an error reply with records is served and never stored.
    - `answer_scope`: link following, DNAME synthesis, a CNAME that is not a link of the
      chain, and a loop setting `is_cyclic`.
 2. **Socket-level tests** against the Phase 2 in-process fakes over real sockets: a second
