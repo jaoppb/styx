@@ -119,7 +119,7 @@ admitted, so `chain_is_complete` no longer lists it.
   rule silently.
 - The SERVFAIL is returned to the client without telling the upstream pool anything
   about the bad reply, so a misbehaving upstream keeps being selected. No health signal
-  is wired in this record.
+  is wired in this record; #118 tracks it.
 - Refusals on the uncacheable path are logged at `debug` and not counted.
 - `Admission::evaluate`'s signature changes, `AnswerCache::admit` loses its key parameter,
   `AdmissionRequest`, `Refusal`, `check_question`, `PipelineError::UntrustedResponse` and
