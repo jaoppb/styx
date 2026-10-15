@@ -124,15 +124,12 @@ fn test_an_echoed_name_differing_only_in_case_is_admitted() {
 }
 
 #[test]
-fn test_a_response_echoing_no_question_is_refused_for_every_rcode() {
+fn test_a_judged_response_echoing_no_question_is_refused() {
     let client = ask("www.example.com.", RecordType::A);
-    let mut servfail = denial(ResponseCode::SERVFAIL, Vec::new());
-    servfail.authorities.clear();
     let messages = [
         address_answer(&client, Vec::new()),
         denial(ResponseCode::NOERROR, Vec::new()),
         denial(ResponseCode::NXDOMAIN, Vec::new()),
-        servfail,
     ];
     for message in &messages {
         let outcome = evaluate(&client, message).expect("request");
@@ -143,6 +140,29 @@ fn test_a_response_echoing_no_question_is_refused_for_every_rcode() {
             message.header.rcode
         );
         assert!(outcome.admitted.is_empty());
+    }
+}
+
+#[test]
+fn test_an_error_response_admits_nothing_and_is_not_a_mismatch() {
+    let client = ask("www.example.com.", RecordType::A);
+    let echoes = [Vec::new(), vec![ask("evil.example.net.", RecordType::A)]];
+    for rcode in [
+        ResponseCode::SERVFAIL,
+        ResponseCode::REFUSED,
+        ResponseCode::FORMERR,
+    ] {
+        for echoed in &echoes {
+            let mut message = address_answer(&client, echoed.clone());
+            message.header.rcode = rcode;
+            let outcome = evaluate(&client, &message).expect("request");
+            assert!(
+                outcome.admitted.is_empty(),
+                "{rcode:?}: {:?}",
+                outcome.admitted
+            );
+            assert_eq!(outcome.refusal, None, "{rcode:?}");
+        }
     }
 }
 

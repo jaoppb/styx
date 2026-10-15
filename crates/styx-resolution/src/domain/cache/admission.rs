@@ -53,6 +53,15 @@ impl Admission {
             return outcome;
         }
 
+        // Only NOERROR and NXDOMAIN speak for the question; anything else (SERVFAIL,
+        // REFUSED, FORMERR, ...) may omit it legitimately and caches nothing.
+        if !matches!(
+            message.header.rcode,
+            ResponseCode::NOERROR | ResponseCode::NXDOMAIN
+        ) {
+            return outcome;
+        }
+
         if let Some(reason) = Self::check_question(request) {
             let mut records = Vec::new();
             self.reject_all_records(message, reason, &mut records);
@@ -181,13 +190,9 @@ impl Admission {
         let bailiwick = request.bailiwick();
         let now = request.now();
         let qname = request.key().qname();
-        let judged = matches!(
-            message.header.rcode,
-            ResponseCode::NOERROR | ResponseCode::NXDOMAIN
-        );
+        let qtype = request.key().qtype();
         let scope = bailiwick.answer_scope(qname, &message.answers);
-        let qtype = judged.then(|| request.key().qtype());
-        if qtype.is_some_and(|qtype| !chain_is_complete(message, &scope, qtype)) {
+        if !chain_is_complete(message, &scope, qtype) {
             outcome.refuse(
                 RejectReason::IncompleteChain,
                 label_refused(bailiwick, &scope, message),
@@ -200,14 +205,12 @@ impl Admission {
         if admitted.answers.is_empty() {
             return;
         }
-        if let Some(qtype) = qtype {
-            if !Self::survivors_complete(bailiwick, qname, qtype, message, &admitted, now) {
-                outcome.refuse(
-                    RejectReason::IncompleteChain,
-                    admitted.into_rejected(RejectReason::IncompleteChain),
-                );
-                return;
-            }
+        if !Self::survivors_complete(bailiwick, qname, qtype, message, &admitted, now) {
+            outcome.refuse(
+                RejectReason::IncompleteChain,
+                admitted.into_rejected(RejectReason::IncompleteChain),
+            );
+            return;
         }
         Self::push_positive(message, admitted, now, outcome);
     }
