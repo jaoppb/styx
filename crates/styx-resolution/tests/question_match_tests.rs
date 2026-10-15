@@ -247,3 +247,22 @@ fn test_an_outcome_carries_the_key_it_was_judged_for() {
     let outcome = evaluate(&client, &message).expect("request");
     assert_eq!(Ok(outcome.key.clone()), CacheKey::from_question(&client));
 }
+
+#[test]
+fn test_an_ineligible_source_is_refused_whole_and_not_as_a_mismatch() {
+    let client = ask("www.example.com.", RecordType::A);
+    let message = address_answer(&client, vec![client.clone()]);
+    let clock = TestClock::new();
+    let expected = [
+        (AnswerSource::LocalRecord, RejectReason::ForgedAnswer),
+        (AnswerSource::Blocked, RejectReason::ForgedAnswer),
+        (AnswerSource::CacheHit, RejectReason::InadmissibleSource),
+        (AnswerSource::Error, RejectReason::InadmissibleSource),
+    ];
+    for (source, reason) in expected {
+        let request = AdmissionRequest::new(&client, &message, source, clock.now_monotonic())
+            .expect("request");
+        let outcome = Admission::new(TtlPolicy::default()).evaluate(&request);
+        assert_refused_whole(&outcome, reason);
+    }
+}

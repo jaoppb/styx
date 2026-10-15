@@ -49,7 +49,9 @@ impl Admission {
         let mut outcome = AdmissionOutcome::new(request.key().clone());
 
         if let Some(reason) = self.check_source_eligibility(request.source()) {
-            self.reject_all_records(message, reason, &mut outcome.rejected);
+            let mut records = Vec::new();
+            self.reject_all_records(message, reason, &mut records);
+            outcome.refuse(reason, records);
             return outcome;
         }
 
