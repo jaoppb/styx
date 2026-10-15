@@ -97,8 +97,9 @@ has no counter, since the cache never sees it.
 **An error reply is recorded, not silently dropped.** A SERVFAIL, REFUSED or FORMERR
 reply admits nothing, because section admission ignores the rcode and would otherwise
 cache its records. Each of its records is recorded as rejected with
-`RejectReason::ErrorResponse`, with no refusal and no counter, so an upstream that
-starts answering SERVFAIL with a payload is visible to anything that reads the outcome.
+`RejectReason::ErrorResponse`, with no refusal and no counter. The cache logs one
+`debug` line per record, so an upstream that starts answering SERVFAIL with a payload
+shows up in the log and nowhere else.
 This is a behaviour change beyond #116, kept in this record because the question check
 must skip error rcodes and the two are one decision about which rcodes speak for the
 question.

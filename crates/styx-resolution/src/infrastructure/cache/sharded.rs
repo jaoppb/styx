@@ -144,9 +144,15 @@ impl<C: Clock> ShardedAnswerCache<C> {
     /// whatever the number of records it carried.
     fn record_rejections(&self, outcome: &AdmissionOutcome) {
         for rej in outcome.rejected() {
-            if rej.reason == RejectReason::OutOfBailiwick {
-                tracing::warn!(owner = %rej.owner, rtype = ?rej.rtype, "rejected out-of-bailiwick record");
-                self.counters.inc_rejected_out_of_bailiwick(1);
+            match rej.reason {
+                RejectReason::OutOfBailiwick => {
+                    tracing::warn!(owner = %rej.owner, rtype = ?rej.rtype, "rejected out-of-bailiwick record");
+                    self.counters.inc_rejected_out_of_bailiwick(1);
+                }
+                RejectReason::ErrorResponse => {
+                    tracing::debug!(owner = %rej.owner, rtype = ?rej.rtype, "dropped a record carried by an error reply");
+                }
+                _ => {}
             }
         }
         let Some(refusal) = outcome.refusal() else {
