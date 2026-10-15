@@ -27,11 +27,20 @@ enforced nowhere it is relied on.
 response, its `AnswerSource` and `now`. Its constructor derives the `CacheKey` and the
 `Bailiwick` from that question, so the key, the bailiwick and the question admission judges
 against cannot disagree. The constructor is fallible: a meta-type question (ANY, AXFR, IXFR,
-OPT) has no key and never becomes a request. `CacheStage` reuses the request's key for
-`AnswerCache::admit`.
+OPT) has no key and never becomes a request. `CacheStage`, which already derived the key
+for its lookup, hands it to `AdmissionRequest::for_key` instead of deriving it again.
+
+**The outcome carries its key.** `evaluate` returns an `AdmissionOutcome` that holds the
+`CacheKey` it was judged for, and `AnswerCache::admit` takes the outcome alone and stores
+under that key. A caller cannot admit an outcome under a key it was not judged for. That the
+response echoes the client's question is still a runtime check, since the response comes off
+the network; the types only make it impossible to skip or to run against another key.
 
 **The response must echo exactly the question that was asked.** The check runs after the
-provenance check and before the denial/positive split, for every rcode:
+provenance check and before the denial/positive split, for NOERROR and NXDOMAIN, the only
+rcodes admission judges. Any other rcode (SERVFAIL, REFUSED, FORMERR) returns before it with
+nothing admitted, since an error reply may omit its question legitimately and carries
+nothing to cache:
 
 - a response with more than one question is refused whole as
   `RejectReason::MalformedResponse`. [RFC 9619](https://www.rfc-editor.org/rfc/rfc9619)
@@ -46,8 +55,17 @@ provenance check and before the denial/positive split, for every rcode:
 A refused response is served to the client once and never stored.
 
 **A mismatch is loud.** `CacheStats::rejected_question_mismatch` counts once per answer and
-the cache logs one `warn` for it. It means an upstream adapter broke the invariant the cache
-relies on. `MalformedResponse` stays uncounted, as before.
+the cache logs one `warn` for it, naming the questions the response echoed
+(`AdmissionOutcome::echoed_questions`). It means an upstream adapter broke the invariant the
+cache relies on, so it is not rate limited: the counter is the aggregate signal and the log
+is for the rare bug. `MalformedResponse` is counted too, by
+`CacheStats::rejected_malformed_response`, but logged at `debug`, since it is the upstream's
+fault and not a broken invariant.
+
+**An ineligible source is refused whole.** A forged (`LocalRecord`, `Blocked`) or
+inadmissible (`CacheHit`, `Error`) source now sets `AdmissionOutcome::refusal`, like every
+other early-out that stops admission, so `refusal.is_some()` means nothing from the response
+was admitted.
 
 **ANY is no longer handled in `Admission`.** A question about every type cannot be admitted,
 so `chain_is_complete` no longer lists it.
@@ -56,14 +74,15 @@ so `chain_is_complete` no longer lists it.
 
 - An upstream that echoes more than one question has its answers served but never cached,
   one upstream query per request. This is stricter than `Do53Client`, which accepts a
-  response whose first question matches, but it is what RFC 9619 requires, and it is
-  invisible because `MalformedResponse` is not counted. If it shows up on a real
-  deployment, count `MalformedResponse` first; do not relax the rule silently.
-- A FORMERR or other error response that omits its question is counted and logged as a
-  question mismatch, though it is a server complaining rather than an adapter breaking an
-  invariant. It carries nothing to cache either way.
-- `Admission::evaluate`'s signature changes, `AdmissionRequest` and
-  `RejectReason::QuestionMismatch` are public, and `CacheStats` gains a field.
+  response whose first question matches, but it is what RFC 9619 requires. It shows up in
+  `rejected_malformed_response`; do not relax the rule silently.
+- An error reply no longer reaches `SectionAdmission`: before, a SERVFAIL carrying
+  in-bailiwick records could have them cached, because section admission ignores the rcode.
+- `Admission::evaluate`'s signature changes, `AnswerCache::admit` loses its key parameter,
+  `AdmissionRequest` and `RejectReason::QuestionMismatch` are public, and `CacheStats`
+  gains two fields.
+- `AdmissionOutcome` has public fields, so `key` is public too; it is set once by `evaluate`
+  and nothing in the crate writes it afterwards.
 - `Bailiwick::new` stays public but `evaluate` no longer accepts a caller-chosen bailiwick.
 
 ## Alternatives rejected

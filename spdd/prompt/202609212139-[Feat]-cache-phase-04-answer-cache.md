@@ -438,6 +438,7 @@ class RejectReason {
     NoSoaInDenial
     IncompleteChain
     MalformedResponse
+    QuestionMismatch
     Unstorable
     InadmissibleSource
 }
@@ -469,7 +470,7 @@ class PurgedCount {
 class AnswerCache {
     <<interface>>
     +lookup(&CacheKey) Lookup
-    +admit(&CacheKey, AdmissionOutcome) Result~AdmittedCount, CacheError~
+    +admit(AdmissionOutcome) Result~AdmittedCount, CacheError~
     +purge_all() PurgedCount
     +stats() CacheStats
 }
@@ -1195,10 +1196,13 @@ client query
    `AdmissionRequest::new(question, message, source, now)` derives the `CacheKey` and the
    `Bailiwick` from the client's question, so a response is judged against the question
    that was asked. A response with more than one question is refused whole as
-   `MalformedResponse` (RFC 9619), one with none or a different one as `QuestionMismatch`, for
-   every rcode and before the denial/positive split.
-   - Refuse outright when `source` is `AnswerSource::LocalRecord` or
-     `AnswerSource::Blocked` → every record rejected with
+   `MalformedResponse` (RFC 9619), one with none or a different one as `QuestionMismatch`,
+   for NOERROR and NXDOMAIN and before the denial/positive split; any other rcode returns
+   before the check with nothing admitted. The returned `AdmissionOutcome` carries the
+   `CacheKey` it was judged for and, on those two refusals, the questions the response
+   echoed.
+   - Refuse outright (`AdmissionOutcome::refuse`, so `refusal` is set) when `source` is
+     `AnswerSource::LocalRecord` or `AnswerSource::Blocked` → every record rejected with
      `RejectReason::ForgedAnswer`. The test is the private helper
      `check_source_eligibility(&self, source: AnswerSource) -> Option<RejectReason>`.
      It is private so that no caller can run it *instead of* `evaluate`: the check lives
@@ -1213,8 +1217,8 @@ client query
      unblocking takes effect quickly, which caching would defeat.
    - `check_question` refuses a response with more than one question as
      `RejectReason::MalformedResponse` (RFC 9619), and one with none, or another than the
-     client's, as `RejectReason::QuestionMismatch` (`AdmissionOutcome::refuse`), for every
-     rcode. An error rcode is not judged for chain completeness.
+     client's, as `RejectReason::QuestionMismatch` (`AdmissionOutcome::refuse`), for NOERROR
+     and NXDOMAIN only. An error rcode admits nothing and is not judged.
    - Before admitting any record of such a response, ask `chain_is_complete` for the
      question's type. On failure the answer is refused whole as
      `RejectReason::IncompleteChain`, its records labelled by `label_refused`, and
@@ -1276,8 +1280,9 @@ client query
      - `lookup(&self, key: &CacheKey) -> Lookup` — `Hit(entry)` only when fresh against the
        `Clock`; `Expired` when an entry was found but is stale (it is removed as a side
        effect); `Miss` otherwise.
-     - `admit(&self, key: &CacheKey, outcome: AdmissionOutcome) -> Result<AdmittedCount, CacheError>`
-       — returns how many entries were stored wrapped in semantic `AdmittedCount`.
+     - `admit(&self, outcome: AdmissionOutcome) -> Result<AdmittedCount, CacheError>`
+       *(amendment, ADR 0023)* — stores under the `CacheKey` the outcome carries and
+       returns how many entries were stored wrapped in semantic `AdmittedCount`.
      - `purge_all(&self) -> PurgedCount` — the seam the Phase 11 — Web UI "flush cache"
        action will use, returning `PurgedCount`. Present now so it is not retrofitted
        through a lock-free hot-path structure later.
@@ -1377,8 +1382,9 @@ client query
      `ResolvedSource::CacheHit`.
    - On `Lookup::Miss` or `Lookup::Expired`, resolve through `self.pool.resolve(question)`.
    - Map upstream kind to `AnswerSource` (`Forwarder` → `Upstream`, `Recursor` → `Recursion`),
-     build an `AdmissionRequest` (which derives `Bailiwick::of_response`), evaluate admission via
-     `self.admission.evaluate(&request)`, `self.cache.admit(request.key(), admission_outcome)`, set query ID, and return `ResolutionOutcome::Resolved`
+     build an `AdmissionRequest::for_key` from the `CacheKey` already derived for the lookup
+     (which derives `Bailiwick::of_response` from its qname), evaluate admission via
+     `self.admission.evaluate(&request)`, `self.cache.admit(admission_outcome)`, set query ID, and return `ResolutionOutcome::Resolved`
      with `ResolvedSource::Upstream` or `ResolvedSource::Recursion`.
 4. **Outcome emission**: report hit / miss / negative-hit into the query-log observer hook
    declared in Phase 2, so Phase 10's pipeline gets the data with no hot-path rewrite.
