@@ -10,6 +10,7 @@ use styx_proto::Question;
 use tokio::task::JoinSet;
 use tracing::Instrument;
 
+use crate::application::reply_judge::{judge_reply, outcome_of_error};
 use crate::domain::circuit::{CircuitConfig, CircuitState};
 use crate::domain::error::PoolError;
 use crate::domain::health::{HealthState, Outcome};
@@ -103,6 +104,7 @@ where
                     weight: m.weight,
                     srtt: health.srtt(),
                     circuit: health.circuit(),
+                    refused_replies: health.refused_replies(),
                     available: health.is_available(now, &self.circuit),
                 }
             })
@@ -260,6 +262,7 @@ where
             .resolve(query, deadline)
             .instrument(span.clone())
             .await;
+        let res = judge_reply(&member.id, query, res);
         let elapsed = self
             .clock
             .now_monotonic()
@@ -283,15 +286,8 @@ where
                 Ok(resp)
             }
             Err(err) => {
-                let class = err.classify();
-                record_span_outcome(&span, elapsed, Some(class));
-                self.record(
-                    &member.id,
-                    Outcome::Failure {
-                        class,
-                        was_probe: false,
-                    },
-                );
+                record_span_outcome(&span, elapsed, Some(&err));
+                self.record(&member.id, outcome_of_error(&err, false));
                 Err(err)
             }
         }
@@ -335,6 +331,7 @@ where
                     .resolve(&q, deadline)
                     .instrument(span.clone())
                     .await;
+                let res = judge_reply(&id_clone, &q, res);
                 (id_clone, kind, start, res, span)
             });
         }
@@ -379,15 +376,8 @@ where
                     return Ok(resp);
                 }
                 Err(err) => {
-                    let class = err.classify();
-                    record_span_outcome(&span, elapsed, Some(class));
-                    self.record(
-                        &id,
-                        Outcome::Failure {
-                            class,
-                            was_probe: false,
-                        },
-                    );
+                    record_span_outcome(&span, elapsed, Some(&err));
+                    self.record(&id, outcome_of_error(&err, false));
                     last_error = Some(err);
                 }
             }
@@ -406,13 +396,17 @@ where
 pub(crate) fn record_span_outcome(
     span: &tracing::Span,
     elapsed: std::time::Duration,
-    result_class: Option<FailureClass>,
+    failure: Option<&UpstreamError>,
 ) {
     let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
     span.record("elapsed_ms", elapsed_ms);
-    match result_class {
-        None => span.record("outcome", "success"),
-        Some(FailureClass::UpstreamFault) => span.record("outcome", "upstream_fault"),
-        Some(FailureClass::AnswerFault) => span.record("outcome", "answer_fault"),
+    let outcome = match failure {
+        None => "success",
+        Some(UpstreamError::UntrustedReply(_)) => "untrusted_reply",
+        Some(error) => match error.classify() {
+            FailureClass::UpstreamFault => "upstream_fault",
+            FailureClass::AnswerFault => "answer_fault",
+        },
     };
+    span.record("outcome", outcome);
 }

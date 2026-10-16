@@ -14,7 +14,6 @@ use crate::domain::cache::entry::CacheEntry;
 use crate::domain::cache::error::CacheError;
 use crate::domain::cache::key::CacheKey;
 use crate::domain::cache::port::{AnswerCache, Lookup};
-use crate::domain::cache::refusal::check_question;
 use crate::domain::cache::ttl::TtlPolicy;
 use crate::domain::error::PipelineError;
 use crate::domain::request::RequestContext;
@@ -111,14 +110,6 @@ where
         deadline: std::time::Instant,
     ) -> Result<ResolutionResponse, PipelineError> {
         let upstream_resp = self.pool.resolve(question, deadline).await?;
-        if let Some(refusal) = check_question(question, &upstream_resp.message) {
-            tracing::debug!(
-                expected = ?question,
-                echoed = ?refusal.echoed(),
-                "refused an uncacheable reply that does not answer the question"
-            );
-            return Err(PipelineError::UntrustedResponse(refusal.reason()));
-        }
         let mut message = upstream_resp.message;
         message.header.id = query_id;
 
@@ -155,15 +146,7 @@ where
             .map_err(|e| PipelineError::Internal(e.to_string()))?;
         let admission_outcome = self.admission.evaluate(request);
 
-        // A reply that does not answer the question is counted by the cache, which stores
-        // nothing from it, and the client is not handed what the proxy cannot vouch for.
-        let untrusted = admission_outcome
-            .refusal_reason()
-            .filter(|reason| reason.concerns_question());
         let _ = self.cache.admit(admission_outcome);
-        if let Some(reason) = untrusted {
-            return Err(PipelineError::UntrustedResponse(reason));
-        }
 
         let mut message = upstream_resp.message;
         message.header.id = query_id;

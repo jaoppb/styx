@@ -19,6 +19,18 @@ pub enum FailureClass {
     AnswerFault,
 }
 
+/// Why an upstream reply was judged not to answer the question that was asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Error)]
+pub enum ReplyFault {
+    /// The reply echoed no question, or one other than the one asked.
+    #[error("it echoed no question, or another one")]
+    QuestionMismatch,
+
+    /// The reply echoed more than one question.
+    #[error("it echoed more than one question")]
+    MultipleQuestions,
+}
+
 /// Errors that can occur when resolving a query against an upstream.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum UpstreamError {
@@ -53,6 +65,10 @@ pub enum UpstreamError {
         is_upstream: bool,
     },
 
+    /// The upstream replied, but the reply does not answer the question that was asked.
+    #[error("upstream reply does not answer the question: {0}")]
+    UntrustedReply(ReplyFault),
+
     /// The resolver or upstream client is shutting down.
     #[error("upstream resolver is shutting down")]
     Shutdown,
@@ -72,6 +88,7 @@ impl UpstreamError {
             | Self::Malformed(_)
             | Self::Mismatched
             | Self::Refused
+            | Self::UntrustedReply(_)
             | Self::Shutdown => FailureClass::UpstreamFault,
             Self::ServerFailure { is_upstream } => {
                 if *is_upstream {
@@ -116,6 +133,14 @@ mod tests {
         );
         assert_eq!(
             UpstreamError::Shutdown.classify(),
+            FailureClass::UpstreamFault
+        );
+        assert_eq!(
+            UpstreamError::UntrustedReply(ReplyFault::QuestionMismatch).classify(),
+            FailureClass::UpstreamFault
+        );
+        assert_eq!(
+            UpstreamError::UntrustedReply(ReplyFault::MultipleQuestions).classify(),
             FailureClass::UpstreamFault
         );
 

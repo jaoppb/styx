@@ -1211,8 +1211,9 @@ client query
    derives the `CacheKey` from the client's question, so a response is judged against the
    question that was asked; the bailiwick is derived only on the positive path. The
    request is taken by value so its key moves into the outcome. `check_question`
-   (`refusal.rs`, shared with `CacheStage`) refuses a response with more than one question
-   whole as `MultipleQuestions`, one with none or a different one as `QuestionMismatch`,
+   (`refusal.rs`, shared with the pool's `reply_judge` since ADR 0024) refuses a response
+   with more than one question whole as `MultipleQuestions`, one with none or a different
+   one as `QuestionMismatch`,
    for NOERROR and NXDOMAIN and before the denial/positive split. Any other rcode is never
    judged by it: its records are recorded as rejected with `ErrorResponse`, with no
    refusal, and nothing is admitted. The returned `AdmissionOutcome` carries the
@@ -1272,6 +1273,9 @@ client query
    `rejected_out_of_bailiwick` counter and the store-introspection tests; `refusal`
    drives `rejected_incomplete_chain`, `rejected_question_mismatch` and
    `rejected_multiple_questions`, so an answer counts once however many records it carried.
+   Since ADR 0024 the pool refuses a reply for its question before it reaches admission, so
+   those two counters move only for a direct caller of `Admission`; the per-member signal
+   is `MemberView::refused_replies`.
 4. **`Admission` accessors**: `ttl(&self) -> &TtlPolicy`.
 5. **Constraints**: `Admission` is the **only** path into the store. The `AnswerCache`
    trait accepts an `AdmissionOutcome`, never a raw `Message`, so there is no way to
@@ -1406,14 +1410,16 @@ client query
    - Map upstream kind to `AnswerSource` (`Forwarder` → `Upstream`, `Recursor` → `Recursion`),
      build `AdmissionRequest::new(question, ...)` (which derives the `CacheKey` again, the
      price of not passing a key and a question that could differ), evaluate admission via
-     `self.admission.evaluate(request)` and `self.cache.admit(admission_outcome)`. If the
-     outcome was refused for its question (`RejectReason::concerns_question`), return
-     `PipelineError::UntrustedResponse`, which maps to SERVFAIL, instead of the reply.
-     Otherwise set the query ID and return `ResolutionOutcome::Resolved` with
-     `ResolvedSource::Upstream` or `ResolvedSource::Recursion`.
-   - The uncacheable path (`resolve_uncacheable`) never reaches admission, so it calls
-     `check_question` itself and returns the same `UntrustedResponse` for a reply that does
-     not answer the question.
+     `self.admission.evaluate(request)` and `self.cache.admit(admission_outcome)`, then set
+     the query ID and return `ResolutionOutcome::Resolved` with `ResolvedSource::Upstream`
+     or `ResolvedSource::Recursion`.
+   - *(Amendment, ADR 0024)* The stage no longer judges the reply for its question. The
+     pool does, before it records an outcome: a reply that does not answer the question is
+     an upstream fault of that member, the query fails over, and the client gets SERVFAIL
+     through `PoolError::Exhausted` only if every member failed. `PipelineError::
+     UntrustedResponse` and `RejectReason::concerns_question` are gone (`RejectReason::
+     reply_fault` maps the two question reasons to `ReplyFault`). The uncacheable path
+     (`resolve_uncacheable`) is covered by the same pool check.
 4. **Outcome emission**: report hit / miss / negative-hit into the query-log observer hook
    declared in Phase 2, so Phase 10's pipeline gets the data with no hot-path rewrite.
 5. **Constraints**: this stage never calls `LocalRecords` or `FilterPolicy` itself — they

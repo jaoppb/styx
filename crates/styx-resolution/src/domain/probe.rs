@@ -115,6 +115,7 @@ mod tests {
     use super::*;
     use crate::domain::circuit::CircuitConfig;
     use crate::domain::health::Outcome;
+    use crate::domain::refused::RefusedReplies;
     use crate::domain::weight::Weight;
     use styx_core::UpstreamId;
 
@@ -131,6 +132,7 @@ mod tests {
                     since: Instant::now(),
                 }
             },
+            refused_replies: RefusedReplies::none(),
             available,
         }
     }

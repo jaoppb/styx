@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::application::pool::{record_span_outcome, UpstreamPool};
+use crate::application::reply_judge::{judge_reply, outcome_of_error};
 use crate::domain::health::Outcome;
 use crate::domain::selection::SelectionStrategy;
 
@@ -115,6 +116,7 @@ where
             .resolve(&question, deadline)
             .instrument(span.clone())
             .await;
+        let res = judge_reply(id, &question, res);
         let elapsed = clock
             .now_monotonic()
             .checked_duration_since(start)
@@ -129,12 +131,8 @@ where
                 }
             }
             Err(err) => {
-                let class = err.classify();
-                record_span_outcome(&span, elapsed, Some(class));
-                Outcome::Failure {
-                    class,
-                    was_probe: true,
-                }
+                record_span_outcome(&span, elapsed, Some(&err));
+                outcome_of_error(&err, true)
             }
         };
 

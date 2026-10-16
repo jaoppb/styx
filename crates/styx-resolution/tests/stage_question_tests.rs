@@ -1,5 +1,8 @@
-//! `CacheStage` refuses an upstream reply that does not answer the client's question,
-//! on the cacheable path and on the meta-type path alike (issue #116).
+//! A reply that does not answer the client's question reaches the client as SERVFAIL and is
+//! never stored, on the cacheable path and on the meta-type path alike (issues #116, #118).
+//!
+//! The pool refuses such a reply before the stage sees it; `reply_judging_tests` covers the
+//! failover and health side.
 
 mod harness;
 
@@ -210,7 +213,6 @@ async fn test_a_reply_echoing_another_question_is_servfail_and_stores_nothing() 
         2,
         "nothing was stored to answer from"
     );
-    assert_eq!(fixture.cache.stats().rejected_question_mismatch, 2);
     assert_eq!(fixture.cache.stats().entries, 0);
 }
 
@@ -225,7 +227,6 @@ async fn test_a_reply_echoing_two_questions_is_servfail_and_stores_nothing() {
     assert_servfail(fixture.stage.handle_terminal(&ctx).await);
 
     assert_eq!(fixture.upstream.queries(), 2);
-    assert_eq!(fixture.cache.stats().rejected_multiple_questions, 2);
     assert_eq!(fixture.cache.stats().entries, 0);
 }
 

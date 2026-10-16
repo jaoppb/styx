@@ -51,6 +51,7 @@ mod tests {
 
     use super::*;
     use crate::domain::circuit::CircuitState;
+    use crate::domain::refused::RefusedReplies;
     use crate::domain::weight::Weight;
     use styx_core::{UpstreamId, UpstreamKind};
 
@@ -61,6 +62,7 @@ mod tests {
             weight: Weight::new(1),
             srtt: Some(Duration::from_millis(10)),
             circuit: CircuitState::Closed,
+            refused_replies: RefusedReplies::none(),
             available,
         }
     }

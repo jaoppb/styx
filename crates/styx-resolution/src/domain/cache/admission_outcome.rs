@@ -1,6 +1,7 @@
 //! What admission decided about a response: the entries it let in, and the records
 //! and answers it refused, each with the reason.
 
+use styx_core::ReplyFault;
 use styx_proto::RecordType;
 
 use crate::domain::cache::entry::CacheEntry;
@@ -41,11 +42,24 @@ pub enum RejectReason {
 }
 
 impl RejectReason {
-    /// Whether the response was refused for the question it echoed, which no client
-    /// should be handed an answer for.
+    /// The fault of the replying upstream, if the response was refused for the question it
+    /// echoed, which no client should be handed an answer for.
     #[must_use]
-    pub const fn concerns_question(self) -> bool {
-        matches!(self, Self::QuestionMismatch | Self::MultipleQuestions)
+    pub const fn reply_fault(self) -> Option<ReplyFault> {
+        match self {
+            Self::QuestionMismatch => Some(ReplyFault::QuestionMismatch),
+            Self::MultipleQuestions => Some(ReplyFault::MultipleQuestions),
+            Self::OutOfBailiwick
+            | Self::ForgedAnswer
+            | Self::UncacheableQtype
+            | Self::ZeroTtl
+            | Self::MalformedDenial
+            | Self::NoSoaInDenial
+            | Self::IncompleteChain
+            | Self::Unstorable
+            | Self::InadmissibleSource
+            | Self::ErrorResponse => None,
+        }
     }
 }
 

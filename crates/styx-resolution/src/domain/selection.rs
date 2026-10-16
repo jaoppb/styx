@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use styx_core::{UpstreamId, UpstreamKind};
 
 use crate::domain::circuit::CircuitState;
+use crate::domain::refused::RefusedReplies;
 use crate::domain::weight::Weight;
 
 /// Identifies the configured upstream selection strategy.
@@ -39,6 +40,8 @@ pub struct MemberView {
     pub srtt: Option<Duration>,
     /// Current circuit breaker state.
     pub circuit: CircuitState,
+    /// Replies this member sent that were refused for not answering the question.
+    pub refused_replies: RefusedReplies,
     /// Whether the member is currently available to serve traffic.
     pub available: bool,
 }
@@ -103,6 +106,7 @@ mod tests {
             weight: Weight::new(1),
             srtt: None,
             circuit: CircuitState::Closed,
+            refused_replies: RefusedReplies::none(),
             available: true,
         }
     }
