@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use styx_proto::application::Decoder;
-use styx_proto::{Header, Message, MessageKind, ResponseCode};
+use styx_proto::{DecodeError, Header, Message, MessageKind, ResponseCode, UnsupportedEdns};
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
@@ -14,6 +14,7 @@ use styx_core::Clock;
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::application::Pipeline;
+use crate::domain::bad_edns_version_response;
 use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
@@ -188,6 +189,10 @@ where
 
         let query = match decoder.decode_message() {
             Ok(msg) => msg,
+            Err(DecodeError::UnsupportedEdnsVersion(rejected)) => {
+                self.send_badvers(&rejected, peer).await;
+                return;
+            }
             Err(err) => {
                 tracing::warn!(%peer, %err, "malformed UDP datagram; attempting FORMERR");
                 self.try_send_formerr(bytes, peer).await;
@@ -247,7 +252,24 @@ where
         let mut resp = Message::new(Header::new_query(id, styx_proto::Opcode::Query, false));
         resp.header.kind = MessageKind::Response;
         resp.header.rcode = ResponseCode::FORMERR;
+        self.send_error_reply(resp, peer).await;
+    }
 
+    /// Answers a query that asked for an unsupported EDNS version with BADVERS (RFC 6891
+    /// §6.1.3), or drops it when it is itself a response.
+    async fn send_badvers(&self, rejected: &UnsupportedEdns, peer: SocketAddr) {
+        if rejected.header().kind == MessageKind::Response {
+            tracing::debug!(%peer, "silently dropping inbound UDP response datagram (QR=1)");
+            return;
+        }
+        tracing::debug!(%peer, version = rejected.version(), "unsupported EDNS version; answering BADVERS");
+        self.send_error_reply(bad_edns_version_response(rejected), peer)
+            .await;
+    }
+
+    /// Sends a reply to a query that never reached the pipeline, within the classic 512-octet
+    /// budget because no EDNS buffer size was negotiated.
+    async fn send_error_reply(&self, resp: Message, peer: SocketAddr) {
         let received_at = self.clock.now_monotonic();
         let client = ClientId::from_socket_addr(peer);
         let max_size = crate::domain::request::MaxResponseSize::classic();
@@ -260,7 +282,7 @@ where
             received_at,
         );
         if let Err(err) = self.send_message(resp, &ctx, peer).await {
-            tracing::debug!(%peer, %err, "failed to send UDP formerr");
+            tracing::debug!(%peer, %err, "failed to send UDP error reply");
         }
     }
 

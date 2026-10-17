@@ -11,6 +11,7 @@
 //! No synchronous I/O, no `unwrap`, no `expect`, no `panic!`.
 
 pub mod answer;
+pub mod bad_edns_version;
 pub mod cache;
 pub mod circuit;
 pub mod config;
@@ -29,6 +30,7 @@ pub use answer::{
     AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse,
     ResolutionResponseParts, ResolvedSource,
 };
+pub use bad_edns_version::bad_edns_version_response;
 pub use cache::{
     Admission, AdmissionOutcome, AdmittedCount, AnswerCache, Bailiwick, CacheCapacity, CacheEntry,
     CacheError, CacheKey, CacheStats, CanonicalName, Deadline, DenialKind, DnssecMetadata,

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use styx_proto::application::Decoder;
-use styx_proto::{Header, Message, MessageKind, ResponseCode};
+use styx_proto::{DecodeError, Header, Message, MessageKind, ResponseCode, UnsupportedEdns};
 use tokio::io::AsyncReadExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use styx_core::Clock;
 
 use crate::application::terminal::TerminalHandler;
+use crate::domain::bad_edns_version_response;
 use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
@@ -339,6 +340,9 @@ where
         let mut decoder = Decoder::new(bytes);
         let query = match decoder.decode_message() {
             Ok(msg) => msg,
+            Err(DecodeError::UnsupportedEdnsVersion(rejected)) => {
+                return self.badvers(&rejected);
+            }
             Err(err) => {
                 tracing::warn!(peer = %self.peer, %err, "malformed TCP query; responding FORMERR");
                 return self.formerr(bytes);
@@ -384,7 +388,22 @@ where
         let mut resp = Message::new(Header::new_query(id, styx_proto::Opcode::Query, false));
         resp.header.kind = MessageKind::Response;
         resp.header.rcode = ResponseCode::FORMERR;
+        self.encode_error_reply(resp)
+    }
 
+    /// Answers a query that asked for an unsupported EDNS version with BADVERS (RFC 6891
+    /// §6.1.3), or drops it when it is itself a response.
+    fn badvers(&self, rejected: &UnsupportedEdns) -> Option<Vec<u8>> {
+        if rejected.header().kind == MessageKind::Response {
+            tracing::debug!(peer = %self.peer, "silently dropping inbound TCP response (QR=1)");
+            return None;
+        }
+        tracing::debug!(peer = %self.peer, version = rejected.version(), "unsupported EDNS version; answering BADVERS");
+        self.encode_error_reply(bad_edns_version_response(rejected))
+    }
+
+    /// Encodes a reply to a query that never reached the pipeline.
+    fn encode_error_reply(&self, resp: Message) -> Option<Vec<u8>> {
         let client = ClientId::from_socket_addr(self.peer);
         let ctx = RequestContext::new(
             resp.clone(),
