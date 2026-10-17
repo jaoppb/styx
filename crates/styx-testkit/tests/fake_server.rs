@@ -26,7 +26,7 @@ fn query(qname: &str, qtype: RecordType) -> Message {
 
 fn query_with_edns(qname: &str, qtype: RecordType, dnssec_ok: bool) -> Message {
     let mut message = query(qname, qtype);
-    message.opt = Some(Opt::new(1232, 0, 0, dnssec_ok, Vec::new()));
+    message.opt = Some(Opt::new(1232, 0, dnssec_ok, Vec::new()));
     message
 }
 

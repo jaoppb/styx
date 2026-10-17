@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use styx_proto::application::Decoder;
-use styx_proto::{Header, Message, MessageKind, ResponseCode};
+use styx_proto::{DecodeError, Header, Message, MessageKind, ResponseCode};
 use tokio::io::AsyncReadExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
@@ -23,6 +23,7 @@ use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 use crate::infrastructure::admission::{ListenerShared, QueryPermit};
+use crate::infrastructure::early_reply::{badvers_reply, formerr_reply};
 use crate::infrastructure::response::ResponseWriter;
 use styx_net::write_framed;
 
@@ -339,9 +340,13 @@ where
         let mut decoder = Decoder::new(bytes);
         let query = match decoder.decode_message() {
             Ok(msg) => msg,
+            Err(DecodeError::UnsupportedEdnsVersion(rejected)) => {
+                tracing::debug!(peer = %self.peer, version = rejected.version(), "unsupported EDNS version; answering BADVERS");
+                return self.reply_early(badvers_reply(&rejected));
+            }
             Err(err) => {
                 tracing::warn!(peer = %self.peer, %err, "malformed TCP query; responding FORMERR");
-                return self.formerr(bytes);
+                return self.reply_early(formerr_reply(bytes));
             }
         };
 
@@ -372,19 +377,18 @@ where
         self.encode(response, &ctx)
     }
 
-    fn formerr(&self, bytes: &[u8]) -> Option<Vec<u8>> {
-        if bytes.get(2).is_some_and(|&b| (b & 0x80) != 0) {
-            tracing::debug!(peer = %self.peer, "silently dropping malformed TCP response (QR=1)");
-            return None;
-        }
-        let (Some(&b0), Some(&b1)) = (bytes.first(), bytes.get(1)) else {
+    /// Encodes `reply` to a query that never reached the pipeline, or drops it when there is
+    /// no reply to give.
+    fn reply_early(&self, reply: Option<Message>) -> Option<Vec<u8>> {
+        let Some(reply) = reply else {
+            tracing::debug!(peer = %self.peer, "silently dropping unanswerable TCP message");
             return None;
         };
-        let id = u16::from_be_bytes([b0, b1]);
-        let mut resp = Message::new(Header::new_query(id, styx_proto::Opcode::Query, false));
-        resp.header.kind = MessageKind::Response;
-        resp.header.rcode = ResponseCode::FORMERR;
+        self.encode_error_reply(reply)
+    }
 
+    /// Encodes a reply to a query that never reached the pipeline.
+    fn encode_error_reply(&self, resp: Message) -> Option<Vec<u8>> {
         let client = ClientId::from_socket_addr(self.peer);
         let ctx = RequestContext::new(
             resp.clone(),
