@@ -92,9 +92,10 @@ impl<C: Clock> Do53Forwarder<C> {
         match message.header.rcode {
             ResponseCode::REFUSED => Err(UpstreamError::Refused),
             ResponseCode::SERVFAIL => Err(UpstreamError::ServerFailure { is_upstream: false }),
-            ResponseCode::BADVERS_OR_BADSIG => Err(UpstreamError::Malformed(
-                "upstream answered BADVERS to an EDNS version 0 query".to_owned(),
-            )),
+            rcode if rcode.is_extended() => Err(UpstreamError::Malformed(format!(
+                "upstream answered extended RCODE {} to an EDNS version 0 query",
+                rcode.value()
+            ))),
             _ => Ok(message),
         }
     }
@@ -168,15 +169,34 @@ mod tests {
         assert_eq!(opt.udp_payload_size(), EdnsBufferSize::default().octets());
     }
 
-    /// Styx only ever sends EDNS version 0, so an upstream answering BADVERS is broken: it
-    /// must fail over and count against the member, not be passed on as an answer.
+    /// Styx sends only EDNS version 0 and no cookie, TSIG or mode, so an upstream answering
+    /// any extended RCODE is broken: it must fail over and count against the member, not be
+    /// passed on as an answer.
     #[test]
-    fn an_upstream_badvers_is_a_failure_not_an_answer() {
+    fn an_upstream_extended_rcode_is_a_failure_not_an_answer() {
+        for rcode in [
+            ResponseCode::BADVERS_OR_BADSIG,
+            ResponseCode::BADCOOKIE,
+            ResponseCode::from_u16(0x0FFF),
+        ] {
+            let mut reply = Message::new(Header::new_query(1, Opcode::Query, true));
+            reply.header.rcode = rcode;
+
+            let mapped = Do53Forwarder::<TestClock>::map_response(reply);
+
+            assert!(
+                matches!(mapped, Err(UpstreamError::Malformed(_))),
+                "rcode {} was passed on",
+                rcode.value()
+            );
+        }
+    }
+
+    #[test]
+    fn a_header_sized_rcode_is_still_an_answer() {
         let mut reply = Message::new(Header::new_query(1, Opcode::Query, true));
-        reply.header.rcode = ResponseCode::BADVERS_OR_BADSIG;
+        reply.header.rcode = ResponseCode::NXDOMAIN;
 
-        let mapped = Do53Forwarder::<TestClock>::map_response(reply);
-
-        assert!(matches!(mapped, Err(UpstreamError::Malformed(_))));
+        assert!(Do53Forwarder::<TestClock>::map_response(reply).is_ok());
     }
 }

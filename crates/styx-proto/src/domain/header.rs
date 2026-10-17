@@ -129,6 +129,13 @@ impl ResponseCode {
         self.value
     }
 
+    /// Whether the code needs the OPT record's upper octet, because it does not fit the
+    /// header's four bits (RFC 6891 §6.1.3).
+    #[must_use]
+    pub const fn is_extended(self) -> bool {
+        self.value > 0x0F
+    }
+
     /// Splits the 12-bit response code into its component parts.
     #[must_use]
     pub fn split(self) -> ResponseCodeParts {
@@ -236,6 +243,14 @@ impl Header {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_codes_above_the_header_nibble_are_extended() {
+        assert!(!ResponseCode::REFUSED.is_extended());
+        assert!(!ResponseCode::from_u16(0x0F).is_extended());
+        assert!(ResponseCode::BADVERS_OR_BADSIG.is_extended());
+        assert!(ResponseCode::BADCOOKIE.is_extended());
+    }
 
     #[test]
     fn test_split_standard_rcode() {
