@@ -1,5 +1,6 @@
 //! A cache hit and the live answer to the same query agree on every header flag and on the
-//! question section, which carries the client's own casing (issue #81).
+//! question section, which carries the client's own casing (issue #81). Every reply is read
+//! as it leaves the pipeline, because the pipeline exit is what shapes it for the client.
 
 mod harness;
 
@@ -15,10 +16,10 @@ use styx_proto::{
     ResponseCode, SoaRdata, Ttl,
 };
 use styx_resolution::{
-    AnswerCache, CacheStage, CanaryConfig, CircuitConfig, ClientId, MaxResponseSize,
-    OrderedFailover, PipelineError, PoolMember, PoolTerminal, ProbeConfig, ProbePolicy,
-    RequestContext, ResolutionResponse, ShardedAnswerCache, TerminalHandler, Transport,
-    UpstreamPool, Weight,
+    AllowAllFilter, AnswerCache, CacheStage, CanaryConfig, CircuitConfig, ClientId,
+    DiscardObserver, MaxResponseSize, NoLocalRecords, OrderedFailover, Pipeline, PipelineError,
+    PoolMember, PoolTerminal, ProbeConfig, ProbePolicy, RequestContext, ShardedAnswerCache,
+    TerminalHandler, Transport, UpstreamPool, Weight,
 };
 
 const MIXED_CASE: &str = "WwW.ExAmPlE.CoM.";
@@ -176,23 +177,36 @@ impl Fixture {
 }
 
 /// The text of every question, case included (`Name` equality ignores case).
-fn asked(response: &ResolutionResponse) -> Vec<String> {
+fn asked(response: &Message) -> Vec<String> {
     response
-        .message()
         .questions
         .iter()
         .map(|question| question.qname.to_string())
         .collect()
 }
 
-/// Asks twice through the cache stage: the first answer is live, the second is a hit.
+fn pipeline_over<T: TerminalHandler>(
+    fixture: &Fixture,
+    terminal: T,
+) -> Pipeline<NoLocalRecords, AllowAllFilter, DiscardObserver, TestClock, T> {
+    Pipeline::new(
+        Arc::new(NoLocalRecords::new()),
+        Arc::new(AllowAllFilter::new()),
+        Arc::new(DiscardObserver::new()),
+        Arc::clone(&fixture.clock),
+    )
+    .with_terminal(Arc::new(terminal))
+}
+
+/// Asks twice through the pipeline over the cache stage: the first answer is live, the second
+/// is a hit.
 async fn live_then_hit(
     fixture: &Fixture,
     ctx: &RequestContext,
-) -> Result<(ResolutionResponse, ResolutionResponse), PipelineError> {
-    let stage = fixture.stage();
-    let live = stage.handle_terminal(ctx).await?;
-    let hit = stage.handle_terminal(ctx).await?;
+) -> Result<(Message, Message), PipelineError> {
+    let pipeline = pipeline_over(fixture, fixture.stage());
+    let live = pipeline.handle(ctx).await?;
+    let hit = pipeline.handle(ctx).await?;
     let stats = fixture.cache.stats();
     assert_eq!(
         stats.hits.saturating_add(stats.negative_hits),
@@ -202,8 +216,8 @@ async fn live_then_hit(
     Ok((live, hit))
 }
 
-fn assert_same_reply(live: &ResolutionResponse, hit: &ResolutionResponse) {
-    assert_eq!(live.message().header, hit.message().header);
+fn assert_same_reply(live: &Message, hit: &Message) {
+    assert_eq!(live.header, hit.header);
     assert_eq!(asked(live), asked(hit));
 }
 
@@ -216,7 +230,7 @@ async fn test_a_hit_and_the_live_answer_agree_on_a_mixed_case_rd_query() {
 
     assert_same_reply(&live, &hit);
     assert_eq!(asked(&hit), vec![MIXED_CASE.to_string()]);
-    assert!(hit.message().header.recursion_desired);
+    assert!(hit.header.recursion_desired);
 }
 
 #[tokio::test]
@@ -227,8 +241,8 @@ async fn test_a_cached_nxdomain_is_not_authoritative() {
     let (live, hit) = live_then_hit(&fixture, &ctx).await.expect("both answers");
 
     assert_same_reply(&live, &hit);
-    assert_eq!(hit.message().header.rcode, ResponseCode::NXDOMAIN);
-    assert!(!hit.message().header.authoritative);
+    assert_eq!(hit.header.rcode, ResponseCode::NXDOMAIN);
+    assert!(!hit.header.authoritative);
 }
 
 #[tokio::test]
@@ -239,7 +253,7 @@ async fn test_a_cached_nodata_is_not_authoritative() {
     let (live, hit) = live_then_hit(&fixture, &ctx).await.expect("both answers");
 
     assert_same_reply(&live, &hit);
-    assert!(!hit.message().header.authoritative);
+    assert!(!hit.header.authoritative);
 }
 
 #[tokio::test]
@@ -249,8 +263,8 @@ async fn test_a_cached_positive_answer_is_not_authoritative() {
 
     let (live, hit) = live_then_hit(&fixture, &ctx).await.expect("both answers");
 
-    assert!(!live.message().header.authoritative);
-    assert!(!hit.message().header.authoritative);
+    assert!(!live.header.authoritative);
+    assert!(!hit.header.authoritative);
 }
 
 #[tokio::test]
@@ -261,7 +275,7 @@ async fn test_a_query_without_rd_gets_rd_clear_live_and_cached() {
     let (live, hit) = live_then_hit(&fixture, &ctx).await.expect("both answers");
 
     assert_same_reply(&live, &hit);
-    assert!(!hit.message().header.recursion_desired);
+    assert!(!hit.header.recursion_desired);
 }
 
 #[tokio::test]
@@ -272,7 +286,7 @@ async fn test_a_query_with_cd_gets_cd_set_live_and_cached() {
     let (live, hit) = live_then_hit(&fixture, &ctx).await.expect("both answers");
 
     assert_same_reply(&live, &hit);
-    assert!(hit.message().header.checking_disabled);
+    assert!(hit.header.checking_disabled);
 }
 
 #[tokio::test]
@@ -285,9 +299,12 @@ async fn test_the_pool_terminal_answers_with_the_clients_flags_and_question() {
         Duration::from_secs(2),
     );
 
-    let response = terminal.handle_terminal(&ctx).await.expect("answer");
+    let response = pipeline_over(&fixture, terminal)
+        .handle(&ctx)
+        .await
+        .expect("answer");
 
-    let header = &response.message().header;
+    let header = &response.header;
     assert_eq!(header.id, 0x1234);
     assert!(!header.recursion_desired);
     assert!(header.checking_disabled);

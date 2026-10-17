@@ -192,11 +192,7 @@ impl ForgedAnswer {
         let mut header = Header::new_query(ctx.query.header.id, ctx.query.header.opcode, false);
         header.kind = MessageKind::Response;
         header.rcode = rcode;
-        header.recursion_available = true;
-        header.recursion_desired = ctx.query.header.recursion_desired;
-        header.authoritative = false;
         header.authentic_data = false;
-        header.checking_disabled = ctx.query.header.checking_disabled;
 
         // Apply short TTL and filter out any accidental DNSSEC key/sig records
         let answers = records

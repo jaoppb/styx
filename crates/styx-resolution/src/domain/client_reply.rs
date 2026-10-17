@@ -1,9 +1,13 @@
 //! Shapes a response so it answers the client's query, whichever path produced it.
 //!
-//! A cached answer and a live one reach the client through the same step, so the two cannot
-//! drift apart: the ID, the question as the client spelled it (ADR 0007), RD and CD come from
-//! the query, RA is set because styx recurses, and AA is clear because styx is never
-//! authoritative for the zone it answers about.
+//! The pipeline runs this once, on the way out, for every reply it returns: a cached answer,
+//! a live one, a forged one and a refusal all pass the same step, so they cannot drift apart.
+//! It is the only place these fields are decided: the ID, the question as the client spelled
+//! it (ADR 0007), RD and CD come from the query, RA is set because styx recurses, and AA is
+//! clear because styx is never authoritative for the zone it answers about.
+//!
+//! RA describes styx, not the upstream behind it: it is 1 even when a forwarder answered RA=0
+//! or REFUSED, because styx offers recursion to its clients whatever one pool member does.
 
 use styx_proto::Message;
 

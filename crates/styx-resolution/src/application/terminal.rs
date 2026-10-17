@@ -47,8 +47,6 @@ impl TerminalHandler for RefusedTerminal {
         let mut response = Message::response_to(ctx.query.header.id, question);
         response.header.opcode = ctx.query.header.opcode;
         response.header.rcode = ResponseCode::REFUSED;
-        response.header.recursion_available = true;
-        response.header.recursion_desired = ctx.query.header.recursion_desired;
 
         if ctx.query.opt.is_some() {
             let resp_opt =
@@ -115,8 +113,7 @@ where
             .unwrap_or(ctx.received_at);
 
         let upstream_resp = self.pool.resolve(question, deadline).await?;
-        let mut message = upstream_resp.message;
-        crate::domain::client_reply::conform_to_query(&mut message, &ctx.query);
+        let message = upstream_resp.message;
 
         let source = match upstream_resp.kind {
             styx_core::UpstreamKind::Forwarder => crate::domain::answer::ResolvedSource::Upstream,
