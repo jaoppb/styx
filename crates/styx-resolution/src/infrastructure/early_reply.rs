@@ -37,6 +37,9 @@ pub(crate) fn badvers_reply(rejected: &UnsupportedEdns) -> Option<Message> {
 
 #[cfg(test)]
 mod tests {
+    use styx_proto::application::{Decoder, Encoder};
+    use styx_proto::{DecodeError, Opt};
+
     use super::*;
 
     #[test]
@@ -51,5 +54,32 @@ mod tests {
     fn a_response_or_a_stub_gets_no_formerr() {
         assert!(formerr_reply(&[0xAB, 0xCD, 0x80, 0x00]).is_none());
         assert!(formerr_reply(&[0xAB]).is_none());
+    }
+
+    /// Runs a message with an EDNS version 1 OPT through the real decoder.
+    fn rejected_edns(kind: MessageKind) -> UnsupportedEdns {
+        let mut message = Message::new(Header::new_query(0x1234, Opcode::Query, true));
+        message.header.kind = kind;
+        message.opt = Some(Opt::new(1232, 1, false, Vec::new()));
+        let mut encoder = Encoder::new(512);
+        encoder.encode_message(&message).expect("encode");
+        match Decoder::new(&encoder.buf).decode_message() {
+            Err(DecodeError::UnsupportedEdnsVersion(rejected)) => rejected,
+            other => panic!("expected an unsupported EDNS version, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn badvers_echoes_the_transaction_id() {
+        let reply = badvers_reply(&rejected_edns(MessageKind::Query)).expect("reply");
+
+        assert_eq!(reply.header.id, 0x1234);
+        assert_eq!(reply.header.rcode, ResponseCode::BADVERS_OR_BADSIG);
+        assert_eq!(reply.opt.as_ref().map(Opt::version), Some(0));
+    }
+
+    #[test]
+    fn a_response_gets_no_badvers() {
+        assert!(badvers_reply(&rejected_edns(MessageKind::Response)).is_none());
     }
 }
