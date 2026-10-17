@@ -1,13 +1,9 @@
 //! DNS response serialization and wire truncation handling.
 
 use styx_proto::application::Encoder;
-use styx_proto::{EncodeError, Message, Opt, MAX_TCP_MESSAGE_LEN};
+use styx_proto::{EncodeError, Message, Opt, ResponseCode, MAX_TCP_MESSAGE_LEN};
 
 use crate::domain::request::{MaxResponseSize, RequestContext, Transport};
-
-/// The largest response code the 4-bit header field holds on its own; anything above it needs
-/// the OPT record's upper octet (RFC 6891 §6.1.3).
-const MAX_HEADER_RCODE: u16 = 0x0F;
 
 /// Serializes DNS response messages and manages transport-specific truncation.
 #[derive(Debug, Clone, Copy, Default)]
@@ -63,8 +59,8 @@ impl ResponseWriter {
     ///
     /// The response's EDNS OPT record is normalized to the server's configured payload size
     /// if the query included EDNS, or stripped if the query did not include EDNS (RFC 6891 §6.1.1).
-    /// A response code above 15 keeps the OPT regardless, creating one if absent, because the
-    /// code cannot be expressed without it.
+    /// A client that sent no OPT cannot be sent one, so a response code above 15, which cannot be
+    /// expressed without it, is answered as SERVFAIL for that client.
     /// On UDP, truncation is applied against `ctx.max_response_size`.
     /// On TCP, the body is returned without a length prefix; the caller frames it on the
     /// wire through [`styx_net::write_framed`].
@@ -94,8 +90,14 @@ impl ResponseWriter {
     }
 
     fn normalize_opt(mut message: Message, ctx: &RequestContext) -> Message {
-        let needs_opt = ctx.query.opt.is_some() || message.header.rcode.value() > MAX_HEADER_RCODE;
-        if !needs_opt {
+        if ctx.query.opt.is_none() {
+            if message.header.rcode.is_extended() {
+                tracing::warn!(
+                    rcode = message.header.rcode.value(),
+                    "extended RCODE for a client without EDNS; answering SERVFAIL"
+                );
+                message.header.rcode = ResponseCode::SERVFAIL;
+            }
             message.opt = None;
             return message;
         }
@@ -142,7 +144,7 @@ mod tests {
     use std::time::Instant;
 
     use styx_proto::application::Decoder;
-    use styx_proto::{Header, Opcode, ResponseCode};
+    use styx_proto::{Header, Opcode};
 
     use super::*;
     use crate::domain::request::ClientId;
@@ -248,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn extended_rcode_keeps_the_opt_when_query_has_none() {
+    fn extended_rcode_is_downgraded_to_servfail_when_query_has_no_opt() {
         let query = Message::new(Header::new_query(1, Opcode::Query, true));
         let client = ClientId::from_socket_addr(SocketAddr::from(([127, 0, 0, 1], 5353)));
         let server_payload = MaxResponseSize::from_edns_advertised(1232);
@@ -257,6 +259,31 @@ mod tests {
             client,
             Transport::Udp,
             MaxResponseSize::classic(),
+            server_payload,
+            Instant::now(),
+        );
+
+        let mut response = Message::new(Header::new_query(1, Opcode::Query, false));
+        response.header.rcode = ResponseCode::BADVERS_OR_BADSIG;
+
+        let bytes = ResponseWriter::new().write(response, &ctx).expect("write");
+        let decoded = Decoder::new(&bytes).decode_message().expect("decode");
+
+        assert_eq!(decoded.header.rcode, ResponseCode::SERVFAIL);
+        assert!(decoded.opt.is_none(), "a client without EDNS gets no OPT");
+    }
+
+    #[test]
+    fn extended_rcode_is_kept_with_an_opt_when_query_has_one() {
+        let mut query = Message::new(Header::new_query(1, Opcode::Query, true));
+        query.opt = Some(Opt::new(4096, 0, false, Vec::new()));
+        let client = ClientId::from_socket_addr(SocketAddr::from(([127, 0, 0, 1], 5353)));
+        let server_payload = MaxResponseSize::from_edns_advertised(1232);
+        let ctx = RequestContext::new(
+            query,
+            client,
+            Transport::Udp,
+            server_payload,
             server_payload,
             Instant::now(),
         );
