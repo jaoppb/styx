@@ -2,13 +2,12 @@
 
 use std::time::Instant;
 
-use styx_proto::{Header, Message, MessageKind, Opcode, Question, ResponseCode};
+use styx_proto::{Header, Message, MessageKind, Opcode, ResponseCode};
 
 use crate::domain::cache::bytes::HeapBytes;
 use crate::domain::cache::dnssec::DnssecMetadata;
 use crate::domain::cache::entry::SecurityStatus;
 use crate::domain::cache::error::CacheError;
-use crate::domain::cache::key::CacheKey;
 use crate::domain::cache::positive_entry::CachedRRset;
 use crate::domain::cache::ttl::Deadline;
 
@@ -81,7 +80,7 @@ impl NegativeEntry {
     ///
     /// # Errors
     /// Returns [`CacheError`] if SOA TTL calculation fails.
-    pub fn to_response(&self, key: &CacheKey, now: Instant) -> Result<Message, CacheError> {
+    pub fn to_response(&self, now: Instant) -> Result<Message, CacheError> {
         let rcode = match self.kind {
             DenialKind::NxDomain => ResponseCode::NXDOMAIN,
             DenialKind::NoData => ResponseCode::NOERROR,
@@ -90,16 +89,9 @@ impl NegativeEntry {
         let mut header = Header::new_query(0, Opcode::Query, false);
         header.kind = MessageKind::Response;
         header.rcode = rcode;
-        header.authoritative = true;
         header.authentic_data = self.security() == SecurityStatus::Secure;
-        header.recursion_available = true;
 
         let mut msg = Message::new(header);
-        msg.questions.push(Question::new(
-            key.qname().inner().clone(),
-            key.qtype(),
-            key.qclass(),
-        ));
         msg.authorities = self.soa.to_resource_records(now)?;
 
         Ok(msg)
@@ -117,7 +109,7 @@ impl NegativeEntry {
 
 #[cfg(test)]
 mod tests {
-    use styx_proto::{Name, Question, RData, RecordClass, RecordType, SoaRdata, Ttl};
+    use styx_proto::{Name, RData, RecordClass, RecordType, SoaRdata, Ttl};
 
     use super::*;
     use crate::domain::cache::key::CanonicalName;
@@ -153,10 +145,12 @@ mod tests {
         assert_eq!(entry.dnssec(), &DnssecMetadata::Indeterminate);
         assert_eq!(entry.security(), SecurityStatus::Indeterminate);
 
-        let question = Question::new(Name::root(), RecordType::A, RecordClass::In);
-        let key = CacheKey::from_question(&question).expect("valid key");
-        let resp = entry.to_response(&key, now).expect("valid response");
+        let resp = entry.to_response(now).expect("valid response");
         assert_eq!(resp.header.rcode, ResponseCode::NXDOMAIN);
+        assert!(
+            resp.questions.is_empty(),
+            "the pipeline exit adds the question"
+        );
         assert_eq!(resp.authorities.len(), 1);
     }
 }

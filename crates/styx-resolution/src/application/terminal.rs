@@ -12,6 +12,10 @@ use crate::domain::request::RequestContext;
 pub trait TerminalHandler: Send + Sync + 'static {
     /// Produces a DNS response and resolution outcome for queries reaching the end of the pipeline.
     ///
+    /// The response is not yet shaped for the client: its ID, question, RD, CD, RA and AA are
+    /// whatever the stage produced. Only [`Pipeline`](crate::application::Pipeline) returns a
+    /// client-ready message, by conforming this one to the query on the way out.
+    ///
     /// # Errors
     /// Returns [`PipelineError`] if the query cannot be processed.
     fn handle_terminal(
@@ -47,8 +51,6 @@ impl TerminalHandler for RefusedTerminal {
         let mut response = Message::response_to(ctx.query.header.id, question);
         response.header.opcode = ctx.query.header.opcode;
         response.header.rcode = ResponseCode::REFUSED;
-        response.header.recursion_available = true;
-        response.header.recursion_desired = ctx.query.header.recursion_desired;
 
         if ctx.query.opt.is_some() {
             let resp_opt =
@@ -115,8 +117,7 @@ where
             .unwrap_or(ctx.received_at);
 
         let upstream_resp = self.pool.resolve(question, deadline).await?;
-        let mut message = upstream_resp.message;
-        message.header.id = ctx.query.header.id;
+        let message = upstream_resp.message;
 
         let source = match upstream_resp.kind {
             styx_core::UpstreamKind::Forwarder => crate::domain::answer::ResolvedSource::Upstream,
