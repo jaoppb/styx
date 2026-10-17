@@ -14,6 +14,7 @@ pub mod probe_scheduler;
 pub(crate) mod reply_judge;
 pub mod strategies;
 pub mod terminal;
+pub mod trial_guard;
 
 pub use cache_stage::CacheStage;
 pub use pipeline::Pipeline;
@@ -21,3 +22,4 @@ pub use pool::{PoolMember, UpstreamPool};
 pub use probe_scheduler::ProbeScheduler;
 pub use strategies::{ConfiguredStrategy, OrderedFailover, RaceAll, RoundRobin, Weighted};
 pub use terminal::{PoolTerminal, RefusedTerminal, TerminalHandler};
+pub use trial_guard::TrialGuard;

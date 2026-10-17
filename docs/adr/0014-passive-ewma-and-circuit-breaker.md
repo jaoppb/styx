@@ -3,6 +3,8 @@
 - **Status**: accepted
 - **Date**: 2026-09-27
 - **Phase**: 3 — Upstream pool and Do53 forwarder
+- **Superseded in part by**: [ADR 0025](0025-cancelled-half-open-trial-releases-its-slot.md),
+  the `HalfOpen` single-trial `in_flight` flag.
 
 ## Context
 
