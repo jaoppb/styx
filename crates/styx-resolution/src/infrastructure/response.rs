@@ -5,6 +5,10 @@ use styx_proto::{EncodeError, Message, Opt, MAX_TCP_MESSAGE_LEN};
 
 use crate::domain::request::{MaxResponseSize, RequestContext, Transport};
 
+/// The largest response code the 4-bit header field holds on its own; anything above it needs
+/// the OPT record's upper octet (RFC 6891 §6.1.3).
+const MAX_HEADER_RCODE: u16 = 0x0F;
+
 /// Serializes DNS response messages and manages transport-specific truncation.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ResponseWriter;
@@ -59,6 +63,8 @@ impl ResponseWriter {
     ///
     /// The response's EDNS OPT record is normalized to the server's configured payload size
     /// if the query included EDNS, or stripped if the query did not include EDNS (RFC 6891 §6.1.1).
+    /// A response code above 15 keeps the OPT regardless, creating one if absent, because the
+    /// code cannot be expressed without it.
     /// On UDP, truncation is applied against `ctx.max_response_size`.
     /// On TCP, the body is returned without a length prefix; the caller frames it on the
     /// wire through [`styx_net::write_framed`].
@@ -88,15 +94,15 @@ impl ResponseWriter {
     }
 
     fn normalize_opt(mut message: Message, ctx: &RequestContext) -> Message {
-        if ctx.query.opt.is_some() {
-            let server_size = ctx.server_payload_size.as_u16();
-            if let Some(opt) = message.opt.as_mut() {
-                opt.set_udp_payload_size(server_size);
-            } else {
-                message.opt = Some(Opt::new(server_size, 0, false, Vec::new()));
-            }
-        } else {
+        let needs_opt = ctx.query.opt.is_some() || message.header.rcode.value() > MAX_HEADER_RCODE;
+        if !needs_opt {
             message.opt = None;
+            return message;
+        }
+        let server_size = ctx.server_payload_size.as_u16();
+        match message.opt.as_mut() {
+            Some(opt) => opt.set_udp_payload_size(server_size),
+            None => message.opt = Some(Opt::new(server_size, 0, false, Vec::new())),
         }
         message
     }
@@ -136,7 +142,7 @@ mod tests {
     use std::time::Instant;
 
     use styx_proto::application::Decoder;
-    use styx_proto::{Header, Opcode};
+    use styx_proto::{Header, Opcode, ResponseCode};
 
     use super::*;
     use crate::domain::request::ClientId;
@@ -238,6 +244,32 @@ mod tests {
         let decoded = Decoder::new(&bytes).decode_message().expect("decode");
 
         let opt = decoded.opt.expect("opt generated");
+        assert_eq!(opt.udp_payload_size(), 1232);
+    }
+
+    #[test]
+    fn extended_rcode_keeps_the_opt_when_query_has_none() {
+        let query = Message::new(Header::new_query(1, Opcode::Query, true));
+        let client = ClientId::from_socket_addr(SocketAddr::from(([127, 0, 0, 1], 5353)));
+        let server_payload = MaxResponseSize::from_edns_advertised(1232);
+        let ctx = RequestContext::new(
+            query,
+            client,
+            Transport::Udp,
+            MaxResponseSize::classic(),
+            server_payload,
+            Instant::now(),
+        );
+
+        let mut response = Message::new(Header::new_query(1, Opcode::Query, false));
+        response.header.rcode = ResponseCode::BADVERS_OR_BADSIG;
+
+        let bytes = ResponseWriter::new().write(response, &ctx).expect("write");
+        let decoded = Decoder::new(&bytes).decode_message().expect("decode");
+
+        assert_eq!(decoded.header.rcode, ResponseCode::BADVERS_OR_BADSIG);
+        let opt = decoded.opt.expect("an extended rcode needs an OPT");
+        assert_eq!(opt.version(), 0);
         assert_eq!(opt.udp_payload_size(), 1232);
     }
 }
