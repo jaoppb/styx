@@ -29,6 +29,23 @@ pub enum CacheError {
     #[error("cache byte accounting overflowed")]
     ByteAccountingOverflow,
 
+    /// The cache was asked to run with no shards.
+    #[error("cache needs at least one shard")]
+    ZeroShards,
+
+    /// The configured capacity cannot give every shard at least one entry and one byte.
+    #[error(
+        "capacity of {max_entries} entries and {max_bytes} bytes cannot be split across {shards} shards"
+    )]
+    BudgetBelowShardCount {
+        /// Number of shards the budget was to be split across.
+        shards: usize,
+        /// Configured maximum entry count.
+        max_entries: usize,
+        /// Configured maximum byte count.
+        max_bytes: usize,
+    },
+
     /// Configured TTL floor exceeds ceiling.
     #[error("TTL floor ({floor}s) exceeds ceiling ({ceiling}s)")]
     InvalidTtlBounds {

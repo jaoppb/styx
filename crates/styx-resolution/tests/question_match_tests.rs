@@ -234,7 +234,8 @@ fn test_a_mismatch_is_counted_once_per_answer_and_stores_nothing() {
         CacheCapacity::default(),
         TtlPolicy::default(),
         1,
-    );
+    )
+    .expect("cache");
     let client = ask("www.example.com.", RecordType::A);
     let mut message = address_answer(&client, vec![ask("evil.example.net.", RecordType::A)]);
     message.answers.push(record(
@@ -295,7 +296,8 @@ fn test_an_answer_echoing_two_questions_is_counted_once_and_stores_nothing() {
         CacheCapacity::default(),
         TtlPolicy::default(),
         1,
-    );
+    )
+    .expect("cache");
     let client = ask("www.example.com.", RecordType::A);
     let message = address_answer(
         &client,

@@ -27,6 +27,9 @@ pub struct CacheStats {
     /// Number of whole answers refused because they echoed more than one question,
     /// counted once per answer.
     pub rejected_multiple_questions: u64,
+    /// Number of entries refused because one entry alone exceeds its shard's whole byte
+    /// budget, so admitting it could only have emptied the shard to no purpose.
+    pub rejected_oversized: u64,
     /// Number of entries removed due to TTL expiration.
     pub expired: u64,
     /// Number of fresh entries evicted due to capacity bounds.
@@ -48,6 +51,7 @@ pub struct AtomicCacheCounters {
     rejected_incomplete_chain: AtomicU64,
     rejected_question_mismatch: AtomicU64,
     rejected_multiple_questions: AtomicU64,
+    rejected_oversized: AtomicU64,
     expired: AtomicU64,
     evicted: AtomicU64,
 }
@@ -103,6 +107,11 @@ impl AtomicCacheCounters {
             .fetch_add(count, Ordering::Relaxed);
     }
 
+    /// Increments the oversized-entry refusal counter by `count` entries.
+    pub fn inc_rejected_oversized(&self, count: u64) {
+        self.rejected_oversized.fetch_add(count, Ordering::Relaxed);
+    }
+
     /// Increments the expired entry counter by `count`.
     pub fn inc_expired(&self, count: u64) {
         self.expired.fetch_add(count, Ordering::Relaxed);
@@ -125,6 +134,7 @@ impl AtomicCacheCounters {
             rejected_incomplete_chain: self.rejected_incomplete_chain.load(Ordering::Relaxed),
             rejected_question_mismatch: self.rejected_question_mismatch.load(Ordering::Relaxed),
             rejected_multiple_questions: self.rejected_multiple_questions.load(Ordering::Relaxed),
+            rejected_oversized: self.rejected_oversized.load(Ordering::Relaxed),
             expired: self.expired.load(Ordering::Relaxed),
             evicted: self.evicted.load(Ordering::Relaxed),
             entries,
