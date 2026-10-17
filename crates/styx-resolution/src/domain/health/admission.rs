@@ -17,6 +17,7 @@ pub enum CircuitAdmission {
 
 impl HealthState {
     /// Attempts to admit a query for dispatch, taking the half-open trial slot if it is free.
+    #[must_use = "an admission that takes the trial slot must be released or recorded"]
     pub fn try_admit(&mut self, now: Instant, config: &CircuitConfig) -> Option<CircuitAdmission> {
         match self.circuit {
             CircuitState::Closed => Some(CircuitAdmission::Regular),
@@ -30,6 +31,7 @@ impl HealthState {
     }
 
     /// Attempts to admit a background health probe, taking the trial slot even before the cool-down.
+    #[must_use = "an admission that takes the trial slot must be released or recorded"]
     pub fn try_admit_probe(&mut self) -> Option<CircuitAdmission> {
         match self.circuit {
             CircuitState::Closed => Some(CircuitAdmission::Regular),

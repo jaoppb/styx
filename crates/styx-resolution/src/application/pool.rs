@@ -145,7 +145,7 @@ where
     ///
     /// The guard gives a half-open trial's slot back if it is dropped before the outcome is
     /// recorded, so hold it until the query has finished.
-    #[must_use]
+    #[must_use = "dropping the guard releases the trial slot immediately"]
     pub fn try_admit(&self, id: &UpstreamId) -> Option<TrialGuard<'_>> {
         let member = self.members.iter().find(|m| m.id == *id)?;
         let mut health = match member.health.write() {
@@ -160,7 +160,7 @@ where
     ///
     /// The guard gives a half-open trial's slot back if it is dropped before the outcome is
     /// recorded, so hold it until the probe has finished.
-    #[must_use]
+    #[must_use = "dropping the guard releases the trial slot immediately"]
     pub fn try_admit_probe(&self, id: &UpstreamId) -> Option<TrialGuard<'_>> {
         let member = self.members.iter().find(|m| m.id == *id)?;
         let mut health = match member.health.write() {
