@@ -38,13 +38,13 @@ pub struct TrialId(u64);
 impl TrialId {
     /// The first trial identity a fresh member hands out.
     #[must_use]
-    pub const fn first() -> Self {
+    pub(crate) const fn first() -> Self {
         Self(0)
     }
 
     /// The identity after this one, saturating at [`u64::MAX`].
     #[must_use]
-    pub const fn next(self) -> Self {
+    pub(crate) const fn next(self) -> Self {
         Self(self.0.saturating_add(1))
     }
 }

@@ -159,7 +159,7 @@ async fn deadline_cancelled_trial_frees_the_member_and_is_not_a_fault() {
 }
 
 #[tokio::test]
-async fn cancelled_probe_frees_the_member() {
+async fn cancelled_probe_keeps_the_cooldown_it_skipped() {
     let clock = Arc::new(TestClock::new());
     let upstream = CommandableUpstream::start().await.expect("upstream start");
     let pool = Arc::new(UpstreamPool::new(
@@ -184,11 +184,17 @@ async fn cancelled_probe_frees_the_member() {
     );
 
     assert!(
-        matches!(pool.snapshot()[0].circuit, CircuitState::HalfOpen { .. }),
-        "the probe moved the circuit to HalfOpen"
+        matches!(pool.snapshot()[0].circuit, CircuitState::Open { .. }),
+        "a probe cancelled before the cool-down puts the circuit back to Open"
     );
     assert!(
+        !available(&pool, 0),
+        "a cancelled probe must not skip the cool-down it was owed"
+    );
+
+    clock.advance(PAST_COOLDOWN);
+    assert!(
         available(&pool, 0),
-        "a cancelled probe must not lock the member out"
+        "once the cool-down elapses a cancelled probe leaves the member available"
     );
 }

@@ -31,7 +31,9 @@ single-trial flag added for #25).
 **A trial holds its slot through a guard that releases it on drop.**
 `UpstreamPool::try_admit` and `try_admit_probe` return `Option<TrialGuard>` instead of
 `bool`. Dropping the guard before the outcome is recorded puts the circuit back to
-`HalfOpen` with no trial in flight, so the next query or probe may take the slot.
+`HalfOpen` with no trial in flight, so the next query or probe may take the slot. A
+probe that took the slot from `Open`, before the cool-down had elapsed, puts the circuit
+back to that `Open`, so the cool-down it skipped is still owed.
 `try_sequential`, `try_fanout` and `execute_probe` each hold the guard for the length of
 the dispatch. The fan-out collector owns the guards of every member it admitted, not the
 spawned tasks, so an abort and a dropped future both release them.

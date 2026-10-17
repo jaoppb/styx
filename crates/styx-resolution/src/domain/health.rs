@@ -76,6 +76,7 @@ pub struct HealthState {
     half_open_successes: u32,
     refused_replies: RefusedReplies,
     next_trial: TrialId,
+    probe_reopens_to: Option<Instant>,
 }
 
 impl Default for HealthState {
@@ -97,6 +98,7 @@ impl HealthState {
             half_open_successes: 0,
             refused_replies: RefusedReplies::none(),
             next_trial: TrialId::first(),
+            probe_reopens_to: None,
         }
     }
 

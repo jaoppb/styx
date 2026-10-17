@@ -1,4 +1,4 @@
-//! CircuitAdmission of queries and probes against a member's circuit, and the half-open trial slot.
+//! Admission of queries and probes against a member's circuit, and the half-open trial slot.
 
 use std::time::Instant;
 
@@ -21,10 +21,10 @@ impl HealthState {
         match self.circuit {
             CircuitState::Closed => Some(CircuitAdmission::Regular),
             CircuitState::HalfOpen { trial: Some(_) } => None,
-            CircuitState::HalfOpen { trial: None } => Some(self.begin_trial()),
+            CircuitState::HalfOpen { trial: None } => Some(self.begin_trial(None)),
             CircuitState::Open { since } => {
                 let elapsed = now.checked_duration_since(since).unwrap_or_default();
-                (elapsed >= config.open_cooldown).then(|| self.begin_trial())
+                (elapsed >= config.open_cooldown).then(|| self.begin_trial(None))
             }
         }
     }
@@ -34,9 +34,8 @@ impl HealthState {
         match self.circuit {
             CircuitState::Closed => Some(CircuitAdmission::Regular),
             CircuitState::HalfOpen { trial: Some(_) } => None,
-            CircuitState::HalfOpen { trial: None } | CircuitState::Open { .. } => {
-                Some(self.begin_trial())
-            }
+            CircuitState::HalfOpen { trial: None } => Some(self.begin_trial(None)),
+            CircuitState::Open { since } => Some(self.begin_trial(Some(since))),
         }
     }
 
@@ -46,15 +45,23 @@ impl HealthState {
     /// upstream, so no failure is counted and no latency is sampled. Does nothing unless
     /// `trial` still holds the slot, so a trial that already recorded an outcome, or whose
     /// slot has since passed to a newer trial, is left alone.
+    ///
+    /// A probe that took the slot from `Open` puts the circuit back to that `Open`, so
+    /// the cool-down it skipped is still owed rather than lost.
     pub fn release_trial(&mut self, trial: TrialId) {
-        if self.circuit == (CircuitState::HalfOpen { trial: Some(trial) }) {
-            self.circuit = CircuitState::HalfOpen { trial: None };
+        if self.circuit != (CircuitState::HalfOpen { trial: Some(trial) }) {
+            return;
         }
+        self.circuit = match self.probe_reopens_to.take() {
+            Some(since) => CircuitState::Open { since },
+            None => CircuitState::HalfOpen { trial: None },
+        };
     }
 
-    fn begin_trial(&mut self) -> CircuitAdmission {
+    fn begin_trial(&mut self, reopens_to: Option<Instant>) -> CircuitAdmission {
         let trial = self.next_trial;
         self.next_trial = trial.next();
+        self.probe_reopens_to = reopens_to;
         self.circuit = CircuitState::HalfOpen { trial: Some(trial) };
         CircuitAdmission::Trial(trial)
     }
@@ -171,9 +178,23 @@ mod tests {
         let (mut health, _) = recovering();
 
         let trial = trial_of(health.try_admit_probe());
+
+        assert_eq!(
+            health.circuit(),
+            CircuitState::HalfOpen { trial: Some(trial) }
+        );
+        assert_eq!(health.try_admit_probe(), None);
+    }
+
+    #[test]
+    fn a_cancelled_probe_puts_an_open_circuit_back_to_open() {
+        let (mut health, _) = recovering();
+        let open = health.circuit();
+
+        let trial = trial_of(health.try_admit_probe());
         health.release_trial(trial);
 
-        assert_eq!(health.circuit(), CircuitState::HalfOpen { trial: None });
+        assert_eq!(health.circuit(), open);
     }
 
     #[test]
