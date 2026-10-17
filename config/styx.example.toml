@@ -3,7 +3,7 @@
 # Copy to styx.toml (or pass the path as the first argument) and adjust. styx exits at
 # startup when there is no styx.toml in the current directory and no path is given.
 #
-# Every key the server, supervisor, upstream and recursion sections accept appears below,
+# Every key the server, supervisor, upstream, cache and recursion sections accept appears below,
 # live or as a commented-out line showing its built-in default. Uncomment a line to
 # change it.
 
@@ -85,6 +85,16 @@ addr = "9.9.9.9:53"
 # failure_threshold = 3
 # open_cooldown_secs = 30
 # half_open_successes = 2
+
+# The answer cache. The bounds cover the whole cache and are split evenly across the
+# shards once, at startup, so a shard never holds more than its share. Each shard's byte
+# share must hold one large answer: `max_bytes` must be at least 256 KiB times `shards`
+# (8 MiB at 32 shards), `max_entries` at least `shards`, and styx refuses to start
+# otherwise. Fewer shards lets small budgets work at the cost of write concurrency.
+# [cache]
+# max_entries = 10000
+# max_bytes = 20971520
+# shards = 32
 
 # Infrastructure for the recursor. The root-hints file is the only source of root
 # servers: a missing or unparseable file stops styx at startup.

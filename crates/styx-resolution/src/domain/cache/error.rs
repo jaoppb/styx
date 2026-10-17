@@ -33,17 +33,27 @@ pub enum CacheError {
     #[error("cache needs at least one shard")]
     ZeroShards,
 
-    /// The configured capacity cannot give every shard at least one entry and one byte.
-    #[error(
-        "capacity of {max_entries} entries and {max_bytes} bytes cannot be split across {shards} shards"
-    )]
+    /// The configured entry bound cannot give every shard at least one entry.
+    #[error("capacity of {max_entries} entries cannot be split across {shards} shards")]
     BudgetBelowShardCount {
         /// Number of shards the budget was to be split across.
         shards: usize,
         /// Configured maximum entry count.
         max_entries: usize,
+    },
+
+    /// A shard's byte share could not hold one maximum-size answer.
+    #[error(
+        "{max_bytes} bytes across {shards} shards leaves a share too small for one answer; \
+         {shards} shards need at least {minimum_bytes} bytes"
+    )]
+    ByteShareBelowFloor {
+        /// Number of shards the budget was to be split across.
+        shards: usize,
         /// Configured maximum byte count.
         max_bytes: usize,
+        /// Smallest total byte budget that clears the floor for this many shards.
+        minimum_bytes: usize,
     },
 
     /// Configured TTL floor exceeds ceiling.

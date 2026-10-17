@@ -7,7 +7,9 @@ use styx_core::Clock;
 
 use crate::domain::cache::admission_outcome::{AdmissionOutcome, AdmittedEntries, RejectReason};
 use crate::domain::cache::bytes::HeapBytes;
-use crate::domain::cache::capacity::{CacheCapacity, DEFAULT_MAX_BYTES, DEFAULT_MAX_ENTRIES};
+use crate::domain::cache::capacity::{
+    CacheCapacity, DEFAULT_MAX_BYTES, DEFAULT_MAX_ENTRIES, MIN_SHARD_BYTES,
+};
 use crate::domain::cache::entry::CacheEntry;
 use crate::domain::cache::error::CacheError;
 use crate::domain::cache::key::CacheKey;
@@ -17,11 +19,13 @@ use crate::domain::cache::ttl::TtlPolicy;
 use crate::infrastructure::cache::eviction::{Eviction, EvictionReport};
 use crate::infrastructure::cache::shard::{Shard, ShardInner};
 
-/// Default number of concurrent shards (32).
-pub const DEFAULT_SHARDS: usize = 32;
+pub use crate::domain::cache::capacity::DEFAULT_SHARDS;
 
 // `with_defaults` is infallible only because the default budget can be split this way.
-const _: () = assert!(DEFAULT_MAX_ENTRIES >= DEFAULT_SHARDS && DEFAULT_MAX_BYTES >= DEFAULT_SHARDS);
+const _: () = assert!(
+    DEFAULT_MAX_ENTRIES >= DEFAULT_SHARDS
+        && DEFAULT_MAX_BYTES >= DEFAULT_SHARDS.saturating_mul(MIN_SHARD_BYTES)
+);
 
 /// A concurrent, sharded in-memory answer cache.
 pub struct ShardedAnswerCache<C> {
@@ -40,7 +44,8 @@ impl<C: Clock> ShardedAnswerCache<C> {
     ///
     /// # Errors
     /// Returns [`CacheError::ZeroShards`] for a shard count of zero, and
-    /// [`CacheError::BudgetBelowShardCount`] if `capacity` is smaller than the shard count.
+    /// [`CacheError::BudgetBelowShardCount`] if `capacity` has fewer entries than shards, and
+    /// [`CacheError::ByteShareBelowFloor`] if a shard's byte share could not hold one answer.
     pub fn new(
         clock: Arc<C>,
         capacity: CacheCapacity,
@@ -204,10 +209,13 @@ impl<C: Clock> ShardedAnswerCache<C> {
 impl<C: Clock> ShardedAnswerCache<C> {
     /// Stores one entry in its shard, making room first. Returns `true` if it was stored.
     ///
-    /// An entry larger than the shard's whole byte budget is refused up front: admitting
-    /// it could only empty the shard to no purpose. Room is made before the insert, so the
+    /// The entry already stored under `key` is superseded either way: it is removed before
+    /// anything else, so a refused refresh never leaves the older answer to be served.
+    /// An entry larger than the shard's whole byte budget is then refused: admitting it
+    /// could only empty the shard to no purpose. Room is made before the insert, so the
     /// entry just admitted is never its own victim.
     fn admit_entry(&self, guard: &mut ShardInner, key: &CacheKey, entry: CacheEntry) -> bool {
+        guard.remove(key);
         let entry_bytes = entry.heap_size();
         if entry_bytes > guard.capacity().max_bytes() {
             tracing::debug!(%entry_bytes, "refused an entry larger than its shard's byte budget");
@@ -215,7 +223,6 @@ impl<C: Clock> ShardedAnswerCache<C> {
             return false;
         }
 
-        guard.remove(key);
         let report = Eviction::make_room(guard, self.clock.now_monotonic(), entry_bytes);
         self.record_eviction(report);
 

@@ -42,6 +42,28 @@ Source: <https://github.com/jaoppb/styx/issues/80>. Files in scope:
   bar: the 10,000-entry median is within 10% of the 100-entry median in both shapes,
   over at least 10 runs. The PR reports both tables.
 
+### Decisions from the review of PR #125
+
+- **Oversized refresh drops the old entry.** Refusing an oversized entry still evicts
+  nothing else, but the entry already stored under its key is removed first. A refused
+  refresh must not leave the superseded answer being served until its TTL runs out. The
+  next lookup is a miss and re-resolves.
+- **Capacity is operator-configurable in this PR.** A `[cache]` section sets
+  `max_entries`, `max_bytes` and `shards`, wired through `main.rs` and
+  `config/styx.example.toml`, so `BudgetBelowShardCount` is a real startup error.
+- **Byte floor per shard.** Startup rejects a budget unless every shard's byte share can
+  hold one maximum-size answer. The error names the minimum total for the configured
+  shard count. `max_bytes >= shard_count` is no longer the rule.
+- **Slab bounded by the entry share.** The ring never holds more slots than the shard's
+  entry share (a slot is added only when none is free, which means all are live, and
+  admission evicts down to the share). The hand's sweep is therefore bounded by
+  configuration, and the ADR says "at most the entry share" instead of "whatever the
+  shard holds". A test proves the slab length.
+- **Bench bar met on one quiet run.** `cache_hit`, 20 samples, load 0.9 to 4.7 on 16
+  cores: single-threaded 239.1 ns (100 entries) vs 248.3 ns (10,000), +3.8%; 8 threads
+  1.262 µs vs 1.187 µs, -5.9%. Criterion point estimates, one run, not the n >= 10
+  median the bar asked for.
+
 ## Acceptance tests (fixed by the decisions above)
 
 - `CacheCapacity::new(100, …)` with 32 shards never holds more than 100 entries after
@@ -50,6 +72,10 @@ Source: <https://github.com/jaoppb/styx/issues/80>. Files in scope:
 - `new` rejects `max_entries` or `max_bytes` below `shard_count`, and a `shard_count`
   of 0.
 - An oversized entry is refused, evicts nothing and bumps the new counter.
+- An oversized refresh for a key already cached removes the old entry for that key.
+- A byte budget below the per-shard floor is rejected at startup, and so is the config
+  that produces it.
+- The ring's slab length never exceeds the shard's entry share after churn and expiry.
 - An expired entry reached by the hand is counted as `expired`, never `evicted`.
 
 ## Non-goals
@@ -66,6 +92,16 @@ None left open by the grill. Settled during implementation: the ring is CLOCK (t
 the ring, so arbitrary removal is clearing a slot), and the visited bit sits in an
 infrastructure slot beside `CacheEntry`, not on it.
 
+Left to implementation, not decided by the review grill:
+
+- `AnswerCache::admit` takes a `Vec<CacheEntry>` under one key, but the shard holds one
+  entry per key, and today admission builds at most one entry per outcome. If a second
+  entry ever appears, the loop would overwrite the earlier ones while still counting each
+  as admitted. Either narrow the type to one entry or define what several entries under
+  one key mean.
+- A hit deep-clones the `CacheEntry` under the shard's read lock. Returning an `Arc` or
+  cloning after the lock is released would shorten the critical section; not measured.
+
 ## Risks
 
 - Hash skew under the static split can hold effective capacity noticeably below the
@@ -76,5 +112,10 @@ infrastructure slot beside `CacheEntry`, not on it.
   two-core CI runner the contention case may not separate the old and new designs.
 - The eviction-order tests (for example `cache_store_tests.rs` with capacity 3 and one
   shard) assert strict LRU order and will need rewriting for second-chance order.
+- The per-shard byte floor scales with the shard count: 32 shards need a total of 32
+  times one maximum-size answer's heap size. A small-memory deployment has to lower
+  `shards`, which lowers write concurrency.
+- The bench evidence is a single run with a point estimate, so the 10% bar is shown on
+  this run only; the single-threaded 100 and 10,000 intervals overlap.
 - `Shard`, `Eviction` and `EvictionReport` are re-exported from the crate root, so
   reshaping them is a visible API change inside the workspace.

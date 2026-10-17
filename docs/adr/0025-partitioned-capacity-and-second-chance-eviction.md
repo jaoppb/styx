@@ -32,21 +32,29 @@ room; that costs effective capacity, not the bound. Shared atomic counters were 
 they cannot give a global least-recently-used victim and overshoot transiently between a
 check and an act.
 
-**Construction is fallible.** `ShardedAnswerCache::new` returns `CacheError::ZeroShards`
-for no shards and `CacheError::BudgetBelowShardCount` when entries or bytes are fewer than
-the shards, which would leave a shard that holds nothing and a cache that silently stops
-caching. `with_defaults` stays infallible: a const assertion ties the default budget to the
-default shard count.
+**Construction is fallible, and the operator sets the budget.**
+`ShardedAnswerCache::new` returns `CacheError::ZeroShards` for no shards,
+`CacheError::BudgetBelowShardCount` when there are fewer entries than shards, and
+`CacheError::ByteShareBelowFloor` when the smallest byte share could not hold
+`MIN_SHARD_BYTES` (256 KiB, one maximum-size answer: a 64 KiB wire message is about four
+times that in the heap estimate). Each would leave a shard that holds nothing or refuses
+ordinary answers, and a cache that silently stops caching. The `[cache]` section of the
+TOML file (`max_entries`, `max_bytes`, `shards`) feeds this check at startup, so a budget
+that fails it stops styx with an error naming the minimum total for the chosen shard count.
+`with_defaults` stays infallible: a const assertion ties the default budget to the default
+shard count and the floor.
 
 **Recency is a CLOCK ring, not a list.** A shard keeps its entries in a slab with an
 atomic `visited` bit per slot. A hit sets the bit through a shared reference, so
 `lookup` runs entirely under the shard's read lock and takes no write lock and no scan.
 Eviction sweeps a hand round the slab: it clears a set bit and moves on, and takes the
 first entry whose bit is clear. Each step is O(1) and each set bit costs one step to clear,
-so admission is amortised O(1) whatever the shard holds. A new entry starts unvisited.
-CLOCK was chosen over SIEVE because the slab is the ring: removing an arbitrary entry
-(expiry, overwrite) is clearing its slot and recycling the index, with no link pointers to
-keep consistent and nothing to index into.
+so admission is amortised O(1). The slab grows only when no slot is free, and admission
+evicts down to the shard's entry share, so the slab never holds more slots than that
+share: the hand's sweep is bounded by configuration, not by the peak of past traffic. A
+new entry starts unvisited. CLOCK was chosen over SIEVE because the slab is the ring:
+removing an arbitrary entry (expiry, overwrite) is clearing its slot and recycling the
+index, with no link pointers to keep consistent and nothing to index into.
 
 **The expired sweep is folded into the hand.** The separate full scan is gone. The hand
 takes an expired entry on sight, whatever its visited bit, and counts it as `expired`; a
@@ -55,8 +63,11 @@ fresh one it takes counts as `evicted`. The two statistics stay separable.
 **Room is made before the insert, and an oversized entry is refused.** `admit` removes any
 entry already stored under the key, then evicts until one more entry fits, then inserts, so
 the entry just admitted is never its own victim. An entry larger than its shard's whole byte
-budget is refused before any of that: it would only empty the shard to no purpose. It is
-not counted as admitted; `CacheStats::rejected_oversized` counts it and a `debug` event logs it.
+budget is refused after that removal, but before any eviction: it would only empty the shard
+to no purpose. The removal comes first so that a refused refresh does not leave the
+superseded answer to be served until its TTL runs out; the next lookup is a miss and
+re-resolves. A refused entry is not counted as admitted; `CacheStats::rejected_oversized`
+counts it and a `debug` event logs it.
 
 **An expired hit is re-checked under the write lock.** `lookup` finds the entry stale under
 the read lock and then takes the write lock to purge it. Between the two another thread may
@@ -77,8 +88,12 @@ have admitted a fresh entry for the same key, so the purge confirms staleness fi
   an unvisited fresh entry while an expired one sits further round the ring, and that
   expired entry stays until the hand reaches it or a lookup finds it. Restoring
   expired-first would need a structure ordered by deadline, which this record does not add.
-- `ShardedAnswerCache::new` can fail, and every caller handles it. A budget smaller than the
-  shard count is a configuration error reported at startup, not a quietly disabled cache.
+- `ShardedAnswerCache::new` can fail, and every caller handles it. A budget that cannot give
+  every shard an entry and a maximum-size answer is a configuration error reported at startup,
+  not a quietly disabled cache. The byte floor scales with the shard count (8 MiB at 32
+  shards), so a small deployment lowers `shards`, which lowers write concurrency.
+- An oversized refresh costs one upstream query each time it is asked for, because the old
+  answer is gone and the new one is not stored.
 - Effective capacity is somewhat below the configured total when keys hash unevenly, most
   visibly for small budgets. Nothing measures that loss.
 - `CacheStats` gains `rejected_oversized`.

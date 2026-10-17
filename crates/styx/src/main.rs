@@ -25,9 +25,9 @@ use styx_recursion::infrastructure::do53_transport::{Do53Transport, DNS_PORT};
 use styx_recursion::infrastructure::infra_cache::MemoryInfraCache;
 use styx_recursion::infrastructure::sinks::{DiagnosticsStore, DiscardChainMaterial};
 use styx_resolution::{
-    AllowAllFilter, CacheStage, CanaryConfig, ConfiguredStrategy, DiscardObserver, Do53Forwarder,
-    NoLocalRecords, Pipeline, PoolConfig, PoolMember, ProbePolicy, ProbeScheduler, Server,
-    ServerConfig, ShardedAnswerCache, UpstreamConfig, UpstreamPool,
+    AllowAllFilter, CacheConfig, CacheStage, CanaryConfig, ConfiguredStrategy, DiscardObserver,
+    Do53Forwarder, NoLocalRecords, Pipeline, PoolConfig, PoolMember, ProbePolicy, ProbeScheduler,
+    Server, ServerConfig, ShardedAnswerCache, TtlPolicy, UpstreamConfig, UpstreamPool,
 };
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::filter::LevelFilter;
@@ -55,7 +55,11 @@ async fn main() -> anyhow::Result<()> {
         "styx starting"
     );
 
-    let (config, recursion) = load_config().await?;
+    let LoadedConfig {
+        server: config,
+        recursion,
+        cache,
+    } = load_config().await?;
     let pool_config = config
         .upstream
         .as_ref()
@@ -67,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
         None => None,
     };
     let pool = build_pool(pool_config, recursion.as_ref(), &clock)?;
-    let pipeline = build_pipeline(pool.clone(), clock.clone(), config.query_timeout);
+    let pipeline = build_pipeline(pool.clone(), clock.clone(), config.query_timeout, cache)?;
 
     let probe_cancel = CancellationToken::new();
     let scheduler = ProbeScheduler::new(pool, clock.clone(), pool_config.probe.tick);
@@ -202,10 +206,18 @@ fn build_pipeline(
     pool: Arc<ConcretePool>,
     clock: Arc<SystemClock>,
     query_timeout: Duration,
-) -> Arc<ConcretePipeline> {
-    let cache = Arc::new(ShardedAnswerCache::with_defaults(clock.clone()));
+    cache_config: CacheConfig,
+) -> anyhow::Result<Arc<ConcretePipeline>> {
+    let cache = ShardedAnswerCache::new(
+        clock.clone(),
+        cache_config.capacity,
+        TtlPolicy::default(),
+        cache_config.shards,
+    )
+    .context("failed to size the answer cache from [cache]")?;
+    let cache = Arc::new(cache);
     let cache_stage = Arc::new(CacheStage::new(cache, pool, clock.clone(), query_timeout));
-    Arc::new(
+    Ok(Arc::new(
         Pipeline::new(
             Arc::new(NoLocalRecords::new()),
             Arc::new(AllowAllFilter::new()),
@@ -213,12 +225,20 @@ fn build_pipeline(
             clock,
         )
         .with_terminal(cache_stage),
-    )
+    ))
 }
 
-/// Reads the TOML file once and parses both sections it owns: the server and pool
-/// (`styx-resolution`) and the optional `[recursion]` section (`styx-recursion`).
-async fn load_config() -> anyhow::Result<(ServerConfig, Option<RecursionConfig>)> {
+/// What the TOML file holds, one parsed section per owner.
+struct LoadedConfig {
+    server: ServerConfig,
+    recursion: Option<RecursionConfig>,
+    cache: CacheConfig,
+}
+
+/// Reads the TOML file once and parses the sections it owns: the server and pool and the
+/// `[cache]` section (`styx-resolution`), and the optional `[recursion]` section
+/// (`styx-recursion`).
+async fn load_config() -> anyhow::Result<LoadedConfig> {
     let path = match std::env::args().nth(1) {
         Some(path) => path,
         None if tokio::fs::try_exists("styx.toml").await.unwrap_or_default() => {
@@ -238,7 +258,13 @@ async fn load_config() -> anyhow::Result<(ServerConfig, Option<RecursionConfig>)
     }
     let recursion = RecursionConfig::from_toml_str(&content)
         .with_context(|| format!("failed to parse [recursion] from {path}"))?;
-    Ok((config, recursion))
+    let cache = CacheConfig::from_toml_str(&content)
+        .with_context(|| format!("failed to parse [cache] from {path}"))?;
+    Ok(LoadedConfig {
+        server: config,
+        recursion,
+        cache,
+    })
 }
 
 /// Raises the `RLIMIT_NOFILE` soft limit to the hard limit before any socket is bound.

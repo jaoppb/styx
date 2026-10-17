@@ -115,9 +115,12 @@ styx/
 │   │   └── src/
 │   ├── styx-resolution/        # DNS resolution engine and upstream forwarding
 │   │   └── src/
-│   │       ├── domain/         # Domain logic, circuit breaker, health, ports/
-│   │       ├── application/    # Pipeline, selection strategies, probe scheduler
-│   │       └── infrastructure/ # UDP/TCP listeners, client transports, port adapters
+│   │       ├── domain/         # Domain logic, circuit breaker, health, ports/, cache/
+│   │       │                   # (admission, CacheCapacity: per-shard split and byte floor)
+│   │       ├── application/    # Pipeline, selection strategies, probe scheduler,
+│   │       │                   # CacheStage, [cache] config
+│   │       └── infrastructure/ # UDP/TCP listeners, client transports, port adapters,
+│   │                           # cache/ (sharded store, CLOCK ring, eviction)
 │   ├── styx-recursion/         # Iterative recursor behind the Upstream port
 │   │   ├── src/
 │   │   │   ├── domain/         # Descent, minimisation, classification, topology, ports

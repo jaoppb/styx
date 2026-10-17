@@ -4,7 +4,9 @@
 //! a shared reference, so a shard serves hits under its read lock. Eviction sweeps a hand
 //! round the slab under the write lock: it clears a set bit and moves on, and takes the
 //! first slot whose bit is already clear. Every sweep step is O(1) and each set bit costs
-//! one step to clear, so admission is amortised O(1) however many entries the shard holds.
+//! one step to clear, so admission is amortised O(1). The slab grows only when no slot is
+//! free, so it never outgrows the entries the shard may hold, and the hand's sweep is
+//! bounded by that share however the traffic comes and goes.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -110,6 +112,11 @@ impl ClockRing {
             return Some(Victim { removed, expired });
         }
         None
+    }
+
+    /// Returns how many slots the ring has allocated, live or free.
+    pub(crate) fn slot_count(&self) -> usize {
+        self.slots.len()
     }
 
     /// Empties the ring.

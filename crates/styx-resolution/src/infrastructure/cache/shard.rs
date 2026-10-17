@@ -47,6 +47,10 @@ impl ShardInner {
         self.bytes
     }
 
+    pub(crate) fn slot_count(&self) -> usize {
+        self.ring.slot_count()
+    }
+
     pub(crate) fn contains(&self, key: &CacheKey) -> bool {
         self.index.contains_key(key)
     }
@@ -134,6 +138,12 @@ impl Shard {
     #[must_use]
     pub fn entry_count(&self) -> usize {
         self.inner.read().map_or(0, |guard| guard.len())
+    }
+
+    /// Returns the number of ring slots this shard has allocated, live or free.
+    #[must_use]
+    pub fn slot_count(&self) -> usize {
+        self.inner.read().map_or(0, |guard| guard.slot_count())
     }
 
     /// Returns the estimated heap bytes used by entries in this shard.

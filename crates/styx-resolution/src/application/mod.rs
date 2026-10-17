@@ -7,6 +7,7 @@
 //! `thiserror` enum. No synchronous I/O: a database outage must degrade
 //! logging and admin, never resolution.
 
+pub mod cache_config;
 pub mod cache_stage;
 pub mod pipeline;
 pub mod pool;
@@ -15,6 +16,7 @@ pub(crate) mod reply_judge;
 pub mod strategies;
 pub mod terminal;
 
+pub use cache_config::CacheConfig;
 pub use cache_stage::CacheStage;
 pub use pipeline::Pipeline;
 pub use pool::{PoolMember, UpstreamPool};
