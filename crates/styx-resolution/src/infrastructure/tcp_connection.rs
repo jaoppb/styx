@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use styx_proto::application::Decoder;
-use styx_proto::{DecodeError, Header, Message, MessageKind, ResponseCode, UnsupportedEdns};
+use styx_proto::{DecodeError, Header, Message, MessageKind, ResponseCode};
 use tokio::io::AsyncReadExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
@@ -17,13 +17,13 @@ use tokio_util::sync::CancellationToken;
 use styx_core::Clock;
 
 use crate::application::terminal::TerminalHandler;
-use crate::domain::bad_edns_version_response;
 use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 use crate::infrastructure::admission::{ListenerShared, QueryPermit};
+use crate::infrastructure::early_reply::{badvers_reply, formerr_reply};
 use crate::infrastructure::response::ResponseWriter;
 use styx_net::write_framed;
 
@@ -341,11 +341,12 @@ where
         let query = match decoder.decode_message() {
             Ok(msg) => msg,
             Err(DecodeError::UnsupportedEdnsVersion(rejected)) => {
-                return self.badvers(&rejected);
+                tracing::debug!(peer = %self.peer, version = rejected.version(), "unsupported EDNS version; answering BADVERS");
+                return self.reply_early(badvers_reply(&rejected));
             }
             Err(err) => {
                 tracing::warn!(peer = %self.peer, %err, "malformed TCP query; responding FORMERR");
-                return self.formerr(bytes);
+                return self.reply_early(formerr_reply(bytes));
             }
         };
 
@@ -376,30 +377,14 @@ where
         self.encode(response, &ctx)
     }
 
-    fn formerr(&self, bytes: &[u8]) -> Option<Vec<u8>> {
-        if bytes.get(2).is_some_and(|&b| (b & 0x80) != 0) {
-            tracing::debug!(peer = %self.peer, "silently dropping malformed TCP response (QR=1)");
-            return None;
-        }
-        let (Some(&b0), Some(&b1)) = (bytes.first(), bytes.get(1)) else {
+    /// Encodes `reply` to a query that never reached the pipeline, or drops it when there is
+    /// no reply to give.
+    fn reply_early(&self, reply: Option<Message>) -> Option<Vec<u8>> {
+        let Some(reply) = reply else {
+            tracing::debug!(peer = %self.peer, "silently dropping unanswerable TCP message");
             return None;
         };
-        let id = u16::from_be_bytes([b0, b1]);
-        let mut resp = Message::new(Header::new_query(id, styx_proto::Opcode::Query, false));
-        resp.header.kind = MessageKind::Response;
-        resp.header.rcode = ResponseCode::FORMERR;
-        self.encode_error_reply(resp)
-    }
-
-    /// Answers a query that asked for an unsupported EDNS version with BADVERS (RFC 6891
-    /// §6.1.3), or drops it when it is itself a response.
-    fn badvers(&self, rejected: &UnsupportedEdns) -> Option<Vec<u8>> {
-        if rejected.header().kind == MessageKind::Response {
-            tracing::debug!(peer = %self.peer, "silently dropping inbound TCP response (QR=1)");
-            return None;
-        }
-        tracing::debug!(peer = %self.peer, version = rejected.version(), "unsupported EDNS version; answering BADVERS");
-        self.encode_error_reply(bad_edns_version_response(rejected))
+        self.encode_error_reply(reply)
     }
 
     /// Encodes a reply to a query that never reached the pipeline.

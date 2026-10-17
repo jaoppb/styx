@@ -10,6 +10,7 @@
 pub mod admission;
 pub mod cache;
 pub mod do53;
+pub(crate) mod early_reply;
 pub mod filter;
 pub mod local;
 pub mod observer;
