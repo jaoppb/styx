@@ -15,6 +15,7 @@ use crate::domain::cache::error::CacheError;
 use crate::domain::cache::key::CacheKey;
 use crate::domain::cache::port::{AnswerCache, Lookup};
 use crate::domain::cache::ttl::TtlPolicy;
+use crate::domain::client_reply::conform_to_query;
 use crate::domain::error::PipelineError;
 use crate::domain::request::RequestContext;
 use crate::domain::selection::SelectionStrategy;
@@ -83,15 +84,15 @@ where
     }
     fn handle_cache_hit(
         &self,
-        query_id: u16,
-        key: &CacheKey,
+        ctx: &RequestContext,
+        question: &styx_proto::Question,
         entry: CacheEntry,
     ) -> Result<ResolutionResponse, PipelineError> {
         let now = self.clock.now_monotonic();
         let mut message = entry
-            .to_response(key, now)
+            .to_response(question, now)
             .map_err(|e| PipelineError::Internal(e.to_string()))?;
-        message.header.id = query_id;
+        conform_to_query(&mut message, &ctx.query);
 
         let outcome = ResolutionOutcome::Resolved {
             source: ResolvedSource::CacheHit,
@@ -105,13 +106,13 @@ where
 
     async fn resolve_uncacheable(
         &self,
-        query_id: u16,
+        ctx: &RequestContext,
         question: &styx_proto::Question,
         deadline: std::time::Instant,
     ) -> Result<ResolutionResponse, PipelineError> {
         let upstream_resp = self.pool.resolve(question, deadline).await?;
         let mut message = upstream_resp.message;
-        message.header.id = query_id;
+        conform_to_query(&mut message, &ctx.query);
 
         let source = match upstream_resp.kind {
             UpstreamKind::Forwarder => ResolvedSource::Upstream,
@@ -130,7 +131,7 @@ where
 
     async fn resolve_and_admit(
         &self,
-        query_id: u16,
+        ctx: &RequestContext,
         question: &styx_proto::Question,
         deadline: std::time::Instant,
     ) -> Result<ResolutionResponse, PipelineError> {
@@ -149,7 +150,7 @@ where
         let _ = self.cache.admit(admission_outcome);
 
         let mut message = upstream_resp.message;
-        message.header.id = query_id;
+        conform_to_query(&mut message, &ctx.query);
 
         let source = match upstream_resp.kind {
             UpstreamKind::Forwarder => ResolvedSource::Upstream,
@@ -192,19 +193,14 @@ where
         let key = match CacheKey::from_question(question) {
             Ok(k) => k,
             Err(CacheError::UncacheableQuestion(_)) => {
-                return self
-                    .resolve_uncacheable(ctx.query.header.id, question, deadline)
-                    .await;
+                return self.resolve_uncacheable(ctx, question, deadline).await;
             }
             Err(other) => return Err(PipelineError::Internal(other.to_string())),
         };
 
         match self.cache.lookup(&key) {
-            Lookup::Hit(entry) => self.handle_cache_hit(ctx.query.header.id, &key, entry),
-            Lookup::Miss | Lookup::Expired => {
-                self.resolve_and_admit(ctx.query.header.id, question, deadline)
-                    .await
-            }
+            Lookup::Hit(entry) => self.handle_cache_hit(ctx, question, entry),
+            Lookup::Miss | Lookup::Expired => self.resolve_and_admit(ctx, question, deadline).await,
         }
     }
 }

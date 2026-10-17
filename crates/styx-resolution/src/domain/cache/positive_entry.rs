@@ -11,14 +11,15 @@ use crate::domain::cache::bytes::HeapBytes;
 use crate::domain::cache::dnssec::DnssecMetadata;
 use crate::domain::cache::entry::SecurityStatus;
 use crate::domain::cache::error::CacheError;
-use crate::domain::cache::key::{CacheKey, CanonicalName};
+use crate::domain::cache::key::CanonicalName;
 use crate::domain::cache::rrset::RRset;
 use crate::domain::cache::ttl::Deadline;
 
 /// Header flags preserved for a cached DNS response message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MessageFlags {
-    /// Authoritative Answer (AA) flag.
+    /// Authoritative Answer (AA) flag as the upstream set it. A hit never replays it: a cache
+    /// is not authoritative for the zone it answers about.
     pub authoritative: bool,
     /// Authentic Data (AD) flag.
     pub authentic_data: bool,
@@ -221,20 +222,15 @@ impl CachedMessage {
     ///
     /// # Errors
     /// Returns [`CacheError`] if TTL calculation fails.
-    pub fn to_response(&self, key: &CacheKey, now: Instant) -> Result<Message, CacheError> {
+    pub fn to_response(&self, question: &Question, now: Instant) -> Result<Message, CacheError> {
         let mut header = Header::new_query(0, Opcode::Query, false);
         header.kind = MessageKind::Response;
         header.rcode = self.rcode;
-        header.authoritative = self.flags.authoritative;
         header.authentic_data = self.flags.authentic_data;
         header.recursion_available = true;
 
         let mut msg = Message::new(header);
-        msg.questions.push(Question::new(
-            key.qname().inner().clone(),
-            key.qtype(),
-            key.qclass(),
-        ));
+        msg.questions.push(question.clone());
 
         for rrset in &self.answer {
             msg.answers.extend(rrset.to_resource_records(now)?);
@@ -298,7 +294,7 @@ impl PositiveEntry {
     ///
     /// # Errors
     /// Returns [`CacheError`] if response construction fails.
-    pub fn to_response(&self, key: &CacheKey, now: Instant) -> Result<Message, CacheError> {
+    pub fn to_response(&self, question: &Question, now: Instant) -> Result<Message, CacheError> {
         match self {
             Self::RRset(rrset) => {
                 let mut header = Header::new_query(0, Opcode::Query, false);
@@ -308,15 +304,11 @@ impl PositiveEntry {
                 header.authentic_data = rrset.security() == SecurityStatus::Secure;
 
                 let mut msg = Message::new(header);
-                msg.questions.push(Question::new(
-                    key.qname().inner().clone(),
-                    key.qtype(),
-                    key.qclass(),
-                ));
+                msg.questions.push(question.clone());
                 msg.answers = rrset.to_resource_records(now)?;
                 Ok(msg)
             }
-            Self::Message(msg) => msg.to_response(key, now),
+            Self::Message(msg) => msg.to_response(question, now),
         }
     }
 }

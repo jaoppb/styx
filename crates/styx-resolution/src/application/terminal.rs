@@ -116,7 +116,7 @@ where
 
         let upstream_resp = self.pool.resolve(question, deadline).await?;
         let mut message = upstream_resp.message;
-        message.header.id = ctx.query.header.id;
+        crate::domain::client_reply::conform_to_query(&mut message, &ctx.query);
 
         let source = match upstream_resp.kind {
             styx_core::UpstreamKind::Forwarder => crate::domain::answer::ResolvedSource::Upstream,

@@ -2,11 +2,10 @@
 
 use std::time::Instant;
 
-use styx_proto::Message;
+use styx_proto::{Message, Question};
 
 use crate::domain::cache::bytes::HeapBytes;
 use crate::domain::cache::error::CacheError;
-use crate::domain::cache::key::CacheKey;
 use crate::domain::cache::negative_entry::NegativeEntry;
 use crate::domain::cache::positive_entry::PositiveEntry;
 use crate::domain::cache::ttl::Deadline;
@@ -51,10 +50,10 @@ impl CacheEntry {
     ///
     /// # Errors
     /// Returns [`CacheError`] if TTL recomputation or message assembly fails.
-    pub fn to_response(&self, key: &CacheKey, now: Instant) -> Result<Message, CacheError> {
+    pub fn to_response(&self, question: &Question, now: Instant) -> Result<Message, CacheError> {
         match self {
-            Self::Positive(entry) => entry.to_response(key, now),
-            Self::Negative(entry) => entry.to_response(key, now),
+            Self::Positive(entry) => entry.to_response(question, now),
+            Self::Negative(entry) => entry.to_response(question, now),
         }
     }
 }
