@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn derive_max_response_size_caps_at_server_payload() {
         let mut query = Message::new(Header::new_query(1, Opcode::Query, false));
-        query.opt = Some(Opt::new(4096, 0, 0, false, Vec::new()));
+        query.opt = Some(Opt::new(4096, 0, false, Vec::new()));
         let server_payload = MaxResponseSize::from_edns_advertised(1232);
 
         let size = RequestContext::derive_max_response_size(Transport::Udp, &query, server_payload);
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn derive_max_response_size_respects_smaller_client_payload() {
         let mut query = Message::new(Header::new_query(1, Opcode::Query, false));
-        query.opt = Some(Opt::new(1024, 0, 0, false, Vec::new()));
+        query.opt = Some(Opt::new(1024, 0, false, Vec::new()));
         let server_payload = MaxResponseSize::from_edns_advertised(1232);
 
         let size = RequestContext::derive_max_response_size(Transport::Udp, &query, server_payload);
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn derive_max_response_size_clamps_small_client_to_512() {
         let mut query = Message::new(Header::new_query(1, Opcode::Query, false));
-        query.opt = Some(Opt::new(256, 0, 0, false, Vec::new()));
+        query.opt = Some(Opt::new(256, 0, false, Vec::new()));
         let server_payload = MaxResponseSize::from_edns_advertised(1232);
 
         let size = RequestContext::derive_max_response_size(Transport::Udp, &query, server_payload);
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn derive_max_response_size_on_tcp_returns_tcp_ceiling() {
         let mut query = Message::new(Header::new_query(1, Opcode::Query, false));
-        query.opt = Some(Opt::new(1232, 0, 0, false, Vec::new()));
+        query.opt = Some(Opt::new(1232, 0, false, Vec::new()));
         let server_payload = MaxResponseSize::from_edns_advertised(1232);
 
         let size = RequestContext::derive_max_response_size(Transport::Tcp, &query, server_payload);

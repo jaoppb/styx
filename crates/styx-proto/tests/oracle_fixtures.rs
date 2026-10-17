@@ -260,7 +260,7 @@ fn test_oracle_edns_opt() {
     assert_eq!(opt.udp_payload_size(), 1232);
     assert_eq!(opt.version(), 0);
     assert!(opt.dnssec_ok());
-    assert_eq!(opt.extended_rcode(), 0);
+    assert_eq!(decoded.header.rcode, ResponseCode::NOERROR);
 }
 
 #[test]

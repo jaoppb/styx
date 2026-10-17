@@ -93,7 +93,7 @@ impl ResponseWriter {
             if let Some(opt) = message.opt.as_mut() {
                 opt.set_udp_payload_size(server_size);
             } else {
-                message.opt = Some(Opt::new(server_size, 0, 0, false, Vec::new()));
+                message.opt = Some(Opt::new(server_size, 0, false, Vec::new()));
             }
         } else {
             message.opt = None;
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn response_opt_advertises_server_payload_size() {
         let mut query = Message::new(Header::new_query(1, Opcode::Query, true));
-        query.opt = Some(Opt::new(65535, 0, 0, false, Vec::new()));
+        query.opt = Some(Opt::new(65535, 0, false, Vec::new()));
         let client = ClientId::from_socket_addr(SocketAddr::from(([127, 0, 0, 1], 5353)));
         let server_payload = MaxResponseSize::from_edns_advertised(1232);
         let ctx = RequestContext::new(
@@ -181,7 +181,7 @@ mod tests {
 
         let mut response = Message::new(Header::new_query(1, Opcode::Query, false));
         // Upstream response or terminal had client's advertised size
-        response.opt = Some(Opt::new(65535, 0, 0, false, Vec::new()));
+        response.opt = Some(Opt::new(65535, 0, false, Vec::new()));
 
         let bytes = ResponseWriter::new().write(response, &ctx).expect("write");
         let decoded = Decoder::new(&bytes).decode_message().expect("decode");
@@ -206,7 +206,7 @@ mod tests {
 
         let mut response = Message::new(Header::new_query(1, Opcode::Query, false));
         // Upstream responded with an OPT
-        response.opt = Some(Opt::new(4096, 0, 0, false, Vec::new()));
+        response.opt = Some(Opt::new(4096, 0, false, Vec::new()));
 
         let bytes = ResponseWriter::new().write(response, &ctx).expect("write");
         let decoded = Decoder::new(&bytes).decode_message().expect("decode");
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn response_creates_opt_when_query_has_opt_and_response_had_none() {
         let mut query = Message::new(Header::new_query(1, Opcode::Query, true));
-        query.opt = Some(Opt::new(4096, 0, 0, false, Vec::new()));
+        query.opt = Some(Opt::new(4096, 0, false, Vec::new()));
         let client = ClientId::from_socket_addr(SocketAddr::from(([127, 0, 0, 1], 5353)));
         let server_payload = MaxResponseSize::from_edns_advertised(1232);
         let ctx = RequestContext::new(

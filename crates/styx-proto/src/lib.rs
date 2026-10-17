@@ -27,4 +27,5 @@ pub use domain::rdata::dnssec::{
 };
 pub use domain::rdata::{CharacterString, RData, UnknownRdata};
 pub use domain::record::{RecordClass, RecordType, ResourceRecord, Ttl};
+pub use domain::unsupported_edns::UnsupportedEdns;
 pub use infrastructure::{frame_tcp, read_tcp_frame_length, MAX_TCP_MESSAGE_LEN};

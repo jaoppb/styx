@@ -71,7 +71,7 @@ impl<C: Clock> Do53Forwarder<C> {
         let header = Header::new_query(0, Opcode::Query, true);
         let mut msg = Message::new(header);
         msg.questions.push(query.clone());
-        msg.opt = Some(Opt::new(self.edns_buffer.octets(), 0, 0, false, Vec::new()));
+        msg.opt = Some(Opt::new(self.edns_buffer.octets(), 0, false, Vec::new()));
         msg
     }
 
