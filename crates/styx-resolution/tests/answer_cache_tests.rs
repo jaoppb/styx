@@ -144,12 +144,10 @@ async fn test_ttl_expiration_and_clamp() {
     let clock = Arc::new(TestClock::new());
     let ttl_policy = TtlPolicy::new(Ttl::from_secs(5), Ttl::from_secs(30), Ttl::from_secs(10))
         .expect("valid ttl policy");
-    let cache = Arc::new(ShardedAnswerCache::new(
-        Arc::clone(&clock),
-        CacheCapacity::default(),
-        ttl_policy,
-        4,
-    ));
+    let cache = Arc::new(
+        ShardedAnswerCache::new(Arc::clone(&clock), CacheCapacity::default(), ttl_policy, 4)
+            .expect("cache"),
+    );
     let upstream = CommandableUpstream::start().await.expect("upstream start");
     let stage = create_cache_stage_with_admission(
         Arc::clone(&cache),

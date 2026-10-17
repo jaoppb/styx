@@ -1,5 +1,8 @@
 //! Store introspection, bailiwick enforcement, eviction, and concurrency tests.
 
+// The helpers below sit outside `#[test]` functions, where clippy's expect allowance stops.
+#![allow(clippy::expect_used)]
+
 mod harness;
 
 use std::net::Ipv4Addr;
@@ -153,80 +156,93 @@ fn make_test_key(name: &str) -> Option<CacheKey> {
     CacheKey::from_question(&q).ok()
 }
 
-#[tokio::test]
-async fn test_capacity_eviction_expired_before_fresh_lru() {
-    let clock = Arc::new(TestClock::new());
-    // Single shard with capacity of 3 entries to deterministically exercise eviction
+/// Single shard holding three entries, so the hand's walk is deterministic.
+fn three_slot_cache(clock: &Arc<TestClock>) -> ShardedAnswerCache<TestClock> {
     let capacity = CacheCapacity::new(3, HeapBytes::new(1024 * 1024));
-    let cache = ShardedAnswerCache::new(Arc::clone(&clock), capacity, TtlPolicy::default(), 1);
-    let admission = Admission::new(TtlPolicy::default());
+    ShardedAnswerCache::new(Arc::clone(clock), capacity, TtlPolicy::default(), 1).expect("cache")
+}
 
-    // Helper to synthesize an upstream message and admit it
-    let admit_record = |name: &str, ttl_secs: u32| {
-        let qname = Name::from_ascii(name).expect("qname");
-        let question = Question::new(qname.clone(), RecordType::A, RecordClass::In);
+fn admit_record(
+    cache: &ShardedAnswerCache<TestClock>,
+    clock: &TestClock,
+    name: &str,
+    ttl_secs: u32,
+) {
+    let qname = Name::from_ascii(name).expect("qname");
+    let question = Question::new(qname.clone(), RecordType::A, RecordClass::In);
 
-        let mut msg = Message::response_to(0x1000, question.clone());
-        msg.answers.push(ResourceRecord::new(
-            qname,
-            RecordType::A,
-            RecordClass::In,
-            Ttl::from_secs(ttl_secs),
-            RData::A(Ipv4Addr::new(1, 2, 3, 4)),
-        ));
-
-        let request = AdmissionRequest::new(
-            &question,
-            &msg,
-            AnswerSource::Upstream,
-            clock.now_monotonic(),
-        )
-        .expect("request");
-        let outcome = admission.evaluate(request);
-        cache.admit(outcome).expect("admit");
-    };
-
-    // 1. Populate with 3 entries: k1 (TTL 10), k2 (TTL 100), k3 (TTL 100)
-    admit_record("k1.test.", 10);
-    admit_record("k2.test.", 100);
-    admit_record("k3.test.", 100);
-    assert_eq!(cache.stats().entries, 3);
-
-    // Advance clock by 20s: k1 expires, k2 and k3 remain fresh
-    clock.advance(Duration::from_secs(20));
-
-    // 2. Admit k4 (TTL 100): exceeds capacity 3, triggers eviction.
-    // Expired entry (k1) MUST be reclaimed first, leaving fresh entries intact.
-    admit_record("k4.test.", 100);
-    assert_eq!(cache.stats().entries, 3);
-
-    let k1_key = make_test_key("k1.test.").expect("key");
-    assert!(matches!(
-        cache.lookup(&k1_key),
-        Lookup::Miss | Lookup::Expired
+    let mut msg = Message::response_to(0x1000, question.clone());
+    msg.answers.push(ResourceRecord::new(
+        qname,
+        RecordType::A,
+        RecordClass::In,
+        Ttl::from_secs(ttl_secs),
+        RData::A(Ipv4Addr::new(1, 2, 3, 4)),
     ));
 
-    let k2_key = make_test_key("k2.test.").expect("key");
-    let k3_key = make_test_key("k3.test.").expect("key");
-    let k4_key = make_test_key("k4.test.").expect("key");
+    let request = AdmissionRequest::new(
+        &question,
+        &msg,
+        AnswerSource::Upstream,
+        clock.now_monotonic(),
+    )
+    .expect("request");
+    let outcome = Admission::new(TtlPolicy::default()).evaluate(request);
+    cache.admit(outcome).expect("admit");
+}
 
-    assert!(matches!(cache.lookup(&k2_key), Lookup::Hit(_)));
-    assert!(matches!(cache.lookup(&k3_key), Lookup::Hit(_)));
-    assert!(matches!(cache.lookup(&k4_key), Lookup::Hit(_)));
+fn hits(cache: &ShardedAnswerCache<TestClock>, name: &str) -> bool {
+    let key = make_test_key(name).expect("key");
+    matches!(cache.lookup(&key), Lookup::Hit(_))
+}
 
-    // 3. Touch k2 to update recency (k3 is now oldest LRU)
-    let _ = cache.lookup(&k2_key);
+#[test]
+fn test_capacity_eviction_takes_an_expired_entry_on_sight() {
+    let clock = Arc::new(TestClock::new());
+    let cache = three_slot_cache(&clock);
 
-    // 4. Admit k5: all current entries (k2, k3, k4) are fresh. LRU entry (k3) MUST be evicted!
-    admit_record("k5.test.", 100);
+    admit_record(&cache, &clock, "k1.test.", 10);
+    admit_record(&cache, &clock, "k2.test.", 100);
+    admit_record(&cache, &clock, "k3.test.", 100);
     assert_eq!(cache.stats().entries, 3);
-    assert!(matches!(cache.lookup(&k3_key), Lookup::Miss));
-    assert!(matches!(cache.lookup(&k2_key), Lookup::Hit(_)));
-    assert!(matches!(cache.lookup(&k4_key), Lookup::Hit(_)));
 
-    // Stats reflect both expired reclamation and fresh LRU eviction
-    assert!(cache.stats().expired >= 1);
-    assert!(cache.stats().evicted >= 1);
+    // k1 expires; k2 and k3 stay fresh and are hit, so the hand would spare them anyway.
+    clock.advance(Duration::from_secs(20));
+    assert!(hits(&cache, "k2.test."));
+    assert!(hits(&cache, "k3.test."));
+
+    admit_record(&cache, &clock, "k4.test.", 100);
+
+    assert_eq!(cache.stats().entries, 3);
+    assert!(hits(&cache, "k2.test."));
+    assert!(hits(&cache, "k3.test."));
+    assert!(hits(&cache, "k4.test."));
+    let stats = cache.stats();
+    assert_eq!(stats.expired, 1, "k1 is reclaimed as expired");
+    assert_eq!(stats.evicted, 0, "no fresh entry is evicted for it");
+}
+
+#[test]
+fn test_capacity_eviction_spares_a_recently_hit_entry_once() {
+    let clock = Arc::new(TestClock::new());
+    let cache = three_slot_cache(&clock);
+
+    admit_record(&cache, &clock, "k1.test.", 100);
+    admit_record(&cache, &clock, "k2.test.", 100);
+    admit_record(&cache, &clock, "k3.test.", 100);
+
+    // k1 is the first slot the hand reaches, but a hit has given it a second chance.
+    assert!(hits(&cache, "k1.test."));
+    admit_record(&cache, &clock, "k4.test.", 100);
+
+    assert_eq!(cache.stats().entries, 3);
+    assert!(!hits(&cache, "k2.test."), "the first unvisited entry goes");
+    assert!(hits(&cache, "k1.test."));
+    assert!(hits(&cache, "k3.test."));
+    assert!(hits(&cache, "k4.test."));
+    let stats = cache.stats();
+    assert_eq!(stats.evicted, 1);
+    assert_eq!(stats.expired, 0);
 }
 
 fn run_worker(c: Arc<ShardedAnswerCache<TestClock>>, clk: Arc<TestClock>, task_idx: u8) {
@@ -265,12 +281,15 @@ fn run_worker(c: Arc<ShardedAnswerCache<TestClock>>, clk: Arc<TestClock>, task_i
 #[tokio::test]
 async fn test_concurrent_admissions_safety() {
     let clock = Arc::new(TestClock::new());
-    let cache = Arc::new(ShardedAnswerCache::new(
-        Arc::clone(&clock),
-        CacheCapacity::default(),
-        TtlPolicy::default(),
-        8,
-    ));
+    let cache = Arc::new(
+        ShardedAnswerCache::new(
+            Arc::clone(&clock),
+            CacheCapacity::default(),
+            TtlPolicy::default(),
+            8,
+        )
+        .expect("cache"),
+    );
 
     let mut handles = Vec::new();
 

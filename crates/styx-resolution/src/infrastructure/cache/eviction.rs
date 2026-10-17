@@ -1,13 +1,11 @@
-//! Bounded capacity eviction and expired entry reclamation.
+//! Capacity eviction and expired entry reclamation, driven by the shard's CLOCK hand.
 
-use std::collections::VecDeque;
 use std::time::Instant;
 
-use crate::domain::cache::capacity::CacheCapacity;
-use crate::domain::cache::key::CacheKey;
-use crate::infrastructure::cache::sharded::ShardInner;
+use crate::domain::cache::bytes::HeapBytes;
+use crate::infrastructure::cache::shard::ShardInner;
 
-/// Report detailing the results of an eviction sweep.
+/// Report detailing the results of making room in a shard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EvictionReport {
     /// Number of expired entries reclaimed.
@@ -20,64 +18,35 @@ pub struct EvictionReport {
 pub struct Eviction;
 
 impl Eviction {
-    /// Evicts entries from `shard` until it fits within `capacity`.
+    /// Evicts entries from `shard` until one more entry of `incoming` bytes fits within
+    /// the shard's capacity.
     ///
-    /// Pass 1: Sweeps and removes all expired entries.
-    /// Pass 2: If still over capacity, evicts least-recently-used fresh entries.
+    /// The hand takes an expired entry on sight and spares a recently hit one once, so
+    /// each call does work proportional to the entries it evicts, not to the shard's size.
     #[must_use]
-    pub(crate) fn evict(
+    pub(crate) fn make_room(
         shard: &mut ShardInner,
         now: Instant,
-        capacity: CacheCapacity,
+        incoming: HeapBytes,
     ) -> EvictionReport {
         let mut report = EvictionReport::default();
-
-        let (unexpired, reclaimed) = Self::reclaim_expired(shard, now);
-        shard.recency = unexpired;
-        report.expired_reclaimed = reclaimed;
-
-        // Pass 2: Evict least-recently-used fresh entries if capacity is still exceeded
-        while capacity.needs_eviction(shard.map.len(), shard.bytes) {
-            let Some(oldest_key) = shard.recency.pop_front() else {
+        while Self::needs_room(shard, incoming) {
+            let Some(evicted) = shard.evict_next(now) else {
                 break;
             };
-
-            if Self::remove_entry(shard, &oldest_key) {
+            if evicted.expired {
+                report.expired_reclaimed = report.expired_reclaimed.saturating_add(1);
+            } else {
                 report.evicted_fresh = report.evicted_fresh.saturating_add(1);
             }
         }
-
         report
     }
 
-    fn reclaim_expired(shard: &mut ShardInner, now: Instant) -> (VecDeque<CacheKey>, usize) {
-        let mut unexpired_recency = VecDeque::with_capacity(shard.recency.len());
-        let mut reclaimed: usize = 0;
-
-        while let Some(key) = shard.recency.pop_front() {
-            let is_expired = shard
-                .map
-                .get(&key)
-                .is_some_and(|entry| !entry.is_fresh(now));
-
-            if !is_expired {
-                unexpired_recency.push_back(key);
-                continue;
-            }
-
-            if Self::remove_entry(shard, &key) {
-                reclaimed = reclaimed.saturating_add(1);
-            }
-        }
-
-        (unexpired_recency, reclaimed)
-    }
-
-    fn remove_entry(shard: &mut ShardInner, key: &CacheKey) -> bool {
-        let Some(entry) = shard.map.remove(key) else {
-            return false;
-        };
-        shard.bytes = shard.bytes.saturating_sub(entry.heap_size());
-        true
+    fn needs_room(shard: &ShardInner, incoming: HeapBytes) -> bool {
+        shard.capacity().needs_eviction(
+            shard.len().saturating_add(1),
+            shard.bytes().saturating_add(incoming),
+        )
     }
 }

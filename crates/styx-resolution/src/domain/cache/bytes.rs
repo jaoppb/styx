@@ -40,6 +40,14 @@ impl HeapBytes {
             .ok_or(CacheError::ByteAccountingOverflow)
     }
 
+    /// Adds `other` to `self`, saturating at the largest representable count.
+    #[must_use]
+    pub fn saturating_add(&self, other: Self) -> Self {
+        Self {
+            octets: self.octets.saturating_add(other.octets),
+        }
+    }
+
     /// Subtracts `other` from `self`, saturating at zero.
     #[must_use]
     pub fn saturating_sub(&self, other: Self) -> Self {
