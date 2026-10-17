@@ -141,6 +141,20 @@ fn rcodes_split_into_refusal_failure_and_name_error() {
     );
 }
 
+/// The recursor sends EDNS version 0, so BADVERS from a server is that server's fault. It used
+/// to decode as NOERROR; the decoder now keeps the extended RCODE.
+#[test]
+fn badvers_is_a_server_failure_at_any_depth() {
+    let sent = question("example.com.", RecordType::NS);
+    let badvers = response(&sent, ResponseCode::BADVERS_OR_BADSIG, true);
+    for intermediate in [true, false] {
+        assert_eq!(
+            kind("com.", &sent, intermediate, &badvers),
+            ResponseKind::ServerFailure
+        );
+    }
+}
+
 #[test]
 fn a_cname_outside_the_servers_bailiwick_is_not_followed() {
     let sent = question("www.example.com.", RecordType::A);

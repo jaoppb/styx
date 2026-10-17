@@ -92,6 +92,9 @@ impl<C: Clock> Do53Forwarder<C> {
         match message.header.rcode {
             ResponseCode::REFUSED => Err(UpstreamError::Refused),
             ResponseCode::SERVFAIL => Err(UpstreamError::ServerFailure { is_upstream: false }),
+            ResponseCode::BADVERS_OR_BADSIG => Err(UpstreamError::Malformed(
+                "upstream answered BADVERS to an EDNS version 0 query".to_owned(),
+            )),
             _ => Ok(message),
         }
     }
@@ -163,5 +166,17 @@ mod tests {
         assert_eq!(message.questions, vec![question]);
         let opt = message.opt.expect("opt record");
         assert_eq!(opt.udp_payload_size(), EdnsBufferSize::default().octets());
+    }
+
+    /// Styx only ever sends EDNS version 0, so an upstream answering BADVERS is broken: it
+    /// must fail over and count against the member, not be passed on as an answer.
+    #[test]
+    fn an_upstream_badvers_is_a_failure_not_an_answer() {
+        let mut reply = Message::new(Header::new_query(1, Opcode::Query, true));
+        reply.header.rcode = ResponseCode::BADVERS_OR_BADSIG;
+
+        let mapped = Do53Forwarder::<TestClock>::map_response(reply);
+
+        assert!(matches!(mapped, Err(UpstreamError::Malformed(_))));
     }
 }
