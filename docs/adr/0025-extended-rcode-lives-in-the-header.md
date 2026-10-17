@@ -25,7 +25,9 @@ out as NOERROR, and an upstream BADVERS decoded as NOERROR.
 the OPT's upper octet into it with `ResponseCode::from_parts`; the encoder splits it with
 `ResponseCode::split`. `Opt` loses its `extended_rcode` field, accessor and constructor
 parameter. Encoding an rcode above 15 on a message with no OPT is
-`EncodeError::ExtendedRcodeWithoutOpt`, never a silent truncation to the nibble.
+`EncodeError::ExtendedRcodeWithoutOpt`, never a silent truncation to the nibble. The merge
+applies to every message with an OPT, queries included: the upper octet means something
+only in a response, so a decoded query's `rcode` is never read.
 
 **An unsupported EDNS version hands the query back.** `DecodeError::UnsupportedEdnsVersion`
 carries an `UnsupportedEdns` with the version, the header and the question section already
@@ -35,12 +37,17 @@ OPT is validated, because a version-1 OPT body is not defined by version-0 rules
 
 **Both listeners answer BADVERS.** The reply echoes ID, opcode, RD and the question and
 carries RCODE 16. `ResponseWriter` keeps the OPT, creating one when absent, whenever the
-reply's rcode is above 15, so the reply advertises version 0 and the server's payload size.
-Like FORMERR it bypasses the pipeline, and an inbound response (QR=1) is dropped silently.
+reply's rcode is above 15 and the client sent an OPT, so the reply advertises version 0 and
+the server's payload size. A client that sent no OPT cannot be sent one (RFC 6891 §7), so
+`ResponseWriter` downgrades an rcode above 15 to SERVFAIL for it and logs the original code.
+Like FORMERR the BADVERS reply bypasses the pipeline, and an inbound response (QR=1) is
+dropped silently.
 
-**An upstream BADVERS is a failure.** Styx sends only EDNS version 0, so a member answering
-BADVERS is broken. `Do53Forwarder` maps it to `UpstreamError::Malformed`; the recursor
-already classified any unlisted rcode as a server failure.
+**An upstream extended RCODE is a failure.** Styx sends only EDNS version 0 and no cookie,
+TSIG or mode, so a member answering any rcode above 15 (BADVERS, BADCOOKIE, BADSIG, ...) is
+broken. `Do53Forwarder` maps every such rcode to `UpstreamError::Malformed`, which fails the
+member over and counts against its health; the recursor already classified any unlisted
+rcode as a server failure.
 
 ## Consequences
 
@@ -49,6 +56,21 @@ already classified any unlisted rcode as a server failure.
   is now rcode 16 end to end.
 - The reply carries the question, so it is larger than FORMERR. It stays within the request
   size and the UDP admission budget applies before it.
+- A future legitimate extended rcode from an upstream fails over instead of reaching the
+  client. Adding a phase that sends cookies or TSIG must revisit the forwarder's rule.
+
+## Non-goals
+
+- No response-rate limiting of BADVERS beyond the UDP admission budget every reply shares.
+- No validation of anything after the first OPT with a version other than 0.
+- No handling of extended rcodes the server itself originates beyond BADVERS.
+
+## Risks
+
+- A second producer of an extended rcode reaches the writer: it is downgraded to SERVFAIL
+  for a client without an OPT, which is correct but hides the cause from that client; the
+  log line is the only trace.
+- Every consumer of a decoded query must ignore `header.rcode`. Nothing enforces it.
 
 ## Alternatives rejected
 
