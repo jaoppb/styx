@@ -12,6 +12,10 @@ use crate::domain::request::RequestContext;
 pub trait TerminalHandler: Send + Sync + 'static {
     /// Produces a DNS response and resolution outcome for queries reaching the end of the pipeline.
     ///
+    /// The response is not yet shaped for the client: its ID, question, RD, CD, RA and AA are
+    /// whatever the stage produced. Only [`Pipeline`](crate::application::Pipeline) returns a
+    /// client-ready message, by conforming this one to the query on the way out.
+    ///
     /// # Errors
     /// Returns [`PipelineError`] if the query cannot be processed.
     fn handle_terminal(
