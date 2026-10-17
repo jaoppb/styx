@@ -35,3 +35,4 @@ As defined in [`AGENTS.md`](../../AGENTS.md):
 | [0021](0021-priming-validation-and-one-label-nxdomain-confirmation.md) | Priming validation and one-label NXDOMAIN confirmation | Phase 5 — Recursion | 2026-10-07 | Accepted |
 | [0022](0022-incomplete-alias-chains-and-forwarder-qname-scope.md) | Incomplete alias chains and the forwarder qname scope | Phase 4 — Answer cache | 2026-10-08 | Accepted |
 | [0023](0023-admission-judges-the-response-against-the-clients-question.md) | Admission judges the response against the client's question | Phase 4 — Answer cache | 2026-10-14 | Accepted |
+| [0024](0024-pool-judges-replies-and-fails-over.md) | The pool judges each reply against the question and fails over | Phase 3 — Upstream pool and Do53 forwarder | 2026-10-15 | Accepted |

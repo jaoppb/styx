@@ -2,7 +2,6 @@
 
 use styx_proto::{Opcode, RecordClass, ResponseCode};
 
-use crate::domain::cache::admission_outcome::RejectReason;
 use thiserror::Error;
 
 /// Errors returned by the request processing pipeline.
@@ -39,11 +38,6 @@ pub enum PipelineError {
     #[error("upstream resolution pool error: {0}")]
     Pool(#[from] crate::domain::error::PoolError),
 
-    /// The upstream reply was refused because it does not answer the client's question:
-    /// it echoed another question, more than one, or none.
-    #[error("upstream reply does not answer the question: {0:?}")]
-    UntrustedResponse(RejectReason),
-
     /// The query cannot be resolved in the current phase (phase 2 stub terminal).
     #[error("query not resolvable")]
     NotResolvable,
@@ -61,9 +55,7 @@ impl PipelineError {
                 ResponseCode::FORMERR
             }
             Self::UnsupportedOpcode(_) | Self::UnsupportedClass(_) => ResponseCode::NOTIMP,
-            Self::Internal(_) | Self::Pool(_) | Self::UntrustedResponse(_) => {
-                ResponseCode::SERVFAIL
-            }
+            Self::Internal(_) | Self::Pool(_) => ResponseCode::SERVFAIL,
             Self::NotResolvable => ResponseCode::REFUSED,
         }
     }

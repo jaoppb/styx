@@ -101,6 +101,7 @@ mod tests {
 
     use super::*;
     use crate::domain::circuit::CircuitState;
+    use crate::domain::refused::RefusedReplies;
     use styx_core::{UpstreamId, UpstreamKind};
 
     fn make_weighted_view(id: &str, weight: u32, available: bool) -> MemberView {
@@ -110,6 +111,7 @@ mod tests {
             weight: Weight::new(weight),
             srtt: Some(Duration::from_millis(10)),
             circuit: CircuitState::Closed,
+            refused_replies: RefusedReplies::none(),
             available,
         }
     }

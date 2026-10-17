@@ -122,8 +122,15 @@ class UpstreamError {
     Mismatched
     Refused
     ServerFailure
+    UntrustedReply
     Shutdown
     +classify() FailureClass
+}
+
+class ReplyFault {
+    <<enum>>
+    QuestionMismatch
+    MultipleQuestions
 }
 
 class FailureClass {
@@ -165,8 +172,10 @@ class HealthState {
     -circuit CircuitState
     -last_probe_at Option~Instant~
     -last_outcome_at Option~Instant~
+    -refused_replies RefusedReplies
     +srtt() Option~Duration~
     +circuit() CircuitState
+    +refused_replies() RefusedReplies
     +observe(Outcome, now, CircuitConfig)
     +is_available(now, CircuitConfig) bool
     +is_idle_beyond(window, now) bool
@@ -186,10 +195,19 @@ class CircuitState {
     HalfOpen
 }
 
+class RefusedReplies {
+    -question_mismatch FailureCount
+    -multiple_questions FailureCount
+    +none() RefusedReplies
+    +with(ReplyFault) RefusedReplies
+    +count(ReplyFault) u32
+}
+
 class Outcome {
     <<enum>>
     Success
     Failure
+    Refused
     +latency() Option~Duration~
 }
 
@@ -259,6 +277,7 @@ class MemberView {
     +weight Weight
     +srtt Option~Duration~
     +circuit CircuitState
+    +refused_replies RefusedReplies
     +available bool
 }
 
@@ -343,6 +362,9 @@ PoolMember "1" --> "1" CanaryConfig : probes with
 HealthState "1" *-- "1" CircuitState
 HealthState "1" *-- "1" FailureCount
 HealthState ..> Outcome : folds
+HealthState "1" *-- "1" RefusedReplies
+UpstreamError ..> ReplyFault : UntrustedReply carries
+RefusedReplies ..> ReplyFault : counted by
 UpstreamPool "1" --> "1" SelectionStrategy : delegates choice to
 UpstreamPool ..> MemberView : projects read-only
 SelectionStrategy ..> Selection : returns
@@ -578,6 +600,7 @@ styx-resolution/ (feature crate)
     domain/
       health.rs          # HealthState, Outcome — the fold, split from the state machine
       circuit.rs         # CircuitState, CircuitConfig, FailureCount — the circuit breaker
+      refused.rs         # RefusedReplies — per-member tally of refused replies, by reason
       selection.rs       # SelectionStrategy trait, Selection, MemberView, StrategyName
       probe.rs           # ProbePolicy, CanaryConfig, ProbeConfig
       config.rs          # PoolConfig, UpstreamConfig, Timeouts, ConfigError
@@ -587,6 +610,7 @@ styx-resolution/ (feature crate)
         pool.rs          # PoolError (thiserror)
     application/
       pool.rs            # UpstreamPool: dispatch, outcome recording, snapshot
+      reply_judge.rs     # judge_reply, outcome_of_error — one verdict for every dispatch
       strategies/        # OrderedFailover, RoundRobin, Weighted, RaceAll, ConfiguredStrategy
       terminal.rs        # RefusedTerminal, PoolTerminal, TerminalHandler
       probe_scheduler.rs # ProbeScheduler background task
@@ -725,10 +749,12 @@ Ordered by dependency. Each task is independently completable and independently 
    produce an answer, hosted in shared foundation (`styx-core`).
 2. **Variants** (`thiserror`): `Timeout`, `Transport(io kind)`, `Truncated` (TC=1 and the
    TCP retry also failed), `Malformed` (decode failed), `Mismatched` (ID or question
-   mismatch), `Refused`, `ServerFailure`, `Shutdown`.
+   mismatch), `Refused`, `ServerFailure`, `UntrustedReply(ReplyFault)` *(amendment, issue
+   #118, ADR 0024)*, `Shutdown`. `ReplyFault` is a `Copy` enum in `styx-core`,
+   `QuestionMismatch | MultipleQuestions`.
 3. **Method**: `fn classify(&self) -> FailureClass`
    - `UpstreamFault` for `Timeout`, `Transport`, `Truncated`, `Malformed`, `Mismatched`,
-     `Refused`, and `ServerFailure` originating from the upstream itself.
+     `Refused`, `UntrustedReply`, and `ServerFailure` originating from the upstream itself.
    - `AnswerFault` for outcomes that are the upstream correctly reporting something about
      the *name*.
 4. **Direct imports & PoolError**:
@@ -752,7 +778,12 @@ Ordered by dependency. Each task is independently completable and independently 
    `observe` and read only through the accessors below; nothing outside `domain::health`
    sees a raw field.
 3. **Types**: `Outcome` =
-   `Success { latency: Duration, was_probe: bool } | Failure { class: FailureClass, was_probe: bool }`;
+   `Success { latency: Duration, was_probe: bool } | Failure { class: FailureClass, was_probe: bool } | Refused { reason: ReplyFault, was_probe: bool }`
+   *(amendment, ADR 0024: `Refused` is a reply that does not answer the question asked; it
+   folds as an upstream fault, takes no latency sample, and is tallied by reason)*;
+   `RefusedReplies` — in `domain::refused`, a `Copy` value holding one `FailureCount` per
+   `ReplyFault`, with `none()`, `with(ReplyFault) -> RefusedReplies` (a new value, never an
+   in-place mutation) and `count(ReplyFault) -> u32`;
    `CircuitState` =
    `Closed | Open { since: Instant } | HalfOpen { trial_started: Instant }`;
    `CircuitConfig` =
@@ -775,6 +806,10 @@ Ordered by dependency. Each task is independently completable and independently 
      - `fn record_answer_fault(&mut self, latency: Option<Duration>)` — records the
        latency if present; leaves the failure counter and circuit untouched, because this
        is an answer, not a fault.
+     - `Outcome::Refused { reason, .. }` is handled in the dispatcher itself: it replaces
+       `refused_replies` with `refused_replies.with(reason)` and then calls
+       `record_upstream_fault`, so a refused reply trips and re-arms the breaker like any
+       other upstream fault.
      - `fn record_upstream_fault(&mut self, now: Instant, config: &CircuitConfig)` —
        replaces `consecutive_failures` with `consecutive_failures.increment_saturating()`;
        if `Closed` and the threshold is met, transitions to `Open { since: now }`; if
@@ -785,9 +820,10 @@ Ordered by dependency. Each task is independently completable and independently 
    - `fn is_idle_beyond(&self, window: Duration, now: Instant) -> bool` — true when
      neither a real outcome nor a probe has been recorded within the window,
      **and true when nothing has ever been recorded** (cold start).
-   - `fn srtt(&self) -> Option<Duration>` and `fn circuit(&self) -> CircuitState` — the only
-     read accessors on the type, used by the pool to project `srtt`/`circuit` into a
-     `MemberView` without exposing the private fields themselves.
+   - `fn srtt(&self) -> Option<Duration>`, `fn circuit(&self) -> CircuitState` and
+     `fn refused_replies(&self) -> RefusedReplies` — the only read accessors on the type,
+     used by the pool to project `srtt`/`circuit`/`refused_replies` into a `MemberView`
+     without exposing the private fields themselves.
 5. **Constraints**: every duration comparison is checked/saturating, and every
    failure-count update goes through `FailureCount::increment_saturating` rather than a
    raw `+= 1` at the call site — `arithmetic_side_effects` is denied. No `Instant::now()`
@@ -802,8 +838,8 @@ Ordered by dependency. Each task is independently completable and independently 
 1. **Responsibility**: the per-pool choice of which member(s) answer a query, as a pure
    function, and candidate upstream list rotation.
 2. **Types**:
-   - `MemberView` — `{ id, kind, weight, srtt, circuit, available }`. A read-only
-     projection; strategies see nothing else.
+   - `MemberView` — `{ id, kind, weight, srtt, circuit, refused_replies, available }`. A
+     read-only projection; strategies see nothing else.
    - `Selection` —
      `Sequential(Vec<UpstreamId>) | Fanout(Vec<UpstreamId>) | NoneAvailable`.
    - `StrategyName` — `OrderedFailover | RoundRobin | Race | Weighted`, parsed from the
@@ -874,14 +910,18 @@ Ordered by dependency. Each task is independently completable and independently 
        checks whether the deadline has elapsed before admitting or dispatching each member,
        opens `upstream_dispatch` span carrying member id and strategy, dispatches with the
        shared `deadline` (never resetting the attempt deadline to `canary.timeout`),
-       records elapsed time and outcome on the span via `record_span_outcome`, records each
-       attempt's outcome on the pool, returns the first success, and returns
+       passes the upstream's result through `judge_reply` before recording anything *(ADR
+       0024)*, records elapsed time and outcome on the span via `record_span_outcome`,
+       records each attempt's outcome on the pool through `outcome_of_error`, returns the
+       first success (a refused reply is a failed attempt, so the next member is tried), and
+       returns
        `PoolError::Exhausted` carrying the last error if all available candidates fail or
        time runs out.
      - `Fanout(ids)` → `async fn try_fanout(&self, ids: &[UpstreamId], query: &Question, deadline: Instant) -> Result<UpstreamResponse, PoolError>`
        spawns concurrent tasks with `upstream_dispatch` span carrying member id and strategy,
        sharing `deadline` across all candidate tasks, delegating result collection to
-       `collect_fanout_results`, which takes the first usable response, records span and
+       `collect_fanout_results` (each spawned task judges its own reply with `judge_reply`
+       before returning it), which takes the first usable response, records span and
        pool outcomes for **every** branch that completed, cancels the remainder, and sets
        `raced_count` on the response.
      - Both helpers stamp `answered_by`, `kind` (from the answering member's `kind()`)
@@ -892,7 +932,7 @@ Ordered by dependency. Each task is independently completable and independently 
      `upstream circuit closed`). The **only** mutation path for health, shared by real
      traffic and probes alike.
    - `fn snapshot(&self) -> Vec<MemberView>` — read-only projection for the probe
-     scheduler and, later, the UI.
+     scheduler and, later, the UI, including each member's `refused_replies`.
    - `fn due_for_probe(&self) -> Vec<UpstreamId>` — apply `ProbePolicy` to each member.
 4. **Constraints**:
    - No database access, no filesystem access, no config reload.
@@ -952,8 +992,11 @@ Ordered by dependency. Each task is independently completable and independently 
    - `async fn probe_once(&self, id: &UpstreamId)` — resolve that member's canary through
      `Upstream::resolve`, then `pool.record(id, outcome_with_was_probe_true)`.
    - `async fn execute_probe(pool, clock, id)` — opens `upstream_probe` span carrying
-     member id and `strategy = "probe"`, instruments `resolve`, records elapsed time and
-     outcome on the span via `record_span_outcome`, and records outcome on the pool.
+     member id and `strategy = "probe"`, instruments `resolve`, judges the canary reply
+     with `judge_reply` against the canary question *(ADR 0024)*, records elapsed time and
+     outcome on the span via `record_span_outcome`, and records outcome on the pool through
+     `outcome_of_error`. A member whose replies are refused is therefore not reinstated by
+     its probe.
 3. **Constraints**:
    - Concurrency is bounded; a slow recursor descent must not let probes pile up.
    - A probe already in flight for a member is not duplicated.

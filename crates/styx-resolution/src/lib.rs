@@ -38,6 +38,7 @@ pub use domain::ports::filter::{FilterPolicy, FilterVerdict};
 pub use domain::ports::local::LocalRecords;
 pub use domain::ports::observer::{QueryDetail, QueryObserver};
 pub use domain::probe::{CanaryConfig, ProbeConfig, ProbePolicy};
+pub use domain::refused::RefusedReplies;
 pub use domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 pub use domain::selection::{MemberView, Selection, SelectionStrategy, StrategyName};
 pub use domain::weight::Weight;

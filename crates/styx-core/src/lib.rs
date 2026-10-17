@@ -14,7 +14,7 @@ pub mod infrastructure;
 pub mod test_util;
 
 pub use domain::clock::Clock;
-pub use domain::error::{FailureClass, UpstreamError};
+pub use domain::error::{FailureClass, ReplyFault, UpstreamError};
 pub use domain::upstream::{Upstream, UpstreamId, UpstreamKind, UpstreamResponse};
 pub use infrastructure::SystemClock;
 
