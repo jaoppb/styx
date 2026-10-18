@@ -34,4 +34,4 @@ pub use script::{
     ScriptedAnswer, ScriptedDname, ScriptedGlue, ScriptedOrigin, ScriptedRcode, ScriptedReferral,
     ZoneScript,
 };
-pub use styx_core::test_util::TestClock;
+pub use styx_core::test_util::{TestClock, TestSleeper};
