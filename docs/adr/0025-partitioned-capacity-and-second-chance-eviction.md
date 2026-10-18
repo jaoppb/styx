@@ -56,6 +56,26 @@ new entry starts unvisited. CLOCK was chosen over SIEVE because the slab is the 
 removing an arbitrary entry (expiry, overwrite) is clearing its slot and recycling the
 index, with no link pointers to keep consistent and nothing to index into.
 
+**The shard hash is seeded per process.** With capacity split per shard, a shard holds
+about 312 entries at the defaults, and a fixed hash would let an attacker precompute that
+many names that all land in one shard and keep it evicting while the others sit idle.
+`ShardedAnswerCache<C, S = RandomState>` takes its `BuildHasher` as a type parameter:
+production gets a random seed at startup, and tests inject a fixed-seed hasher so shard
+placement stays deterministic. The seed is not configurable and not exposed. A random hash
+makes that skew unpredictable to an attacker; it does not remove it, and it does not stop
+an attacker who simply floods the whole cache.
+
+**A slot holds an `Arc<CacheEntry>`, and a hit hands out the `Arc`.** A hit used to deep
+clone the entry under the read lock. `std::sync::RwLock` prefers a waiting writer, so a slow
+clone stalled every reader of the shard behind any queued admission, and `to_response` then
+copied the answer a second time. `Lookup::Hit` now carries `Arc<CacheEntry>`, so the lock is
+held for one atomic refcount increment and a hit makes one copy, the `Message` that
+`to_response` builds. A plain `Arc` suffices where a copy-on-write type would not: an entry
+is never mutated in place (a refresh is a remove and an insert, and the per-hit TTL
+decrement builds a new message), and `Cow` cannot return a borrow that outlives the guard.
+Sharing the records inside an entry was not pursued, because `to_response` rewrites every
+TTL on each hit.
+
 **The expired sweep is folded into the hand.** The separate full scan is gone. The hand
 takes an expired entry on sight, whatever its visited bit, and counts it as `expired`; a
 fresh one it takes counts as `evicted`. The two statistics stay separable.
@@ -77,10 +97,13 @@ have admitted a fresh entry for the same key, so the purge confirms staleness fi
 
 - The cache never holds more than the configured entries or bytes, in total, including under
   concurrent admission.
-- A hit is a read-locked lookup, a clone and one atomic store, so its cost no longer depends
-  on how many entries the shard holds. The `cache_hit` benchmark compares 100 and 10,000
-  entries per shard, single-threaded and from eight threads; before this record the
-  10,000-entry case was three orders of magnitude slower.
+- A hit is a read-locked lookup, an `Arc` clone and one atomic store, so its cost no longer
+  depends on how many entries the shard holds or how large the answer is. The `cache_hit`
+  benchmark compares 100 and 10,000 entries per shard, single-threaded and from eight
+  threads; before this record the 10,000-entry case was three orders of magnitude slower.
+  Its `contended` case has seven reader threads on a hot 2,000-record answer while a writer
+  admits into the same shard: 2.7 µs a read with the `Arc` against 50.6 µs when the hit
+  copied the entry (one Criterion run of 20 samples each, on one machine).
 - Eviction is second-chance, not strict least-recently-used. An entry hit once since the
   hand last passed survives one more sweep, and an entry hit many times is no safer than
   one hit once.
@@ -97,3 +120,10 @@ have admitted a fresh entry for the same key, so the purge confirms staleness fi
 - Effective capacity is somewhat below the configured total when keys hash unevenly, most
   visibly for small budgets. Nothing measures that loss.
 - `CacheStats` gains `rejected_oversized`.
+- `Lookup::Hit` carries an `Arc<CacheEntry>`, a change to the `AnswerCache` port that
+  reaches `CacheStage`, the cache tests and the benchmarks.
+- `ShardedAnswerCache` gains a second type parameter, defaulted so a caller that does not
+  name it is unchanged. The `Arc` header is not counted in `HeapBytes`, a constant 16 bytes
+  per entry.
+- Nothing yet stops an attacker from flooding the whole cache. Per-client rate limiting is
+  not in this record's scope.

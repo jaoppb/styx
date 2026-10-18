@@ -1,5 +1,7 @@
 //! Answer cache trait (port) and lookup outcome.
 
+use std::sync::Arc;
+
 use crate::domain::cache::admission_outcome::AdmissionOutcome;
 use crate::domain::cache::entry::CacheEntry;
 use crate::domain::cache::error::CacheError;
@@ -9,8 +11,9 @@ use crate::domain::cache::stats::CacheStats;
 /// Outcome of querying the answer cache for a [`CacheKey`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lookup {
-    /// A fresh cached entry was found.
-    Hit(CacheEntry),
+    /// A fresh cached entry was found. It is shared with the cache, which never mutates
+    /// an entry in place, so a hit copies no more than a reference count.
+    Hit(Arc<CacheEntry>),
     /// No matching entry was found.
     Miss,
     /// A matching entry was found, but it has exceeded its TTL deadline.

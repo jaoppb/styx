@@ -1,7 +1,7 @@
 //! One concurrency-isolated shard of the answer cache.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use crate::domain::cache::bytes::HeapBytes;
@@ -55,9 +55,9 @@ impl ShardInner {
         self.index.contains_key(key)
     }
 
-    /// Returns a copy of the entry for `key` and marks it recently used. Needs no
-    /// exclusive access, which is what lets a hit run under the shard's read lock.
-    pub(crate) fn touch(&self, key: &CacheKey) -> Option<CacheEntry> {
+    /// Returns a shared handle to the entry for `key` and marks it recently used. Needs
+    /// no exclusive access, which is what lets a hit run under the shard's read lock.
+    pub(crate) fn touch(&self, key: &CacheKey) -> Option<Arc<CacheEntry>> {
         let id = self.index.get(key)?;
         self.ring.touch(*id)
     }

@@ -1,6 +1,7 @@
 //! Sharded concurrent answer cache implementation.
 
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::collections::hash_map::RandomState;
+use std::hash::BuildHasher;
 use std::sync::Arc;
 
 use styx_core::Clock;
@@ -28,8 +29,13 @@ const _: () = assert!(
 );
 
 /// A concurrent, sharded in-memory answer cache.
-pub struct ShardedAnswerCache<C> {
+///
+/// `S` picks the shard for a key. The default [`RandomState`] is seeded per process, so an
+/// outside party cannot work out which names share a shard; a test injects a fixed-seed
+/// hasher to keep placement deterministic.
+pub struct ShardedAnswerCache<C, S = RandomState> {
     shards: Vec<Shard>,
+    hasher: S,
     clock: Arc<C>,
     capacity: CacheCapacity,
     ttl_policy: TtlPolicy,
@@ -37,7 +43,8 @@ pub struct ShardedAnswerCache<C> {
 }
 
 impl<C: Clock> ShardedAnswerCache<C> {
-    /// Creates a new `ShardedAnswerCache` whose `capacity` bounds the cache as a whole.
+    /// Creates a new `ShardedAnswerCache` whose `capacity` bounds the cache as a whole,
+    /// placing keys with a hasher seeded at random for this process.
     ///
     /// The budget is split across the shards once, here, so no shard can hold more than
     /// its share and the shares sum to the configured total.
@@ -52,27 +59,7 @@ impl<C: Clock> ShardedAnswerCache<C> {
         ttl_policy: TtlPolicy,
         shard_count: usize,
     ) -> Result<Self, CacheError> {
-        let shards = capacity
-            .partition(shard_count)?
-            .into_iter()
-            .map(Shard::new)
-            .collect();
-        Ok(Self::from_shards(clock, capacity, ttl_policy, shards))
-    }
-
-    fn from_shards(
-        clock: Arc<C>,
-        capacity: CacheCapacity,
-        ttl_policy: TtlPolicy,
-        shards: Vec<Shard>,
-    ) -> Self {
-        Self {
-            shards,
-            clock,
-            capacity,
-            ttl_policy,
-            counters: AtomicCacheCounters::new(),
-        }
+        Self::with_hasher(clock, capacity, ttl_policy, shard_count, RandomState::new())
     }
 
     /// Creates a new `ShardedAnswerCache` using default capacity and TTL policies.
@@ -93,8 +80,49 @@ impl<C: Clock> ShardedAnswerCache<C> {
                 capacity,
                 TtlPolicy::default(),
                 vec![Shard::new(capacity)],
+                RandomState::new(),
             )
         })
+    }
+}
+
+impl<C: Clock, S: BuildHasher> ShardedAnswerCache<C, S> {
+    /// Creates a new `ShardedAnswerCache` that places keys with `hasher`.
+    ///
+    /// # Errors
+    /// The same as [`ShardedAnswerCache::new`].
+    pub fn with_hasher(
+        clock: Arc<C>,
+        capacity: CacheCapacity,
+        ttl_policy: TtlPolicy,
+        shard_count: usize,
+        hasher: S,
+    ) -> Result<Self, CacheError> {
+        let shards = capacity
+            .partition(shard_count)?
+            .into_iter()
+            .map(Shard::new)
+            .collect();
+        Ok(Self::from_shards(
+            clock, capacity, ttl_policy, shards, hasher,
+        ))
+    }
+
+    fn from_shards(
+        clock: Arc<C>,
+        capacity: CacheCapacity,
+        ttl_policy: TtlPolicy,
+        shards: Vec<Shard>,
+        hasher: S,
+    ) -> Self {
+        Self {
+            shards,
+            hasher,
+            clock,
+            capacity,
+            ttl_policy,
+            counters: AtomicCacheCounters::new(),
+        }
     }
 
     /// Returns the number of shards in this cache.
@@ -112,9 +140,7 @@ impl<C: Clock> ShardedAnswerCache<C> {
     /// Returns the shard index for the given cache key.
     #[must_use]
     pub fn shard_index(&self, key: &CacheKey) -> usize {
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        let hash = hasher.finish();
+        let hash = self.hasher.hash_one(key);
         let len = self.shards.len();
         let Ok(len_u64) = u64::try_from(len) else {
             return 0;
@@ -206,7 +232,7 @@ impl<C: Clock> ShardedAnswerCache<C> {
     }
 }
 
-impl<C: Clock> ShardedAnswerCache<C> {
+impl<C: Clock, S: BuildHasher> ShardedAnswerCache<C, S> {
     /// Stores one entry in its shard, making room first. Returns `true` if it was stored.
     ///
     /// The entry already stored under `key` is superseded either way: it is removed before
@@ -249,7 +275,7 @@ impl<C: Clock> ShardedAnswerCache<C> {
     }
 }
 
-impl<C: Clock> AnswerCache for ShardedAnswerCache<C> {
+impl<C: Clock, S: BuildHasher + Send + Sync> AnswerCache for ShardedAnswerCache<C, S> {
     fn lookup(&self, key: &CacheKey) -> Lookup {
         let Some(shard) = self.get_shard(key) else {
             self.counters.inc_misses();
@@ -272,7 +298,7 @@ impl<C: Clock> AnswerCache for ShardedAnswerCache<C> {
         };
 
         if entry.is_fresh(now) {
-            match &entry {
+            match &*entry {
                 CacheEntry::Positive(_) => self.counters.inc_hits(),
                 CacheEntry::Negative(_) => self.counters.inc_negative_hits(),
             }

@@ -4,10 +4,16 @@
 //! set. A hit that scans its shard gets slower as `N` grows; one that does not stays flat.
 //! The `threads8` cases read the same hot set from eight threads, which is where a hit
 //! that takes the shard's write lock serialises.
+//!
+//! The `contended` case holds one shard and a large hot answer: reader threads hit it
+//! while a writer keeps admitting into the same shard. A hit that copies the answer while
+//! holding the read lock makes the queued writer, and the readers behind it, wait on that
+//! copy.
 
 #![allow(missing_docs, clippy::expect_used)]
 
 use std::net::Ipv4Addr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,6 +27,14 @@ use styx_resolution::{
 
 const HOT_KEYS: usize = 64;
 const THREADS: usize = 8;
+/// Readers in the `contended` case; the remaining thread writes.
+const CONTENDED_READERS: usize = THREADS - 1;
+/// Addresses in the large hot answer, about 16 bytes of heap apiece.
+const LARGE_ANSWER_RECORDS: u32 = 2_000;
+/// Distinct small names the writer cycles through, more than the shard holds.
+const WRITER_NAMES: usize = 4_000;
+const CONTENDED_ENTRIES: usize = 1_000;
+const CONTENDED_BYTES: usize = 64 * 1024 * 1024;
 const ENTRIES_PER_SHARD: [usize; 2] = [100, 10_000];
 
 fn question(index: usize) -> Question {
@@ -29,15 +43,27 @@ fn question(index: usize) -> Question {
 }
 
 fn admit(cache: &ShardedAnswerCache<TestClock>, clock: &TestClock, index: usize) {
+    admit_sized(cache, clock, index, 1);
+}
+
+/// Admits one answer for host `index` holding `records` distinct addresses.
+fn admit_sized(
+    cache: &ShardedAnswerCache<TestClock>,
+    clock: &TestClock,
+    index: usize,
+    records: u32,
+) {
     let question = question(index);
     let mut message = Message::response_to(0x1000, question.clone());
-    message.answers.push(ResourceRecord::new(
-        question.qname.clone(),
-        RecordType::A,
-        RecordClass::In,
-        Ttl::from_secs(300),
-        RData::A(Ipv4Addr::new(10, 0, 0, 1)),
-    ));
+    for address in 0..records {
+        message.answers.push(ResourceRecord::new(
+            question.qname.clone(),
+            RecordType::A,
+            RecordClass::In,
+            Ttl::from_secs(300),
+            RData::A(Ipv4Addr::from(0x0a00_0000_u32.saturating_add(address))),
+        ));
+    }
     let request = AdmissionRequest::new(
         &question,
         &message,
@@ -85,6 +111,56 @@ fn read_hot_from_threads(cache: &ShardedAnswerCache<TestClock>, hot: &[CacheKey]
     });
 }
 
+/// Reader threads hit the large answer in `cache` while a writer admits small entries into
+/// the same shard until they finish. Returns the readers' wall time.
+fn read_large_while_writing(
+    cache: &ShardedAnswerCache<TestClock>,
+    clock: &TestClock,
+    hot: &CacheKey,
+    reads: u64,
+) -> Duration {
+    let done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut index = 1;
+            while !done.load(Ordering::Relaxed) {
+                admit(cache, clock, index);
+                index = index
+                    .checked_rem(WRITER_NAMES)
+                    .unwrap_or(0)
+                    .saturating_add(1);
+            }
+        });
+        let started = Instant::now();
+        let readers: Vec<_> = (0..CONTENDED_READERS)
+            .map(|_| scope.spawn(|| read_hot(cache, std::slice::from_ref(hot), reads)))
+            .collect();
+        for reader in readers {
+            reader.join().expect("reader");
+        }
+        let elapsed = started.elapsed();
+        done.store(true, Ordering::Relaxed);
+        elapsed
+    })
+}
+
+fn bench_contended(c: &mut Criterion) {
+    let clock = Arc::new(TestClock::new());
+    let capacity = CacheCapacity::new(CONTENDED_ENTRIES, HeapBytes::new(CONTENDED_BYTES));
+    let cache = ShardedAnswerCache::new(Arc::clone(&clock), capacity, TtlPolicy::default(), 1)
+        .expect("cache");
+    admit_sized(&cache, &clock, 0, LARGE_ANSWER_RECORDS);
+    let hot = CacheKey::from_question(&question(0)).expect("key");
+
+    let mut group = c.benchmark_group("cache_hit");
+    group.sample_size(20);
+    group.measurement_time(Duration::from_secs(5));
+    group.bench_function("contended", |b| {
+        b.iter_custom(|iters| read_large_while_writing(&cache, &clock, &hot, iters));
+    });
+    group.finish();
+}
+
 fn bench_cache_hit(c: &mut Criterion) {
     let mut group = c.benchmark_group("cache_hit");
     group.sample_size(20);
@@ -110,5 +186,5 @@ fn bench_cache_hit(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_cache_hit);
+criterion_group!(benches, bench_cache_hit, bench_contended);
 criterion_main!(benches);

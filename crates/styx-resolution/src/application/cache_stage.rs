@@ -85,7 +85,7 @@ where
         &self,
         query_id: u16,
         key: &CacheKey,
-        entry: CacheEntry,
+        entry: &CacheEntry,
     ) -> Result<ResolutionResponse, PipelineError> {
         let now = self.clock.now_monotonic();
         let mut message = entry
@@ -200,7 +200,7 @@ where
         };
 
         match self.cache.lookup(&key) {
-            Lookup::Hit(entry) => self.handle_cache_hit(ctx.query.header.id, &key, entry),
+            Lookup::Hit(entry) => self.handle_cache_hit(ctx.query.header.id, &key, &entry),
             Lookup::Miss | Lookup::Expired => {
                 self.resolve_and_admit(ctx.query.header.id, question, deadline)
                     .await

@@ -9,6 +9,7 @@
 //! bounded by that share however the traffic comes and goes.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::domain::cache::entry::CacheEntry;
@@ -21,7 +22,7 @@ pub(crate) struct SlotId(usize);
 #[derive(Debug)]
 struct Slot {
     key: CacheKey,
-    entry: CacheEntry,
+    entry: Arc<CacheEntry>,
     visited: AtomicBool,
 }
 
@@ -29,7 +30,7 @@ struct Slot {
 #[derive(Debug)]
 pub(crate) struct Removed {
     pub(crate) key: CacheKey,
-    pub(crate) entry: CacheEntry,
+    pub(crate) entry: Arc<CacheEntry>,
 }
 
 /// An entry the hand chose to evict, and why.
@@ -53,7 +54,7 @@ impl ClockRing {
     pub(crate) fn insert(&mut self, key: CacheKey, entry: CacheEntry) -> SlotId {
         let slot = Some(Slot {
             key,
-            entry,
+            entry: Arc::new(entry),
             visited: AtomicBool::new(false),
         });
         let reusable = self
@@ -78,11 +79,12 @@ impl ClockRing {
         })
     }
 
-    /// Returns a copy of the entry in `id` and marks it visited. Needs only `&self`.
-    pub(crate) fn touch(&self, id: SlotId) -> Option<CacheEntry> {
+    /// Returns a shared handle to the entry in `id` and marks it visited. Needs only
+    /// `&self`, and copies no more than a reference count.
+    pub(crate) fn touch(&self, id: SlotId) -> Option<Arc<CacheEntry>> {
         let slot = self.slots.get(id.0)?.as_ref()?;
         slot.visited.store(true, Ordering::Relaxed);
-        Some(slot.entry.clone())
+        Some(Arc::clone(&slot.entry))
     }
 
     /// Returns `true` if the entry in `id` is still fresh at `now`.
