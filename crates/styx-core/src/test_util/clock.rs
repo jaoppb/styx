@@ -1,7 +1,10 @@
 //! Controllable test clock implementation.
 
 use std::sync::Mutex;
+
 use std::time::{Duration, Instant, SystemTime};
+use tokio::sync::futures::Notified;
+use tokio::sync::Notify;
 
 use crate::domain::clock::Clock;
 
@@ -19,6 +22,7 @@ struct ClockState {
 #[derive(Debug)]
 pub struct TestClock {
     state: Mutex<ClockState>,
+    advanced: Notify,
 }
 
 impl Default for TestClock {
@@ -37,6 +41,7 @@ impl TestClock {
                 mono_base: Instant::now(),
                 mono_offset: Duration::ZERO,
             }),
+            advanced: Notify::new(),
         }
     }
 
@@ -51,6 +56,13 @@ impl TestClock {
             None => s.wall_now,
         };
         s.mono_offset = s.mono_offset.saturating_add(duration);
+        drop(s);
+        self.advanced.notify_waiters();
+    }
+
+    /// Returns a future that completes the next time [`Self::advance`] is called.
+    pub(crate) fn advanced(&self) -> Notified<'_> {
+        self.advanced.notified()
     }
 
     /// Overrides the wall-clock time without moving monotonic instant.
