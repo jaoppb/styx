@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
-use styx_core::{SystemClock, UpstreamId, UpstreamKind};
+use styx_core::{SystemClock, SystemSleeper, UpstreamId, UpstreamKind};
 use styx_net::Do53Client;
 use styx_recursion::application::config::RecursionConfig;
 use styx_recursion::application::recursor::{Recursor, RecursorPorts, RecursorSettings};
@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
         scheduler.run(probe_token).await;
     });
 
-    let mut server = Server::bind(config, pipeline, clock)
+    let mut server = Server::bind(config, pipeline, clock, Arc::new(SystemSleeper::new()))
         .await
         .context("failed to bind server listeners")?;
 

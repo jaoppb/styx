@@ -14,7 +14,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use styx_core::Clock;
+use styx_core::{Clock, Sleeper};
 
 use crate::application::terminal::TerminalHandler;
 use crate::domain::error::ListenerError;
@@ -24,6 +24,7 @@ use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 use crate::infrastructure::admission::{ListenerShared, QueryPermit};
 use crate::infrastructure::early_reply::{badvers_reply, formerr_reply};
+use crate::infrastructure::malformed_warning::MalformedWarning;
 use crate::infrastructure::response::ResponseWriter;
 use styx_net::write_framed;
 
@@ -109,30 +110,34 @@ pub(crate) struct ConnectionSettings {
 }
 
 /// One accepted connection.
-pub(crate) struct Connection<L, F, O, C, T> {
-    shared: ListenerShared<L, F, O, C, T>,
+pub(crate) struct Connection<L, F, O, C, T, S> {
+    shared: ListenerShared<L, F, O, C, T, S>,
     settings: ConnectionSettings,
+    malformed_warning: Arc<MalformedWarning<C, S>>,
     closing: CancellationToken,
     peer: SocketAddr,
 }
 
-impl<L, F, O, C, T> Connection<L, F, O, C, T>
+impl<L, F, O, C, T, S> Connection<L, F, O, C, T, S>
 where
     L: LocalRecords + Send + Sync + 'static,
     F: FilterPolicy + Send + Sync + 'static,
     O: QueryObserver + Send + Sync + 'static,
     C: Clock + Send + Sync + 'static,
     T: TerminalHandler + Send + Sync + 'static,
+    S: Sleeper + Send + Sync + 'static,
 {
     pub(crate) fn new(
-        shared: ListenerShared<L, F, O, C, T>,
+        shared: ListenerShared<L, F, O, C, T, S>,
         settings: ConnectionSettings,
+        malformed_warning: Arc<MalformedWarning<C, S>>,
         closing: CancellationToken,
         peer: SocketAddr,
     ) -> Self {
         Self {
             shared,
             settings,
+            malformed_warning,
             closing,
             peer,
         }
@@ -224,6 +229,7 @@ where
 
         let query = QueryTask {
             shared: self.shared.clone(),
+            malformed_warning: Arc::clone(&self.malformed_warning),
             peer: self.peer,
             received_at,
         };
@@ -299,19 +305,21 @@ async fn read_frame(
 }
 
 /// One pipelined query, answered on its own task.
-struct QueryTask<L, F, O, C, T> {
-    shared: ListenerShared<L, F, O, C, T>,
+struct QueryTask<L, F, O, C, T, S> {
+    shared: ListenerShared<L, F, O, C, T, S>,
+    malformed_warning: Arc<MalformedWarning<C, S>>,
     peer: SocketAddr,
     received_at: Instant,
 }
 
-impl<L, F, O, C, T> QueryTask<L, F, O, C, T>
+impl<L, F, O, C, T, S> QueryTask<L, F, O, C, T, S>
 where
     L: LocalRecords + Send + Sync + 'static,
     F: FilterPolicy + Send + Sync + 'static,
     O: QueryObserver + Send + Sync + 'static,
     C: Clock + Send + Sync + 'static,
     T: TerminalHandler + Send + Sync + 'static,
+    S: Sleeper + Send + Sync + 'static,
 {
     /// Answers the query; the global permit is released as soon as the response is
     /// encoded, before it is queued, so a slow reader cannot pin the budget.
@@ -345,7 +353,8 @@ where
                 return self.reply_early(badvers_reply(&rejected));
             }
             Err(err) => {
-                tracing::warn!(peer = %self.peer, %err, "malformed TCP query; responding FORMERR");
+                tracing::debug!(peer = %self.peer, %err, "malformed TCP query; responding FORMERR");
+                self.malformed_warning.record();
                 return self.reply_early(formerr_reply(bytes));
             }
         };

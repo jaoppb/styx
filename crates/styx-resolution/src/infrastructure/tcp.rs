@@ -1,12 +1,13 @@
 //! TCP DNS transport listener.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 
-use styx_core::Clock;
+use styx_core::{Clock, Sleeper, SystemSleeper};
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::domain::error::ListenerError;
@@ -15,6 +16,7 @@ use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
 use crate::infrastructure::admission::{ConnectionBudget, ListenerShared, WarnLimiter};
+use crate::infrastructure::malformed_warning::{ListenerKind, MalformedWarning};
 use crate::infrastructure::tcp_connection::{Connection, ConnectionSettings};
 
 /// Default idle timeout for idle TCP client connections (5 seconds).
@@ -30,22 +32,24 @@ const EMFILE: i32 = 24;
 const ENFILE: i32 = 23;
 
 /// TCP DNS listener admitting connections up to a global cap.
-pub struct TcpListener<L, F, O, C, T = RefusedTerminal> {
+pub struct TcpListener<L, F, O, C, T = RefusedTerminal, S = SystemSleeper> {
     listener: TokioTcpListener,
-    shared: ListenerShared<L, F, O, C, T>,
+    shared: ListenerShared<L, F, O, C, T, S>,
     connections: ConnectionBudget,
     settings: ConnectionSettings,
     bound_addr: SocketAddr,
     exhaustion_warning: WarnLimiter,
+    malformed_warning: Arc<MalformedWarning<C, S>>,
 }
 
-impl<L, F, O, C, T> TcpListener<L, F, O, C, T>
+impl<L, F, O, C, T, S> TcpListener<L, F, O, C, T, S>
 where
     L: LocalRecords + Send + Sync + 'static,
     F: FilterPolicy + Send + Sync + 'static,
     O: QueryObserver + Send + Sync + 'static,
     C: Clock + Send + Sync + 'static,
     T: TerminalHandler + Send + Sync + 'static,
+    S: Sleeper + Send + Sync + 'static,
 {
     /// Binds a TCP listener to the target address.
     ///
@@ -53,7 +57,7 @@ where
     /// Returns [`ListenerError::Io`] if socket binding fails.
     pub async fn bind(
         addr: SocketAddr,
-        shared: ListenerShared<L, F, O, C, T>,
+        shared: ListenerShared<L, F, O, C, T, S>,
         connections: ConnectionBudget,
         limits: ConcurrencyLimits,
         idle_timeout: Option<Duration>,
@@ -65,6 +69,15 @@ where
             write_timeout: limits.tcp_write_timeout(),
             max_in_flight: limits.max_in_flight_per_connection(),
         };
+        let malformed_warning = MalformedWarning::new(
+            ListenerKind::Tcp,
+            bound_addr,
+            Arc::clone(&shared.clock),
+            Arc::clone(&shared.sleeper),
+            shared.tasks.clone(),
+            shared.shutdown.clone(),
+            shared.abort.clone(),
+        );
         Ok(Self {
             listener,
             shared,
@@ -72,6 +85,7 @@ where
             settings,
             bound_addr,
             exhaustion_warning: WarnLimiter::default(),
+            malformed_warning,
         })
     }
 
@@ -125,6 +139,7 @@ where
         let connection = Connection::new(
             self.shared.clone(),
             self.settings,
+            Arc::clone(&self.malformed_warning),
             cancel.child_token(),
             peer,
         );
