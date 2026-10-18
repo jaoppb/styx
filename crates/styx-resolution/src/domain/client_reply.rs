@@ -19,7 +19,10 @@ use styx_proto::{Header, Message, MessageKind, ResponseCode};
 /// 0x20-randomising client compares against what it sent.
 pub fn conform_to_query(response: &mut Message, query: &Message) {
     conform_header(&mut response.header, &query.header);
-    response.questions = query.questions.first().cloned().into_iter().collect();
+    response.questions.clear();
+    if let Some(question) = query.questions.first() {
+        response.questions.push(question.clone());
+    }
 }
 
 /// Builds the reply to a query the pipeline could not answer, carrying `rcode`.
