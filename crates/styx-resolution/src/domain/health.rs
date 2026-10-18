@@ -141,6 +141,9 @@ impl HealthState {
     /// Observes a new resolution outcome and advances the health state.
     pub fn observe(&mut self, outcome: Outcome, now: Instant, config: &CircuitConfig) {
         self.last_outcome_at = Some(now);
+        // Every outcome takes the circuit out of `HalfOpen { trial: Some(_) }`, so the
+        // cool-down a probe skipped is no longer owed.
+        self.probe_reopens_to = None;
         if outcome.was_probe() {
             self.last_probe_at = Some(now);
         }
