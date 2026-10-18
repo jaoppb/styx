@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::domain::edns::Opt;
 use crate::domain::error::EncodeError;
-use crate::domain::header::{Header, ResponseCodeParts};
+use crate::domain::header::{Header, ResponseCode, ResponseCodeParts};
 use crate::domain::message::Message;
 use crate::domain::name::Name;
 use crate::domain::question::Question;
@@ -83,8 +83,12 @@ impl Encoder {
         for rr in &msg.additionals {
             self.encode_record(rr)?;
         }
-        if let Some(opt) = &msg.opt {
-            self.encode_opt_record(opt)?;
+        match &msg.opt {
+            Some(opt) => self.encode_opt_record(opt, msg.header.rcode)?,
+            None if msg.header.rcode.split().opt_upper_octet != 0 => {
+                return Err(EncodeError::ExtendedRcodeWithoutOpt(msg.header.rcode));
+            }
+            None => {}
         }
         Ok(())
     }
@@ -175,12 +179,12 @@ impl Encoder {
         Ok(())
     }
 
-    fn encode_opt_record(&mut self, opt: &Opt) -> Result<(), EncodeError> {
+    fn encode_opt_record(&mut self, opt: &Opt, rcode: ResponseCode) -> Result<(), EncodeError> {
         self.write_u8(0)?; // Root owner name
         self.write_u16(RecordType::OPT.value())?;
         self.write_u16(opt.udp_payload_size())?;
 
-        let ext_rcode = u32::from(opt.extended_rcode()) << 24;
+        let ext_rcode = u32::from(rcode.split().opt_upper_octet) << 24;
         let ver = u32::from(opt.version()) << 16;
         let do_bit = if opt.dnssec_ok() { 0x8000 } else { 0 };
         self.write_u32(ext_rcode | ver | do_bit)?;

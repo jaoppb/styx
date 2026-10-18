@@ -25,10 +25,13 @@ impl EdnsOption {
 }
 
 /// The EDNS(0) OPT pseudo-record (RFC 6891 §6.1).
+///
+/// The extended RCODE octet of the OPT TTL is not a field here: it is the upper half of
+/// [`Header::rcode`](crate::domain::header::Header::rcode), which the decoder merges on the
+/// way in and the encoder splits on the way out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Opt {
     udp_payload_size: u16,
-    extended_rcode: u8,
     version: u8,
     dnssec_ok: bool,
     options: Vec<EdnsOption>,
@@ -39,14 +42,12 @@ impl Opt {
     #[must_use]
     pub fn new(
         udp_payload_size: u16,
-        extended_rcode: u8,
         version: u8,
         dnssec_ok: bool,
         options: Vec<EdnsOption>,
     ) -> Self {
         Self {
             udp_payload_size,
-            extended_rcode,
             version,
             dnssec_ok,
             options,
@@ -69,12 +70,6 @@ impl Opt {
     /// Sets the sender's UDP payload size.
     pub fn set_udp_payload_size(&mut self, size: u16) {
         self.udp_payload_size = size;
-    }
-
-    /// Upper 8 bits of the 12-bit extended RCODE (RFC 6891 §6.1.3).
-    #[must_use]
-    pub fn extended_rcode(&self) -> u8 {
-        self.extended_rcode
     }
 
     /// The EDNS implementation version (must be 0, RFC 6891 §6.1.3).

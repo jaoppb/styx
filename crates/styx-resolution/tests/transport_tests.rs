@@ -70,7 +70,7 @@ impl TerminalHandler for LargeAnswerTerminal {
         }
 
         if let Some(opt) = &ctx.query.opt {
-            let resp_opt = Opt::new(opt.udp_payload_size(), 0, 0, false, Vec::new());
+            let resp_opt = Opt::new(opt.udp_payload_size(), 0, false, Vec::new());
             response.opt = Some(resp_opt);
         }
 
@@ -186,7 +186,7 @@ async fn test_udp_truncation_and_tcp_fallback() {
     // 3. UDP with advertised EDNS buffer size 4096:
     // Exceeds the server's default 1232 ceiling (~1500+ B), so TC is set
     let mut edns_query = query.clone();
-    edns_query.opt = Some(Opt::new(4096, 0, 0, false, Vec::new()));
+    edns_query.opt = Some(Opt::new(4096, 0, false, Vec::new()));
     let edns_resp = client
         .query_udp(server.udp_addr(), &edns_query)
         .await
@@ -203,7 +203,7 @@ async fn test_udp_truncation_and_tcp_fallback() {
 
     // 3b. UDP with payload ~870 B fitting within 1232: delivers answers without TC
     let mut fits_edns_query = make_query("fits.example.com.", RecordType::TXT);
-    fits_edns_query.opt = Some(Opt::new(4096, 0, 0, false, Vec::new()));
+    fits_edns_query.opt = Some(Opt::new(4096, 0, false, Vec::new()));
     let fits_edns_resp = client
         .query_udp(server.udp_addr(), &fits_edns_query)
         .await
@@ -240,7 +240,7 @@ async fn test_edns_small_buffer_clamped_to_512() {
     // Per RFC 6891 Section 6.2.3, values below 512 are clamped to 512.
     // A response exceeding 512 bytes still sets TC.
     let mut small_edns_query = query.clone();
-    small_edns_query.opt = Some(Opt::new(100, 0, 0, false, Vec::new()));
+    small_edns_query.opt = Some(Opt::new(100, 0, false, Vec::new()));
     let small_edns_resp = client
         .query_udp(server.udp_addr(), &small_edns_query)
         .await
@@ -252,7 +252,7 @@ async fn test_edns_small_buffer_clamped_to_512() {
 
     // A response of ~390 bytes (> 100 but < 512) is NOT truncated because 100 is clamped to 512.
     let mut medium_edns_query = make_query("medium.example.com.", RecordType::TXT);
-    medium_edns_query.opt = Some(Opt::new(100, 0, 0, false, Vec::new()));
+    medium_edns_query.opt = Some(Opt::new(100, 0, false, Vec::new()));
     let medium_edns_resp = client
         .query_udp(server.udp_addr(), &medium_edns_query)
         .await
@@ -333,7 +333,7 @@ async fn test_edns_payload_ceiling_and_opt_advertising() {
 
     // Query advertising 65,535 B gets response OPT advertising 1232 B
     let mut query = make_query("example.com.", RecordType::A);
-    query.opt = Some(Opt::new(65535, 0, 0, false, Vec::new()));
+    query.opt = Some(Opt::new(65535, 0, false, Vec::new()));
     let resp = client
         .query_udp(server.udp_addr(), &query)
         .await
