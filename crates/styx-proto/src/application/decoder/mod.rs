@@ -7,19 +7,18 @@
 //! - RDATA bounds checking (no overruns or trailing bytes).
 //! - Zero panics on any input.
 
+mod additional;
 mod bitset;
 mod rdata;
 
 pub use bitset::OffsetBitset;
 
 use crate::application::cursor::Cursor;
-use crate::domain::edns::Opt;
 use crate::domain::error::DecodeError;
 use crate::domain::header::{Header, MessageKind, Opcode, ResponseCode};
 use crate::domain::message::Message;
 use crate::domain::name::{Name, MAX_LABEL_LEN, MAX_NAME_LEN};
 use crate::domain::question::Question;
-use crate::domain::rdata::RData;
 use crate::domain::record::{RecordClass, RecordType, ResourceRecord, Ttl};
 
 /// Minimum bytes required for a Question section entry.
@@ -61,19 +60,23 @@ impl<'a> Decoder<'a> {
     ///
     /// Returns [`DecodeError`] on malformed input or boundary violations.
     pub fn decode_message(&mut self) -> Result<Message, DecodeError> {
-        let (header, qdcount, ancount, nscount, arcount) = self.decode_header()?;
+        let (mut header, qdcount, ancount, nscount, arcount) = self.decode_header()?;
         let questions = self.decode_questions(qdcount)?;
         let answers = self.decode_records(ancount)?;
         let authorities = self.decode_records(nscount)?;
-        let (additionals, opt) = self.decode_additionals(arcount)?;
+        let additional = self
+            .decode_additionals(arcount)
+            .map_err(|fault| fault.into_decode_error(&header, &questions))?;
+        let header_nibble = header.rcode.split().header_nibble;
+        header.rcode = ResponseCode::from_parts(header_nibble, additional.extended_rcode);
 
         Ok(Message {
             header,
             questions,
             answers,
             authorities,
-            additionals,
-            opt,
+            additionals: additional.records,
+            opt: additional.opt,
         })
     }
 
@@ -313,85 +316,6 @@ impl<'a> Decoder<'a> {
         }
 
         Ok(ResourceRecord::new(owner, rtype, rclass, ttl, rdata))
-    }
-
-    fn decode_additionals(
-        &mut self,
-        count: u16,
-    ) -> Result<(Vec<ResourceRecord>, Option<Opt>), DecodeError> {
-        let count_usize = usize::from(count);
-        let rem = self.cursor.remaining();
-        let cap = match rem.checked_div(MIN_RECORD_BYTES) {
-            Some(max) => count_usize.min(max),
-            None => 0,
-        };
-        let mut additionals = Vec::with_capacity(cap);
-        let mut opt = None;
-
-        for _ in 0..count {
-            if self.cursor.remaining() < MIN_RECORD_BYTES {
-                return Err(DecodeError::SectionCountMismatch);
-            }
-            let record = self.decode_single_record()?;
-            self.handle_additional(record, &mut additionals, &mut opt)?;
-        }
-        Ok((additionals, opt))
-    }
-
-    fn handle_additional(
-        &self,
-        record: ResourceRecord,
-        additionals: &mut Vec<ResourceRecord>,
-        opt: &mut Option<Opt>,
-    ) -> Result<(), DecodeError> {
-        if record.rtype != RecordType::OPT {
-            additionals.push(record);
-            return Ok(());
-        }
-        if opt.is_some() {
-            return Err(DecodeError::MultipleOptRecords);
-        }
-        *opt = Some(self.parse_opt_record(&record)?);
-        Ok(())
-    }
-
-    fn parse_opt_record(&self, record: &ResourceRecord) -> Result<Opt, DecodeError> {
-        if !record.owner.is_root() {
-            return Err(DecodeError::MalformedOpt);
-        }
-        let udp_payload_size = record.rclass.to_u16();
-        let ttl_val = record.ttl.seconds();
-        let extended_rcode = match u8::try_from((ttl_val >> 24) & 0xFF) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::debug!("extended rcode conversion error: {e}");
-                0
-            }
-        };
-        let version = match u8::try_from((ttl_val >> 16) & 0xFF) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::debug!("edns version conversion error: {e}");
-                0
-            }
-        };
-        if version != 0 {
-            return Err(DecodeError::UnsupportedEdnsVersion(version));
-        }
-        let dnssec_ok = ((ttl_val >> 8) & 0x80) != 0;
-
-        let options = match &record.rdata {
-            RData::Unknown(u) => self.parse_edns_options(u.octets())?,
-            _ => return Err(DecodeError::MalformedOpt),
-        };
-
-        Ok(Opt::new(
-            udp_payload_size,
-            extended_rcode,
-            version,
-            dnssec_ok,
-            options,
-        ))
     }
 }
 

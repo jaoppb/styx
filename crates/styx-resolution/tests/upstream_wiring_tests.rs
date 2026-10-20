@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use harness::{CommandableUpstream, DnsClient, UpstreamBehavior};
-use styx_core::{Clock, SystemClock, UpstreamId};
+use styx_core::{Clock, SystemClock, SystemSleeper, UpstreamId};
 use styx_proto::{
     Header, Message, Name, Opcode, Question, RData, RecordClass, RecordType, ResponseCode,
 };
@@ -116,9 +116,14 @@ kind = "forwarder"
     let clock = Arc::new(SystemClock::new());
     let pipeline = build_test_pipeline(&server_config, clock.clone()).expect("build test pipeline");
 
-    let mut server = Server::bind(server_config, pipeline, clock)
-        .await
-        .expect("bind server");
+    let mut server = Server::bind(
+        server_config,
+        pipeline,
+        clock,
+        Arc::new(SystemSleeper::new()),
+    )
+    .await
+    .expect("bind server");
 
     let addrs = server.local_addrs();
     let udp_addr = addrs[0];
@@ -136,6 +141,19 @@ kind = "forwarder"
     assert_eq!(upstream.query_count(), 1);
 
     server.shutdown().await.expect("server shutdown");
+}
+
+/// A server config binding one ephemeral loopback address with no upstream pool of its own.
+fn loopback_server_config() -> ServerConfig {
+    ServerConfig {
+        listen_addrs: vec![([127, 0, 0, 1], 0).into()],
+        udp_payload_size_default: styx_resolution::MaxResponseSize::classic(),
+        tcp_idle_timeout: Duration::from_secs(5),
+        query_timeout: Duration::from_secs(2),
+        limits: styx_resolution::ConcurrencyLimits::default_limits(),
+        supervisor: styx_resolution::SupervisorBackoffPolicy::default(),
+        upstream: None,
+    }
 }
 
 #[tokio::test]
@@ -182,19 +200,14 @@ async fn test_pool_terminal_direct_resolution() {
         .with_terminal(terminal),
     );
 
-    let server_config = ServerConfig {
-        listen_addrs: vec![([127, 0, 0, 1], 0).into()],
-        udp_payload_size_default: styx_resolution::MaxResponseSize::classic(),
-        tcp_idle_timeout: Duration::from_secs(5),
-        query_timeout: Duration::from_secs(2),
-        limits: styx_resolution::ConcurrencyLimits::default_limits(),
-        supervisor: styx_resolution::SupervisorBackoffPolicy::default(),
-        upstream: None,
-    };
-
-    let mut server = Server::bind(server_config, pipeline, clock)
-        .await
-        .expect("bind server with PoolTerminal");
+    let mut server = Server::bind(
+        loopback_server_config(),
+        pipeline,
+        clock,
+        Arc::new(SystemSleeper::new()),
+    )
+    .await
+    .expect("bind server with PoolTerminal");
 
     let client = DnsClient::new();
     let query = make_query("direct.example.");

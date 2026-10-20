@@ -231,7 +231,10 @@ fn test_opt_unsupported_version() {
     // OPT record with version = 1 (TTL bytes: ext_rcode=0, ver=1, flags=0)
     bytes.extend_from_slice(&[0, 0x00, 41, 0x04, 0xD0, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00]);
     let err = Message::decode(&bytes).unwrap_err();
-    assert_eq!(err, DecodeError::UnsupportedEdnsVersion(1));
+    let DecodeError::UnsupportedEdnsVersion(found) = err else {
+        panic!("expected UnsupportedEdnsVersion, got {err:?}");
+    };
+    assert_eq!(found.version(), 1);
 }
 
 #[test]

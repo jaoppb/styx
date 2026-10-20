@@ -6,11 +6,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use styx_proto::application::Decoder;
-use styx_proto::{Header, Message, MessageKind, ResponseCode};
+use styx_proto::{DecodeError, Header, Message, MessageKind};
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
-use styx_core::Clock;
+use styx_core::{Clock, Sleeper, SystemSleeper};
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::application::Pipeline;
@@ -21,6 +21,8 @@ use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 use crate::infrastructure::admission::{ListenerShared, QueryPermit, WarnLimiter};
+use crate::infrastructure::early_reply::{badvers_reply, formerr_reply};
+use crate::infrastructure::malformed_warning::{ListenerKind, MalformedWarning};
 use crate::infrastructure::response::ResponseWriter;
 use crate::infrastructure::udp_socket::bind_reuseport_group;
 
@@ -31,20 +33,22 @@ const RECV_BUFFER_SIZE: usize = 4096;
 ///
 /// The receive loop takes a query permit *before* reading, so at the budget's cap it
 /// stops reading and the kernel drops the excess: overload costs styx no extra work.
-pub struct UdpListener<L, F, O, C, T = RefusedTerminal> {
+pub struct UdpListener<L, F, O, C, T = RefusedTerminal, S = SystemSleeper> {
     socket: Arc<UdpSocket>,
-    shared: ListenerShared<L, F, O, C, T>,
+    shared: ListenerShared<L, F, O, C, T, S>,
     bound_addr: SocketAddr,
     exhausted_warning: WarnLimiter,
+    malformed_warning: Arc<MalformedWarning<C, S>>,
 }
 
-impl<L, F, O, C, T> UdpListener<L, F, O, C, T>
+impl<L, F, O, C, T, S> UdpListener<L, F, O, C, T, S>
 where
     L: LocalRecords + Send + Sync + 'static,
     F: FilterPolicy + Send + Sync + 'static,
     O: QueryObserver + Send + Sync + 'static,
     C: Clock + Send + Sync + 'static,
     T: TerminalHandler + Send + Sync + 'static,
+    S: Sleeper + Send + Sync + 'static,
 {
     /// Binds a single UDP listener to the target address.
     ///
@@ -52,7 +56,7 @@ where
     /// Returns [`ListenerError::Io`] if socket binding fails.
     pub async fn bind(
         addr: SocketAddr,
-        shared: ListenerShared<L, F, O, C, T>,
+        shared: ListenerShared<L, F, O, C, T, S>,
     ) -> Result<Self, ListenerError> {
         let group = Self::bind_group(addr, NonZeroUsize::MIN, shared).await?;
         group
@@ -68,17 +72,27 @@ where
     pub async fn bind_group(
         addr: SocketAddr,
         count: NonZeroUsize,
-        shared: ListenerShared<L, F, O, C, T>,
+        shared: ListenerShared<L, F, O, C, T, S>,
     ) -> Result<Vec<Self>, ListenerError> {
         let sockets = bind_reuseport_group(addr, count).await?;
         let mut listeners = Vec::with_capacity(sockets.len());
         for socket in sockets {
             let bound_addr = socket.local_addr()?;
+            let malformed_warning = MalformedWarning::new(
+                ListenerKind::Udp,
+                bound_addr,
+                Arc::clone(&shared.clock),
+                Arc::clone(&shared.sleeper),
+                shared.tasks.clone(),
+                shared.shutdown.clone(),
+                shared.abort.clone(),
+            );
             listeners.push(Self {
                 socket: Arc::new(socket),
                 shared: shared.clone(),
                 bound_addr,
                 exhausted_warning: WarnLimiter::default(),
+                malformed_warning,
             });
         }
         Ok(listeners)
@@ -150,6 +164,7 @@ where
             socket: Arc::clone(&self.socket),
             pipeline: Arc::clone(&self.shared.pipeline),
             clock: Arc::clone(&self.shared.clock),
+            malformed_warning: Arc::clone(&self.malformed_warning),
             query_timeout: self.shared.query_timeout,
             udp_payload_size_default: self.shared.udp_payload_size_default,
         };
@@ -167,21 +182,23 @@ where
 }
 
 /// Everything one per-datagram task needs to answer its query.
-struct DatagramResponder<L, F, O, C, T> {
+struct DatagramResponder<L, F, O, C, T, S> {
     socket: Arc<UdpSocket>,
     pipeline: Arc<Pipeline<L, F, O, C, T>>,
     clock: Arc<C>,
+    malformed_warning: Arc<MalformedWarning<C, S>>,
     query_timeout: Duration,
     udp_payload_size_default: MaxResponseSize,
 }
 
-impl<L, F, O, C, T> DatagramResponder<L, F, O, C, T>
+impl<L, F, O, C, T, S> DatagramResponder<L, F, O, C, T, S>
 where
     L: LocalRecords + Send + Sync + 'static,
     F: FilterPolicy + Send + Sync + 'static,
     O: QueryObserver + Send + Sync + 'static,
     C: Clock + Send + Sync + 'static,
     T: TerminalHandler + Send + Sync + 'static,
+    S: Sleeper + Send + Sync + 'static,
 {
     async fn handle_datagram(&self, bytes: &[u8], peer: SocketAddr) {
         let received_at = self.clock.now_monotonic();
@@ -189,9 +206,15 @@ where
 
         let query = match decoder.decode_message() {
             Ok(msg) => msg,
+            Err(DecodeError::UnsupportedEdnsVersion(rejected)) => {
+                tracing::debug!(%peer, version = rejected.version(), "unsupported EDNS version; answering BADVERS");
+                self.reply_early(badvers_reply(&rejected), peer).await;
+                return;
+            }
             Err(err) => {
-                tracing::warn!(%peer, %err, "malformed UDP datagram; attempting FORMERR");
-                self.try_send_formerr(bytes, peer).await;
+                tracing::debug!(%peer, %err, "malformed UDP datagram; attempting FORMERR");
+                self.malformed_warning.record();
+                self.reply_early(formerr_reply(bytes), peer).await;
                 return;
             }
         };
@@ -226,19 +249,19 @@ where
         }
     }
 
-    async fn try_send_formerr(&self, bytes: &[u8], peer: SocketAddr) {
-        if bytes.get(2).is_some_and(|&b| (b & 0x80) != 0) {
-            tracing::debug!(%peer, "silently dropping malformed UDP response datagram (QR=1)");
-            return;
-        }
-        let (Some(&b0), Some(&b1)) = (bytes.first(), bytes.get(1)) else {
+    /// Sends `reply` to a query that never reached the pipeline, or drops the datagram when
+    /// there is no reply to give.
+    async fn reply_early(&self, reply: Option<Message>, peer: SocketAddr) {
+        let Some(reply) = reply else {
+            tracing::debug!(%peer, "silently dropping unanswerable UDP datagram");
             return;
         };
-        let id = u16::from_be_bytes([b0, b1]);
-        let mut resp = Message::new(Header::new_query(id, styx_proto::Opcode::Query, false));
-        resp.header.kind = MessageKind::Response;
-        resp.header.rcode = ResponseCode::FORMERR;
+        self.send_error_reply(reply, peer).await;
+    }
 
+    /// Sends a reply to a query that never reached the pipeline, within the classic 512-octet
+    /// budget because no EDNS buffer size was negotiated.
+    async fn send_error_reply(&self, resp: Message, peer: SocketAddr) {
         let received_at = self.clock.now_monotonic();
         let client = ClientId::from_socket_addr(peer);
         let max_size = crate::domain::request::MaxResponseSize::classic();
@@ -251,7 +274,7 @@ where
             received_at,
         );
         if let Err(err) = self.send_message(resp, &ctx, peer).await {
-            tracing::debug!(%peer, %err, "failed to send UDP formerr");
+            tracing::debug!(%peer, %err, "failed to send UDP error reply");
         }
     }
 

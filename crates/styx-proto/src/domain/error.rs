@@ -6,6 +6,9 @@
 
 use thiserror::Error;
 
+use crate::domain::header::ResponseCode;
+use crate::domain::unsupported_edns::UnsupportedEdns;
+
 /// Errors produced during presentation or wire-name validation.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum NameError {
@@ -97,9 +100,10 @@ pub enum DecodeError {
 
     /// The EDNS version in the OPT record is not supported (version != 0).
     ///
-    /// Callers should reply with BADVERS.
-    #[error("unsupported EDNS version: {0}")]
-    UnsupportedEdnsVersion(u8),
+    /// Callers must reply with BADVERS (RFC 6891 §6.1.3); the payload carries the header and
+    /// question to echo.
+    #[error("unsupported EDNS version: {}", .0.version())]
+    UnsupportedEdnsVersion(UnsupportedEdns),
 
     /// Reserved header or flag bits were set where forbidden.
     #[error("reserved bits set in wire input")]
@@ -135,6 +139,10 @@ pub enum EncodeError {
     /// Number of records in a section exceeded the 65535 u16 limit.
     #[error("too many records in section for 16-bit count")]
     TooManyRecords,
+
+    /// The response code needs the OPT record's upper octet, but the message has no OPT.
+    #[error("response code {0} does not fit the header without an OPT record")]
+    ExtendedRcodeWithoutOpt(ResponseCode),
 
     /// A domain name invariant was violated.
     #[error(transparent)]

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use styx_core::Clock;
+use styx_core::{Clock, Sleeper};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -120,13 +120,14 @@ pub trait SupervisedListener: Send + 'static {
     ) -> impl std::future::Future<Output = Result<(), ListenerError>> + Send;
 }
 
-impl<L, F, O, C, T> SupervisedListener for UdpListener<L, F, O, C, T>
+impl<L, F, O, C, T, S> SupervisedListener for UdpListener<L, F, O, C, T, S>
 where
     L: LocalRecords + Send + Sync + 'static,
     F: FilterPolicy + Send + Sync + 'static,
     O: QueryObserver + Send + Sync + 'static,
     C: Clock + Send + Sync + 'static,
     T: TerminalHandler + Send + Sync + 'static,
+    S: Sleeper + Send + Sync + 'static,
 {
     fn transport_name(&self) -> &'static str {
         "UDP"
@@ -140,13 +141,14 @@ where
     }
 }
 
-impl<L, F, O, C, T> SupervisedListener for TcpListener<L, F, O, C, T>
+impl<L, F, O, C, T, S> SupervisedListener for TcpListener<L, F, O, C, T, S>
 where
     L: LocalRecords + Send + Sync + 'static,
     F: FilterPolicy + Send + Sync + 'static,
     O: QueryObserver + Send + Sync + 'static,
     C: Clock + Send + Sync + 'static,
     T: TerminalHandler + Send + Sync + 'static,
+    S: Sleeper + Send + Sync + 'static,
 {
     fn transport_name(&self) -> &'static str {
         "TCP"

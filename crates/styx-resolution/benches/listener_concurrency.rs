@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use styx_core::SystemClock;
+use styx_core::{SystemClock, SystemSleeper};
 use styx_proto::application::Encoder;
 use styx_proto::{Header, Message, Name, Opcode, Question, RecordClass, RecordType, ResponseCode};
 use styx_resolution::{
@@ -119,7 +119,7 @@ fn bench_udp_throughput(c: &mut Criterion, runtime: &Runtime) {
             Arc::new(DiscardObserver::new()),
             Arc::clone(&clock),
         ));
-        Server::bind(config(), pipeline, clock)
+        Server::bind(config(), pipeline, clock, Arc::new(SystemSleeper::new()))
             .await
             .expect("bind server")
     });
@@ -199,7 +199,7 @@ fn bench_head_of_line(c: &mut Criterion, runtime: &Runtime) {
             )
             .with_terminal(Arc::new(DelayTerminal)),
         );
-        Server::bind(config(), pipeline, clock)
+        Server::bind(config(), pipeline, clock, Arc::new(SystemSleeper::new()))
             .await
             .expect("bind server")
     });
