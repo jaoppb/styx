@@ -1,4 +1,4 @@
-# ADR 0025 — Partitioned capacity and second-chance eviction
+# ADR 0027 — Partitioned capacity and second-chance eviction
 
 - **Status**: accepted
 - **Date**: 2026-10-16
