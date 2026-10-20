@@ -3,10 +3,12 @@
 //! The pipeline runs this once, on the way out, for every reply it returns: a cached answer,
 //! a live one, a forged one and a refusal all pass the same step, so they cannot drift apart.
 //! A failure the pipeline reports as an error is answered by [`error_reply`], which decides the
-//! same header fields through the same rule. Those two are the only places they are decided:
-//! the ID, the question as the client spelled it (ADR 0007), RD and CD come from the query, RA is
-//! set because styx recurses, and AA is clear because styx is never authoritative for the zone it
-//! answers about.
+//! same header fields through the same rule, and so do the FORMERR and BADVERS replies the
+//! listeners send before the pipeline, through [`conform_header`]. That is the only place the
+//! header fields are decided: the ID, RD and CD come from the query, RA is set because styx
+//! recurses (RFC 1035 §4.1.1 makes it a property of the server, not of the RCODE), and AA is
+//! clear because styx is never authoritative for the zone it answers about. The question as the
+//! client spelled it (ADR 0007) is copied by [`conform_to_query`] and [`error_reply`].
 //!
 //! RA describes styx, not the upstream behind it: it is 1 even when a forwarder answered RA=0
 //! or REFUSED, because styx offers recursion to its clients whatever one pool member does.
@@ -44,7 +46,11 @@ pub fn error_reply(query: &Message, rcode: ResponseCode) -> Message {
     reply
 }
 
-fn conform_header(response: &mut Header, query: &Header) {
+/// Sets the header fields of `response` that styx decides, whichever path built the reply.
+///
+/// Replies built before the pipeline, such as FORMERR and BADVERS, call this directly: they have
+/// a query header but no question to conform, so [`conform_to_query`] does not apply to them.
+pub fn conform_header(response: &mut Header, query: &Header) {
     response.id = query.id;
     response.recursion_desired = query.recursion_desired;
     response.checking_disabled = query.checking_disabled;
