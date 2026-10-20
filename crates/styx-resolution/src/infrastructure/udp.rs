@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use styx_proto::application::Decoder;
-use styx_proto::{DecodeError, Header, Message, MessageKind};
+use styx_proto::{DecodeError, Message, MessageKind};
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 

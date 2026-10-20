@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use styx_proto::application::Decoder;
-use styx_proto::{DecodeError, Header, Message, MessageKind, ResponseCode};
+use styx_proto::{DecodeError, Message, MessageKind};
 use tokio::io::AsyncReadExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
