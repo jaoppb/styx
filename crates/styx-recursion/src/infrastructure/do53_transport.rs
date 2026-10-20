@@ -49,7 +49,7 @@ impl<C: Clock> Do53Transport<C> {
         let mut query = Message::new(Header::new_query(0, Opcode::Query, false));
         query.questions.push(question.clone());
         if with_edns {
-            query.opt = Some(Opt::new(ADVERTISED_PAYLOAD, 0, 0, true, Vec::new()));
+            query.opt = Some(Opt::new(ADVERTISED_PAYLOAD, 0, true, Vec::new()));
         }
         let exchanged = self
             .client

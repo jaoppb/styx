@@ -12,3 +12,4 @@ pub mod name;
 pub mod question;
 pub mod rdata;
 pub mod record;
+pub mod unsupported_edns;

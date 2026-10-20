@@ -103,9 +103,9 @@ styx/
 │   │       └── infrastructure/ # Transport-agnostic codec helpers
 │   ├── styx-core/              # Shared foundation: cross-resolution contracts and ports
 │   │   └── src/
-│   │       ├── domain/         # Clock, Upstream, UpstreamId, UpstreamResponse, errors
-│   │       ├── infrastructure/ # SystemClock
-│   │       └── test_util/      # TestClock (test-support feature)
+│   │       ├── domain/         # Clock, Sleeper, Upstream, UpstreamId, UpstreamResponse, errors
+│   │       ├── infrastructure/ # SystemClock, SystemSleeper
+│   │       └── test_util/      # TestClock, TestSleeper (test-support feature)
 │   ├── styx-net/               # Shared foundation: the one outbound Do53 client
 │   │   └── src/
 │   │       ├── domain/         # Exchanged, ExchangeError
@@ -120,7 +120,8 @@ styx/
 │   │       ├── application/    # Pipeline, selection strategies, probe scheduler,
 │   │       │                   # CacheStage, [cache] config
 │   │       └── infrastructure/ # UDP/TCP listeners, client transports, port adapters,
-│   │                           # cache/ (sharded store, CLOCK ring, eviction)
+│   │                           # cache/ (sharded store, CLOCK ring, eviction),
+│   │                           # throttled malformed-query warning (malformed_warning, warn_gate)
 │   ├── styx-recursion/         # Iterative recursor behind the Upstream port
 │   │   ├── src/
 │   │   │   ├── domain/         # Descent, minimisation, classification, topology, ports

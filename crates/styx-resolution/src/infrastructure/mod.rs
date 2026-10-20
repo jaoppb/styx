@@ -10,8 +10,10 @@
 pub mod admission;
 pub mod cache;
 pub mod do53;
+pub(crate) mod early_reply;
 pub mod filter;
 pub mod local;
+mod malformed_warning;
 pub mod observer;
 pub mod response;
 pub mod server;
@@ -20,6 +22,7 @@ pub mod tcp;
 pub mod tcp_connection;
 pub mod udp;
 pub mod udp_socket;
+mod warn_gate;
 
 pub use admission::{ConnectionBudget, ConnectionPermit, ListenerShared, QueryBudget, QueryPermit};
 pub use cache::{Eviction, EvictionReport, ShardedAnswerCache, DEFAULT_SHARDS};

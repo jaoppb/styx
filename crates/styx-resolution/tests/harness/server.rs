@@ -11,7 +11,7 @@ use styx_resolution::{
 };
 
 use styx_testkit::HarnessError;
-use styx_testkit::TestClock;
+use styx_testkit::{TestClock, TestSleeper};
 
 /// Server settings a test may override; every `TestServer` uses one UDP socket.
 #[derive(Debug, Clone, Copy)]
@@ -168,7 +168,8 @@ where
             upstream: None,
         };
 
-        let server = Server::bind(config, Arc::new(pipeline), Arc::clone(&clock))
+        let sleeper = Arc::new(TestSleeper::new(Arc::clone(&clock)));
+        let server = Server::bind(config, Arc::new(pipeline), Arc::clone(&clock), sleeper)
             .await
             .map_err(|error| HarnessError::Server(error.to_string()))?;
         let addrs = server.local_addrs();

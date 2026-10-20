@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use styx_core::Clock;
+use styx_core::{Clock, Sleeper};
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::application::Pipeline;
@@ -239,22 +239,18 @@ where
     ///
     /// # Errors
     /// Returns [`ServerError`] if binding any socket fails.
-    pub async fn bind(
+    pub async fn bind<S>(
         config: ServerConfig,
         pipeline: Arc<Pipeline<L, F, O, C, T>>,
         clock: Arc<C>,
-    ) -> Result<Self, ServerError> {
+        sleeper: Arc<S>,
+    ) -> Result<Self, ServerError>
+    where
+        S: Sleeper + Send + Sync + 'static,
+    {
         let cancel = CancellationToken::new();
         let limits = config.limits;
-        let shared = ListenerShared {
-            pipeline: Arc::clone(&pipeline),
-            clock: Arc::clone(&clock),
-            budget: QueryBudget::new(limits.max_in_flight_queries()),
-            tasks: TaskTracker::new(),
-            abort: CancellationToken::new(),
-            query_timeout: config.query_timeout,
-            udp_payload_size_default: config.udp_payload_size_default,
-        };
+        let shared = listener_shared(&config, &pipeline, &clock, sleeper, &cancel);
         let connections = ConnectionBudget::new(limits.max_tcp_connections());
         let mut local_addrs = Vec::new();
         let mut listeners = Vec::new();
@@ -306,6 +302,27 @@ where
             abort: shared.abort,
             shutdown_grace: config.query_timeout,
         })
+    }
+}
+
+/// Builds the collaborators every listener of one server shares.
+fn listener_shared<L, F, O, C, T, S>(
+    config: &ServerConfig,
+    pipeline: &Arc<Pipeline<L, F, O, C, T>>,
+    clock: &Arc<C>,
+    sleeper: Arc<S>,
+    shutdown: &CancellationToken,
+) -> ListenerShared<L, F, O, C, T, S> {
+    ListenerShared {
+        pipeline: Arc::clone(pipeline),
+        clock: Arc::clone(clock),
+        sleeper,
+        budget: QueryBudget::new(config.limits.max_in_flight_queries()),
+        tasks: TaskTracker::new(),
+        shutdown: shutdown.clone(),
+        abort: CancellationToken::new(),
+        query_timeout: config.query_timeout,
+        udp_payload_size_default: config.udp_payload_size_default,
     }
 }
 
