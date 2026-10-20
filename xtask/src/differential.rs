@@ -161,7 +161,7 @@ async fn observe_unbound(
 ) -> Result<Observed, String> {
     let mut query = Message::new(Header::new_query(0, Opcode::Query, true));
     query.questions.push(question.clone());
-    query.opt = Some(Opt::new(1232, 0, 0, true, Vec::new()));
+    query.opt = Some(Opt::new(1232, 0, true, Vec::new()));
     client
         .exchange(unbound, query, deadline)
         .await

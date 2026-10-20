@@ -1,4 +1,4 @@
-# ADR 0025 — A cancelled half-open trial releases its slot
+# ADR 0026 — A cancelled half-open trial releases its slot
 
 - **Status**: accepted
 - **Date**: 2026-10-16

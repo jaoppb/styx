@@ -52,7 +52,7 @@ impl TerminalHandler for RefusedTerminal {
 
         if ctx.query.opt.is_some() {
             let resp_opt =
-                styx_proto::Opt::new(ctx.server_payload_size.as_u16(), 0, 0, false, Vec::new());
+                styx_proto::Opt::new(ctx.server_payload_size.as_u16(), 0, false, Vec::new());
             response.opt = Some(resp_opt);
         }
 

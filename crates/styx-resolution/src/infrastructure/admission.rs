@@ -5,6 +5,7 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use styx_core::SystemSleeper;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -14,7 +15,7 @@ use crate::application::Pipeline;
 use crate::domain::request::MaxResponseSize;
 
 /// Minimum spacing between two rate-limited warnings from one listener.
-const WARN_INTERVAL: Duration = Duration::from_secs(1);
+pub(crate) const WARN_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The one process-wide budget of concurrently processed queries.
 ///
@@ -96,15 +97,19 @@ pub struct ConnectionPermit {
 }
 
 /// The collaborators every listener is constructed from.
-pub struct ListenerShared<L, F, O, C, T = RefusedTerminal> {
+pub struct ListenerShared<L, F, O, C, T = RefusedTerminal, S = SystemSleeper> {
     /// The resolution pipeline every query is dispatched to.
     pub pipeline: Arc<Pipeline<L, F, O, C, T>>,
     /// The injected clock.
     pub clock: Arc<C>,
+    /// The injected source of delays, for work that outlives the datagram that started it.
+    pub sleeper: Arc<S>,
     /// The process-wide query budget.
     pub budget: QueryBudget,
     /// Tracks every task spawned below a listener, for shutdown.
     pub tasks: TaskTracker,
+    /// Cancelled when shutdown begins, before the drain.
+    pub shutdown: CancellationToken,
     /// Cancelled by shutdown once the drain grace period has expired.
     pub abort: CancellationToken,
     /// Per-query deadline handed to [`Pipeline::handle_within`].
@@ -113,13 +118,15 @@ pub struct ListenerShared<L, F, O, C, T = RefusedTerminal> {
     pub udp_payload_size_default: MaxResponseSize,
 }
 
-impl<L, F, O, C, T> Clone for ListenerShared<L, F, O, C, T> {
+impl<L, F, O, C, T, S> Clone for ListenerShared<L, F, O, C, T, S> {
     fn clone(&self) -> Self {
         Self {
             pipeline: Arc::clone(&self.pipeline),
             clock: Arc::clone(&self.clock),
+            sleeper: Arc::clone(&self.sleeper),
             budget: self.budget.clone(),
             tasks: self.tasks.clone(),
+            shutdown: self.shutdown.clone(),
             abort: self.abort.clone(),
             query_timeout: self.query_timeout,
             udp_payload_size_default: self.udp_payload_size_default,
