@@ -37,11 +37,11 @@ pub use cache::{
     HeapBytes, Lookup, MessageFlags, NegativeEntry, PositiveEntry, PurgedCount, RRset, Refusal,
     RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
 };
-pub use circuit::{CircuitConfig, CircuitState, FailureCount};
+pub use circuit::{CircuitConfig, CircuitState, FailureCount, TrialId};
 pub use config::{PoolConfig, Timeouts, UpstreamConfig};
 pub use edns::EdnsBufferSize;
 pub use error::{ConfigError, ListenerError, PipelineError, PoolError, ServerError};
-pub use health::{HealthState, Outcome};
+pub use health::{CircuitAdmission, HealthState, Outcome};
 pub use limits::ConcurrencyLimits;
 pub use ports::{FilterPolicy, FilterVerdict, LocalRecords, QueryDetail, QueryObserver};
 pub use probe::{CanaryConfig, ProbeConfig, ProbePolicy};

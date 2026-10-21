@@ -28,6 +28,27 @@ impl FailureCount {
     }
 }
 
+/// Identity of one half-open trial.
+///
+/// Minted on every admission into `HalfOpen`, so a cancelled trial can release only the
+/// slot it was issued and never a newer trial's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TrialId(u64);
+
+impl TrialId {
+    /// The first trial identity a fresh member hands out.
+    #[must_use]
+    pub(crate) const fn first() -> Self {
+        Self(0)
+    }
+
+    /// The identity after this one, saturating at [`u64::MAX`].
+    #[must_use]
+    pub(crate) const fn next(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+}
+
 /// State machine states for an upstream member's circuit breaker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CircuitState {
@@ -40,8 +61,8 @@ pub enum CircuitState {
     },
     /// Testing recovery; admitting a limited probe or trial traffic.
     HalfOpen {
-        /// Whether a trial query or probe is currently in flight.
-        in_flight: bool,
+        /// The trial query or probe currently in flight, if any.
+        trial: Option<TrialId>,
     },
 }
 

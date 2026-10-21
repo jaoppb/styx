@@ -328,7 +328,7 @@ async fn test_half_open_requires_two_successes_and_single_trial() {
     // Still in HalfOpen because half_open_successes = 2
     assert_eq!(
         pool.snapshot()[0].circuit,
-        CircuitState::HalfOpen { in_flight: false }
+        CircuitState::HalfOpen { trial: None }
     );
 
     // Second trial succeeds and transitions to Closed
