@@ -11,6 +11,7 @@ use tokio::task::JoinSet;
 use tracing::Instrument;
 
 use crate::application::reply_judge::{judge_reply, outcome_of_error};
+use crate::application::trial_guard::TrialGuard;
 use crate::domain::circuit::{CircuitConfig, CircuitState};
 use crate::domain::error::PoolError;
 use crate::domain::health::{HealthState, Outcome};
@@ -140,30 +141,34 @@ where
         }
     }
 
-    /// Attempts to admit a query or probe on the specified member.
-    #[must_use]
-    pub fn try_admit(&self, id: &UpstreamId) -> bool {
-        let Some(member) = self.members.iter().find(|m| m.id == *id) else {
-            return false;
-        };
+    /// Attempts to admit a query on the specified member.
+    ///
+    /// The guard gives a half-open trial's slot back if it is dropped before the outcome is
+    /// recorded, so hold it until the query has finished.
+    #[must_use = "dropping the guard releases the trial slot immediately"]
+    pub fn try_admit(&self, id: &UpstreamId) -> Option<TrialGuard<'_>> {
+        let member = self.members.iter().find(|m| m.id == *id)?;
         let mut health = match member.health.write() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        health.try_admit(self.clock.now_monotonic(), &self.circuit)
+        let admission = health.try_admit(self.clock.now_monotonic(), &self.circuit)?;
+        Some(TrialGuard::new(&member.health, admission))
     }
 
     /// Attempts to admit a background health probe on the specified member.
-    #[must_use]
-    pub fn try_admit_probe(&self, id: &UpstreamId) -> bool {
-        let Some(member) = self.members.iter().find(|m| m.id == *id) else {
-            return false;
-        };
+    ///
+    /// The guard gives a half-open trial's slot back if it is dropped before the outcome is
+    /// recorded, so hold it until the probe has finished.
+    #[must_use = "dropping the guard releases the trial slot immediately"]
+    pub fn try_admit_probe(&self, id: &UpstreamId) -> Option<TrialGuard<'_>> {
+        let member = self.members.iter().find(|m| m.id == *id)?;
         let mut health = match member.health.write() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        health.try_admit_probe()
+        let admission = health.try_admit_probe()?;
+        Some(TrialGuard::new(&member.health, admission))
     }
 
     /// Returns a list of upstream IDs due for active background probing.
@@ -223,9 +228,9 @@ where
                 break;
             }
 
-            if !self.try_admit(id) {
+            let Some(_trial) = self.try_admit(id) else {
                 continue;
-            }
+            };
 
             let Some(member) = self.members.iter().find(|m| m.id == *id) else {
                 continue;
@@ -303,10 +308,13 @@ where
         let raced_count = u8::try_from(ids.len()).unwrap_or(u8::MAX);
         let strategy = self.strategy.name();
 
+        let mut trials = Vec::with_capacity(ids.len());
+
         for id in ids {
-            if !self.try_admit(id) {
+            let Some(trial) = self.try_admit(id) else {
                 continue;
-            }
+            };
+            trials.push(trial);
 
             let Some(member) = self.members.iter().find(|m| m.id == *id) else {
                 continue;
@@ -336,13 +344,18 @@ where
             });
         }
 
-        self.collect_fanout_results(set, raced_count).await
+        self.collect_fanout_results(set, raced_count, trials).await
     }
 
+    /// Collects the first usable reply and aborts the rest.
+    ///
+    /// Holds every admitted member's guard until it returns or is dropped, so a half-open
+    /// loser that is aborted before it reports gets its trial slot back.
     async fn collect_fanout_results(
         &self,
         mut set: JoinSet<FanoutTaskResult>,
         raced_count: u8,
+        _trials: Vec<TrialGuard<'_>>,
     ) -> Result<UpstreamResponse, PoolError> {
         let mut last_error = None;
 

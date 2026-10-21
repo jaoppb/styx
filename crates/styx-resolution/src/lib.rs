@@ -16,7 +16,8 @@ pub mod infrastructure;
 // Public re-exports for convenience
 pub use application::{
     CacheStage, ConfiguredStrategy, OrderedFailover, Pipeline, PoolMember, PoolTerminal,
-    ProbeScheduler, RaceAll, RefusedTerminal, RoundRobin, TerminalHandler, UpstreamPool, Weighted,
+    ProbeScheduler, RaceAll, RefusedTerminal, RoundRobin, TerminalHandler, TrialGuard,
+    UpstreamPool, Weighted,
 };
 pub use domain::answer::{
     AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse,
@@ -28,11 +29,11 @@ pub use domain::cache::{
     DenialKind, DnssecMetadata, HeapBytes, Lookup, MessageFlags, NegativeEntry, PositiveEntry,
     PurgedCount, RRset, Refusal, RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
 };
-pub use domain::circuit::{CircuitConfig, CircuitState, FailureCount};
+pub use domain::circuit::{CircuitConfig, CircuitState, FailureCount, TrialId};
 pub use domain::config::{PoolConfig, Timeouts, UpstreamConfig};
 pub use domain::edns::EdnsBufferSize;
 pub use domain::error::{ConfigError, ListenerError, PipelineError, PoolError, ServerError};
-pub use domain::health::{HealthState, Outcome};
+pub use domain::health::{CircuitAdmission, HealthState, Outcome};
 pub use domain::limits::ConcurrencyLimits;
 pub use domain::ports::filter::{FilterPolicy, FilterVerdict};
 pub use domain::ports::local::LocalRecords;
