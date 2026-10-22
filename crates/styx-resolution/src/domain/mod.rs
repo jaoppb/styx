@@ -14,6 +14,7 @@ pub mod answer;
 pub mod bad_edns_version;
 pub mod cache;
 pub mod circuit;
+pub mod client_reply;
 pub mod config;
 pub mod edns;
 pub mod error;

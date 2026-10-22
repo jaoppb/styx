@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use styx_proto::application::Decoder;
-use styx_proto::{DecodeError, Header, Message, MessageKind, ResponseCode};
+use styx_proto::{DecodeError, Message, MessageKind};
 use tokio::io::AsyncReadExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use styx_core::{Clock, Sleeper};
 
 use crate::application::terminal::TerminalHandler;
+use crate::domain::client_reply::error_reply;
 use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
@@ -381,7 +382,7 @@ where
         {
             Ok(msg) => msg,
             Err(crate::domain::error::PipelineError::InboundResponse) => return None,
-            Err(err) => error_response(&ctx, err.response_code()),
+            Err(err) => error_reply(&ctx.query, err.response_code()),
         };
         self.encode(response, &ctx)
     }
@@ -419,18 +420,6 @@ where
             }
         }
     }
-}
-
-fn error_response(ctx: &RequestContext, rcode: ResponseCode) -> Message {
-    let mut resp = Message::new(Header::new_query(
-        ctx.query.header.id,
-        ctx.query.header.opcode,
-        false,
-    ));
-    resp.header.kind = MessageKind::Response;
-    resp.header.rcode = rcode;
-    resp.questions = ctx.query.questions.clone();
-    resp
 }
 
 #[cfg(test)]
