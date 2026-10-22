@@ -26,7 +26,7 @@ pub use admission_outcome::{AdmissionOutcome, RejectReason, RejectedRecord};
 pub use admission_request::AdmissionRequest;
 pub use bailiwick::Bailiwick;
 pub use bytes::HeapBytes;
-pub use capacity::{CacheCapacity, DEFAULT_MAX_BYTES, DEFAULT_MAX_ENTRIES};
+pub use capacity::{CacheCapacity, DEFAULT_MAX_BYTES, DEFAULT_MAX_ENTRIES, MIN_SHARD_BYTES};
 pub use dnssec::DnssecMetadata;
 pub use entry::{CacheEntry, SecurityStatus};
 pub use error::CacheError;

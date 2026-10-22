@@ -15,9 +15,9 @@ pub mod infrastructure;
 
 // Public re-exports for convenience
 pub use application::{
-    CacheStage, ConfiguredStrategy, OrderedFailover, Pipeline, PoolMember, PoolTerminal,
-    ProbeScheduler, RaceAll, RefusedTerminal, RoundRobin, TerminalHandler, TrialGuard,
-    UpstreamPool, Weighted,
+    CacheConfig, CacheStage, ConfiguredStrategy, OrderedFailover, Pipeline, PoolMember,
+    PoolTerminal, ProbeScheduler, RaceAll, RefusedTerminal, RoundRobin, TerminalHandler,
+    TrialGuard, UpstreamPool, Weighted,
 };
 pub use domain::answer::{
     AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse,
@@ -28,6 +28,7 @@ pub use domain::cache::{
     CacheCapacity, CacheEntry, CacheError, CacheKey, CacheStats, CanonicalName, Deadline,
     DenialKind, DnssecMetadata, HeapBytes, Lookup, MessageFlags, NegativeEntry, PositiveEntry,
     PurgedCount, RRset, Refusal, RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
+    MIN_SHARD_BYTES,
 };
 pub use domain::circuit::{CircuitConfig, CircuitState, FailureCount, TrialId};
 pub use domain::config::{PoolConfig, Timeouts, UpstreamConfig};

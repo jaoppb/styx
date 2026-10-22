@@ -82,7 +82,7 @@ where
         &self.pool
     }
 
-    fn handle_cache_hit(&self, entry: CacheEntry) -> Result<ResolutionResponse, PipelineError> {
+    fn handle_cache_hit(&self, entry: &CacheEntry) -> Result<ResolutionResponse, PipelineError> {
         let now = self.clock.now_monotonic();
         let message = entry
             .to_response(now)
@@ -189,7 +189,7 @@ where
         };
 
         match self.cache.lookup(&key) {
-            Lookup::Hit(entry) => self.handle_cache_hit(entry),
+            Lookup::Hit(entry) => self.handle_cache_hit(&entry),
             Lookup::Miss | Lookup::Expired => self.resolve_and_admit(question, deadline).await,
         }
     }

@@ -35,5 +35,9 @@ harness = false
 name = "listener_concurrency"
 harness = false
 
+[[bench]]
+name = "cache_hit"
+harness = false
+
 [lints]
 workspace = true
