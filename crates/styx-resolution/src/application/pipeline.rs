@@ -11,6 +11,7 @@ use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::domain::answer::{
     ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse, ResolutionResponseParts,
 };
+use crate::domain::client_reply::conform_to_query;
 use crate::domain::error::PipelineError;
 use crate::domain::ports::filter::{FilterPolicy, FilterVerdict};
 use crate::domain::ports::local::LocalRecords;
@@ -115,16 +116,23 @@ where
         if let Some(forged) = self.try_local_records(ctx, question) {
             let outcome = forged.outcome();
             self.record_telemetry(ctx, question, &outcome);
-            return Ok(forged.into_response());
+            return Ok(Self::finish(ctx, forged.into_response()));
         }
 
         if let Some(forged) = self.try_filter(ctx, question) {
             let outcome = forged.outcome();
             self.record_telemetry(ctx, question, &outcome);
-            return Ok(forged.into_response());
+            return Ok(Self::finish(ctx, forged.into_response()));
         }
 
         self.run_terminal(ctx, question, deadline).await
+    }
+
+    /// The one place a reply becomes the client's answer: whichever stage produced `message`,
+    /// it leaves here shaped by the query it answers (see [`conform_to_query`]).
+    fn finish(ctx: &RequestContext, mut message: Message) -> Message {
+        conform_to_query(&mut message, &ctx.query);
+        message
     }
 
     fn validate_input<'a>(&self, query: &'a Message) -> Result<&'a Question, PipelineError> {
@@ -192,7 +200,7 @@ where
             Ok(terminal_response) => {
                 let ResolutionResponseParts { message, outcome } = terminal_response.into_parts();
                 self.record_telemetry(ctx, question, &outcome);
-                Ok(message)
+                Ok(Self::finish(ctx, message))
             }
             Err(err) => self.handle_error(ctx, err),
         }

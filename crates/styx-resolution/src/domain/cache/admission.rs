@@ -272,7 +272,6 @@ impl Admission {
         let cached_msg = CachedMessage::new(
             message.header.rcode,
             MessageFlags {
-                authoritative: message.header.authoritative,
                 authentic_data: message.header.authentic_data,
             },
             answers,

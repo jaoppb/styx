@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use styx_proto::application::Decoder;
-use styx_proto::{DecodeError, Header, Message, MessageKind};
+use styx_proto::{DecodeError, Message, MessageKind};
 use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
@@ -14,6 +14,7 @@ use styx_core::{Clock, Sleeper, SystemSleeper};
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::application::Pipeline;
+use crate::domain::client_reply::error_reply;
 use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
@@ -241,17 +242,7 @@ where
         let response = match self.pipeline.handle_within(&ctx, self.query_timeout).await {
             Ok(resp) => resp,
             Err(crate::domain::error::PipelineError::InboundResponse) => return,
-            Err(err) => {
-                let mut resp = Message::new(Header::new_query(
-                    ctx.query.header.id,
-                    ctx.query.header.opcode,
-                    false,
-                ));
-                resp.header.kind = MessageKind::Response;
-                resp.header.rcode = err.response_code();
-                resp.questions = ctx.query.questions.clone();
-                resp
-            }
+            Err(err) => error_reply(&ctx.query, err.response_code()),
         };
         if let Err(err) = self.send_message(response, &ctx, peer).await {
             tracing::debug!(%peer, %err, "failed to send UDP response");
