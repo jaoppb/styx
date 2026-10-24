@@ -1,0 +1,24 @@
+[package]
+name = "styx-dnssec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "styx DNSSEC validation feature crate."
+
+[dependencies]
+styx-proto = { path = "../styx-proto" }
+styx-core = { path = "../styx-core" }
+ring.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+styx-core = { path = "../styx-core", features = ["test-support"] }
+styx-testkit = { path = "../styx-testkit" }
+tokio.workspace = true
+
+[lints]
+workspace = true

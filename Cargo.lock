@@ -1143,6 +1143,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "styx-dnssec"
+version = "0.1.0"
+dependencies = [
+ "ring",
+ "styx-core",
+ "styx-proto",
+ "styx-testkit",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "styx-filtering"
 version = "0.1.0"
 
