@@ -198,6 +198,10 @@ pub fn compute_dnskey_digest(
     input.extend_from_slice(&rdata_bytes);
 
     match digest_type {
+        1 => {
+            let digest = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &input);
+            Some(digest.as_ref().to_vec())
+        }
         2 => {
             let digest = ring::digest::digest(&ring::digest::SHA256, &input);
             Some(digest.as_ref().to_vec())

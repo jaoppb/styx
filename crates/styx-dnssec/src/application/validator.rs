@@ -109,13 +109,7 @@ impl<C: Clock> Validator<C> {
         if !msg.answers.is_empty() {
             self.verify_answer_rrsets(msg, &active_keys)
         } else {
-            verify_denial_proofs(
-                qname,
-                qtype,
-                msg,
-                self.is_enforced(),
-                self.policy.nsec3_max_iterations,
-            )
+            verify_denial_proofs(self, qname, qtype, msg, &active_keys)
         }
     }
 
@@ -200,6 +194,33 @@ impl<C: Clock> Validator<C> {
         })
     }
 
+    /// Verifies that all given records (grouped by RRset) have valid RRSIG signatures from `dnskeys`.
+    pub(crate) fn verify_records_signature(
+        &self,
+        records: &[ResourceRecord],
+        signatures: &[ResourceRecord],
+        dnskeys: &[ResourceRecord],
+    ) -> bool {
+        let rrsets = group_into_rrsets(records);
+        if rrsets.is_empty() {
+            return false;
+        }
+
+        for rrset in &rrsets {
+            let set_validated = dnskeys.iter().any(|key_rr| match key_rr.rdata {
+                RData::Dnskey(ref dnskey) => {
+                    self.has_valid_signature_for_set(rrset, signatures, dnskey, &key_rr.owner)
+                }
+                _ => false,
+            });
+            if !set_validated {
+                return false;
+            }
+        }
+
+        true
+    }
+
     fn verify_answer_rrsets(&self, msg: &Message, dnskeys: &[ResourceRecord]) -> ValidationOutcome {
         let mut signatures = Vec::new();
         let mut data_records = Vec::new();
@@ -212,32 +233,14 @@ impl<C: Clock> Validator<C> {
             }
         }
 
-        if data_records.is_empty() {
+        if data_records.is_empty()
+            || !self.verify_records_signature(&data_records, &signatures, dnskeys)
+        {
             return ValidationOutcome::new(
                 ValidationVerdict::Bogus,
                 VerdictReason::NoValidRrsig,
                 self.is_enforced(),
             );
-        }
-
-        for data_rr in &data_records {
-            let validated = dnskeys.iter().any(|key_rr| match key_rr.rdata {
-                RData::Dnskey(ref dnskey) => self.has_valid_signature_for_set(
-                    std::slice::from_ref(data_rr),
-                    &signatures,
-                    dnskey,
-                    &key_rr.owner,
-                ),
-                _ => false,
-            });
-
-            if !validated {
-                return ValidationOutcome::new(
-                    ValidationVerdict::Bogus,
-                    VerdictReason::NoValidRrsig,
-                    self.is_enforced(),
-                );
-            }
         }
 
         ValidationOutcome::new(
@@ -246,4 +249,26 @@ impl<C: Clock> Validator<C> {
             self.is_enforced(),
         )
     }
+}
+
+fn is_same_rrset(a: &ResourceRecord, b: &ResourceRecord) -> bool {
+    a.owner == b.owner && a.rclass == b.rclass && a.rtype == b.rtype
+}
+
+fn group_into_rrsets(records: &[ResourceRecord]) -> Vec<Vec<ResourceRecord>> {
+    let mut rrsets: Vec<Vec<ResourceRecord>> = Vec::new();
+    for rr in records {
+        let mut found = false;
+        for set in &mut rrsets {
+            if set.first().is_some_and(|first| is_same_rrset(first, rr)) {
+                set.push(rr.clone());
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            rrsets.push(vec![rr.clone()]);
+        }
+    }
+    rrsets
 }

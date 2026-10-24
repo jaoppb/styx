@@ -134,23 +134,32 @@ pub enum AlgorithmSupport {
     Refused,
 }
 
+use std::collections::BTreeSet;
+
 /// Explicit set of cryptographic algorithms recognised by the validator.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct AlgorithmSet;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlgorithmSet {
+    supported_sig: BTreeSet<u8>,
+    supported_digest: BTreeSet<u8>,
+}
 
 impl AlgorithmSet {
-    /// Creates a new [`AlgorithmSet`].
+    /// Creates a new [`AlgorithmSet`] with default supported algorithms.
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            supported_sig: [8, 13, 15].into_iter().collect(),
+            supported_digest: [2, 4].into_iter().collect(),
+        }
     }
 
     /// Classifies a DNSSEC signature algorithm number.
     #[must_use]
     pub fn classify_sig(&self, algorithm: u8) -> AlgorithmSupport {
+        if self.supported_sig.contains(&algorithm) {
+            return AlgorithmSupport::Supported;
+        }
         match algorithm {
-            // RSA/SHA-256 (RFC 5702), ECDSA P-256 (RFC 6605), Ed25519 (RFC 8080)
-            8 | 13 | 15 => AlgorithmSupport::Supported,
             // Deprecated algorithms (RFC 8624): RSAMD5 (1), DSA (3), DSA-NSEC3-SHA1 (6), RSASHA1-NSEC3-SHA1 (7)
             1 | 3 | 6 | 7 => AlgorithmSupport::Refused,
             _ => AlgorithmSupport::UnknownTreatAsInsecure,
@@ -160,13 +169,20 @@ impl AlgorithmSet {
     /// Classifies a DS digest algorithm number.
     #[must_use]
     pub fn classify_digest(&self, digest_type: u8) -> AlgorithmSupport {
+        if self.supported_digest.contains(&digest_type) {
+            return AlgorithmSupport::Supported;
+        }
         match digest_type {
-            // SHA-256 (RFC 4034), SHA-384 (RFC 6605)
-            2 | 4 => AlgorithmSupport::Supported,
             // SHA-1 (RFC 4034) is deprecated for DNSSEC DS records (RFC 8624)
             1 => AlgorithmSupport::Refused,
             _ => AlgorithmSupport::UnknownTreatAsInsecure,
         }
+    }
+}
+
+impl Default for AlgorithmSet {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

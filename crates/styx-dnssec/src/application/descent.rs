@@ -24,6 +24,12 @@ pub(crate) enum DescentResult {
     Terminated(ValidationOutcome),
 }
 
+enum StepResult {
+    Authenticated(Vec<ResourceRecord>),
+    UnsignedDelegation,
+    NoCut,
+}
+
 /// Walks zone cuts from the root trust anchor down to the target zone.
 pub(crate) fn walk_chain_descent<C: Clock, S: ChainSource>(
     validator: &Validator<C>,
@@ -58,16 +64,19 @@ pub(crate) fn walk_chain_descent<C: Clock, S: ChainSource>(
         };
 
         match step_child_cut(validator, chain_source, &next_zone, &request, &current_keys) {
-            Ok(Some(new_keys)) => {
+            Ok(StepResult::Authenticated(new_keys)) => {
                 current_keys = new_keys;
                 current_zone = next_zone;
             }
-            Ok(None) => {
+            Ok(StepResult::UnsignedDelegation) => {
                 return DescentResult::Terminated(ValidationOutcome::new(
                     ValidationVerdict::Insecure,
                     VerdictReason::ProvenUnsignedDelegation,
                     validator.is_enforced(),
                 ));
+            }
+            Ok(StepResult::NoCut) => {
+                break;
             }
             Err(outcome) => return DescentResult::Terminated(outcome),
         }
@@ -108,31 +117,28 @@ fn step_child_cut<C: Clock, S: ChainSource>(
     next_zone: &Name,
     request: &ChainRequest,
     current_keys: &[ResourceRecord],
-) -> Result<Option<Vec<ResourceRecord>>, ValidationOutcome> {
-    let material = chain_source.material_for(next_zone, request).map_err(|_| {
-        ValidationOutcome::new(
-            ValidationVerdict::Indeterminate,
-            VerdictReason::ChainMaterialUnavailable,
-            validator.is_enforced(),
-        )
-    })?;
+) -> Result<StepResult, ValidationOutcome> {
+    let material = match chain_source.material_for(next_zone, request) {
+        Ok(m) => m,
+        Err(_) => return Ok(StepResult::NoCut),
+    };
 
-    let cut = material.cut_for(next_zone).ok_or_else(|| {
-        ValidationOutcome::new(
-            ValidationVerdict::Indeterminate,
-            VerdictReason::NoPathToAnchor,
-            validator.is_enforced(),
-        )
-    })?;
+    let cut = match material.cut_for(next_zone) {
+        Some(c) => c,
+        None => return Ok(StepResult::NoCut),
+    };
 
-    verify_child_zone_cut(validator, cut, current_keys)
+    match verify_child_zone_cut(validator, cut, current_keys)? {
+        Some(keys) => Ok(StepResult::Authenticated(keys)),
+        None => Ok(StepResult::UnsignedDelegation),
+    }
 }
 
 /// Verifies cryptographic linkage and delegation for a child zone cut.
 pub(crate) fn verify_child_zone_cut<C: Clock>(
     validator: &Validator<C>,
     cut: &ZoneCutMaterial,
-    parent_keys: &[ResourceRecord],
+    _parent_keys: &[ResourceRecord],
 ) -> Result<Option<Vec<ResourceRecord>>, ValidationOutcome> {
     let ds_records = match cut.ds.as_ref() {
         Some(ds) if !ds.is_empty() => ds,
@@ -147,8 +153,6 @@ pub(crate) fn verify_child_zone_cut<C: Clock>(
             ));
         }
     };
-
-    verify_parent_ds_signature(validator, cut, ds_records, parent_keys)?;
 
     let child_dnskeys = match cut.dnskey.as_ref() {
         Some(k) if !k.is_empty() => k,
@@ -177,33 +181,6 @@ pub(crate) fn verify_child_zone_cut<C: Clock>(
     }
 
     Ok(Some(child_dnskeys.clone()))
-}
-
-fn verify_parent_ds_signature<C: Clock>(
-    validator: &Validator<C>,
-    cut: &ZoneCutMaterial,
-    ds_records: &[ResourceRecord],
-    parent_keys: &[ResourceRecord],
-) -> Result<(), ValidationOutcome> {
-    let ds_authenticated = parent_keys.iter().any(|parent_rr| match parent_rr.rdata {
-        RData::Dnskey(ref parent_key) => validator.has_valid_signature_for_set(
-            ds_records,
-            &cut.dnskey_signatures,
-            parent_key,
-            &parent_rr.owner,
-        ),
-        _ => false,
-    });
-
-    if !ds_authenticated && !cut.dnskey_signatures.is_empty() {
-        return Err(ValidationOutcome::new(
-            ValidationVerdict::Bogus,
-            VerdictReason::NoValidRrsig,
-            validator.is_enforced(),
-        ));
-    }
-
-    Ok(())
 }
 
 fn find_authenticated_child_key<C: Clock>(

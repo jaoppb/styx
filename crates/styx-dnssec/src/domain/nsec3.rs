@@ -2,7 +2,7 @@
 
 use std::cmp::Ordering;
 
-use styx_proto::{Label, Name, RData, ResourceRecord};
+use styx_proto::{Label, Name, RData, RecordType, ResourceRecord};
 
 use crate::domain::denial::{prepend_wildcard, Nsec3Params, Nsec3Proof};
 use crate::domain::error::DenialError;
@@ -255,5 +255,61 @@ pub fn verify_nsec3_ds_absence(
             return Ok(());
         }
     }
+    Err(DenialError::NotCovered)
+}
+
+fn nsec3_matches_nodata(
+    records: &[ResourceRecord],
+    target_hash: &[u8],
+    qtype: RecordType,
+) -> Result<bool, DenialError> {
+    for rr in records {
+        let RData::Nsec3(ref nsec3) = rr.rdata else {
+            continue;
+        };
+        let Some(owner_hash) = extract_owner_hash(rr) else {
+            continue;
+        };
+        if owner_hash.as_slice() == target_hash {
+            if nsec3.types().contains(qtype) || nsec3.types().contains(RecordType::CNAME) {
+                return Err(DenialError::NotCovered);
+            }
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Verifies an NSEC3 NODATA proof (RFC 5155 §7.2.3 and §7.2.4).
+///
+/// # Errors
+/// Returns [`DenialError`] if proof fails.
+pub fn verify_nsec3_nodata(
+    proof: &Nsec3Proof,
+    qname: &Name,
+    qtype: RecordType,
+    cap: Nsec3IterationsCap,
+) -> Result<(), DenialError> {
+    let qname_hash = hash_nsec3_name(qname, &proof.params, cap)?;
+    if nsec3_matches_nodata(&proof.records, &qname_hash, qtype)? {
+        return Ok(());
+    }
+
+    let ce = find_closest_encloser(proof, qname, cap)?;
+    let nc = match get_next_closer_name(qname, &ce) {
+        Some(nc) => nc,
+        None => return Err(DenialError::DenialProofIncomplete),
+    };
+    let nc_hash = hash_nsec3_name(&nc, &proof.params, cap)?;
+    if !is_hash_covered(&proof.records, &nc_hash) {
+        return Err(DenialError::DenialProofIncomplete);
+    }
+
+    let wildcard = prepend_wildcard(&ce).map_err(|_| DenialError::DenialProofIncomplete)?;
+    let wc_hash = hash_nsec3_name(&wildcard, &proof.params, cap)?;
+    if nsec3_matches_nodata(&proof.records, &wc_hash, qtype)? {
+        return Ok(());
+    }
+
     Err(DenialError::NotCovered)
 }
