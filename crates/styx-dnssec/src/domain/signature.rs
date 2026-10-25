@@ -1,5 +1,6 @@
 //! Cryptographic signature verification and DS-to-DNSKEY digest computation.
 
+use ring::signature::{self, RsaPublicKeyComponents};
 use styx_core::Clock;
 use styx_proto::domain::rdata::{DnskeyRdata, DsRdata, RrsigRdata};
 use styx_proto::{Name, ResourceRecord};
@@ -8,120 +9,110 @@ use crate::domain::canonical::build_canonical_signed_data;
 use crate::domain::policy::{AlgorithmSet, AlgorithmSupport};
 use crate::domain::verdict::VerdictReason;
 
-/// Verifies an RSA-SHA256 signature according to RFC 5702 and RFC 3110.
-fn verify_rsa_signature(
-    public_key: &[u8],
-    signed_data: &[u8],
-    signature: &[u8],
-) -> Result<(), VerdictReason> {
-    let first_byte = match public_key.first() {
-        Some(&b) => b,
-        None => return Err(VerdictReason::NoValidRrsig),
-    };
-
-    let (exp_start, exp_len) = if first_byte == 0 {
-        if public_key.len() < 3 {
-            return Err(VerdictReason::NoValidRrsig);
-        }
-        let b1 = match public_key.get(1) {
-            Some(&b) => b,
-            None => return Err(VerdictReason::NoValidRrsig),
-        };
-        let b2 = match public_key.get(2) {
-            Some(&b) => b,
-            None => return Err(VerdictReason::NoValidRrsig),
-        };
-        (3usize, usize::from(u16::from_be_bytes([b1, b2])))
+/// Splits an RFC 3110 RSA public key into its exponent and modulus.
+fn rsa_components(public_key: &[u8]) -> Option<RsaPublicKeyComponents<&[u8]>> {
+    let (&first, rest) = public_key.split_first()?;
+    let (exponent_length, rest) = if first == 0 {
+        let (length, rest) = rest.split_first_chunk::<2>()?;
+        (usize::from(u16::from_be_bytes(*length)), rest)
     } else {
-        (1usize, usize::from(first_byte))
+        (usize::from(first), rest)
     };
+    let (exponent, modulus) = rest.split_at_checked(exponent_length)?;
+    if modulus.is_empty() {
+        return None;
+    }
+    Some(RsaPublicKeyComponents {
+        n: modulus,
+        e: exponent,
+    })
+}
 
-    let exp_end = exp_start.saturating_add(exp_len);
-    let exp = match public_key.get(exp_start..exp_end) {
-        Some(e) => e,
-        None => return Err(VerdictReason::NoValidRrsig),
+/// Verifies an RSA/SHA-256 signature (RFC 5702).
+fn verify_rsa_signature(public_key: &[u8], signed_data: &[u8], signature: &[u8]) -> bool {
+    let Some(key) = rsa_components(public_key) else {
+        return false;
     };
-    let modulus = match public_key.get(exp_end..) {
-        Some(m) if !m.is_empty() => m,
-        _ => return Err(VerdictReason::NoValidRrsig),
-    };
-
-    let rsa_key = ring::signature::RsaPublicKeyComponents { n: modulus, e: exp };
-    if rsa_key
-        .verify(
-            &ring::signature::RSA_PKCS1_2048_8192_SHA256,
-            signed_data,
-            signature,
-        )
-        .is_ok()
-        || rsa_key
+    key.verify(
+        &signature::RSA_PKCS1_2048_8192_SHA256,
+        signed_data,
+        signature,
+    )
+    .is_ok()
+        || key
             .verify(
-                &ring::signature::RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY,
+                &signature::RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY,
                 signed_data,
                 signature,
             )
             .is_ok()
-    {
-        Ok(())
-    } else {
-        Err(VerdictReason::NoValidRrsig)
-    }
 }
 
-/// Verifies an ECDSA P-256 signature according to RFC 6605.
-fn verify_ecdsa_p256_signature(
-    public_key: &[u8],
-    signed_data: &[u8],
-    signature: &[u8],
-) -> Result<(), VerdictReason> {
+/// Verifies an ECDSA P-256/SHA-256 signature (RFC 6605).
+fn verify_ecdsa_p256_signature(public_key: &[u8], signed_data: &[u8], signature: &[u8]) -> bool {
     if public_key.len() != 64 {
-        return Err(VerdictReason::NoValidRrsig);
+        return false;
     }
     let mut uncompressed = Vec::with_capacity(65);
     uncompressed.push(0x04);
     uncompressed.extend_from_slice(public_key);
-
-    let key = ring::signature::UnparsedPublicKey::new(
-        &ring::signature::ECDSA_P256_SHA256_FIXED,
-        &uncompressed,
-    );
-    if key.verify(signed_data, signature).is_ok() {
-        Ok(())
-    } else {
-        Err(VerdictReason::NoValidRrsig)
-    }
+    signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, &uncompressed)
+        .verify(signed_data, signature)
+        .is_ok()
 }
 
-/// Verifies an Ed25519 signature according to RFC 8080.
-fn verify_ed25519_signature(
-    public_key: &[u8],
-    signed_data: &[u8],
-    signature: &[u8],
-) -> Result<(), VerdictReason> {
-    if public_key.len() != 32 {
-        return Err(VerdictReason::NoValidRrsig);
-    }
-    let key = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, public_key);
-    if key.verify(signed_data, signature).is_ok() {
-        Ok(())
-    } else {
-        Err(VerdictReason::NoValidRrsig)
-    }
+/// Verifies an Ed25519 signature (RFC 8080).
+fn verify_ed25519_signature(public_key: &[u8], signed_data: &[u8], signature: &[u8]) -> bool {
+    public_key.len() == 32
+        && signature::UnparsedPublicKey::new(&signature::ED25519, public_key)
+            .verify(signed_data, signature)
+            .is_ok()
 }
 
-/// Verifies a cryptographic signature based on the algorithm specified.
+/// Dispatches to the primitive for `algorithm`. Only reached for an algorithm the
+/// policy classified as supported, so an algorithm without a primitive here fails.
 fn verify_crypto_signature(
     algorithm: u8,
     public_key: &[u8],
     signed_data: &[u8],
     signature: &[u8],
-) -> Result<(), VerdictReason> {
+) -> bool {
     match algorithm {
-        8 => verify_rsa_signature(public_key, signed_data, signature),
-        13 => verify_ecdsa_p256_signature(public_key, signed_data, signature),
-        15 => verify_ed25519_signature(public_key, signed_data, signature),
-        _ => Err(VerdictReason::UnsupportedAlgorithm),
+        AlgorithmSet::RSASHA256 => verify_rsa_signature(public_key, signed_data, signature),
+        AlgorithmSet::ECDSAP256SHA256 => {
+            verify_ecdsa_p256_signature(public_key, signed_data, signature)
+        }
+        AlgorithmSet::ED25519 => verify_ed25519_signature(public_key, signed_data, signature),
+        _ => false,
     }
+}
+
+/// RFC 1982 serial-number comparison over 32 bits: whether `earlier` precedes `later`.
+fn serial_precedes(earlier: u32, later: u32) -> bool {
+    earlier != later && later.wrapping_sub(earlier) < 0x8000_0000
+}
+
+/// The clock's current time as an RRSIG timestamp: seconds since the epoch modulo
+/// 2^32, compared by serial arithmetic (RFC 4034 §3.1.5). `None` before the epoch.
+fn rrsig_now<C: Clock>(clock: &C) -> Option<u32> {
+    let seconds = clock
+        .now_utc()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    u32::try_from(seconds & u64::from(u32::MAX)).ok()
+}
+
+/// Checks the RRSIG validity window against the injected clock.
+fn check_validity_window<C: Clock>(rrsig: &RrsigRdata, clock: &C) -> Result<(), VerdictReason> {
+    let now = rrsig_now(clock).ok_or(VerdictReason::SignatureNotYetValid)?;
+    if serial_precedes(now, rrsig.signature_inception()) {
+        return Err(VerdictReason::SignatureNotYetValid);
+    }
+    if serial_precedes(rrsig.signature_expiration(), now) {
+        return Err(VerdictReason::SignatureExpired);
+    }
+    Ok(())
 }
 
 /// Verifies a single [`RrsigRdata`] over an RRset using a [`DnskeyRdata`] and injected [`Clock`].
@@ -136,27 +127,12 @@ pub fn verify_rrsig_record<C: Clock>(
     clock: &C,
     algorithms: &AlgorithmSet,
 ) -> Result<(), VerdictReason> {
-    if rrsig.key_tag() != dnskey.key_tag() || rrsig.algorithm() != dnskey.algorithm() {
-        return Err(VerdictReason::NoValidRrsig);
-    }
-    if rrsig.signer_name() != dnskey_owner {
-        return Err(VerdictReason::NoValidRrsig);
-    }
-
-    let now_secs = match clock
-        .now_utc()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+    if rrsig.key_tag() != dnskey.key_tag()
+        || rrsig.algorithm() != dnskey.algorithm()
+        || rrsig.signer_name() != dnskey_owner
     {
-        Ok(d) => u32::try_from(d.as_secs()).unwrap_or(u32::MAX),
-        Err(_) => 0,
-    };
-    if now_secs < rrsig.signature_inception() {
-        return Err(VerdictReason::SignatureNotYetValid);
+        return Err(VerdictReason::NoValidRrsig);
     }
-    if now_secs > rrsig.signature_expiration() {
-        return Err(VerdictReason::SignatureExpired);
-    }
-
     match algorithms.classify_sig(rrsig.algorithm()) {
         AlgorithmSupport::Supported => {}
         AlgorithmSupport::UnknownTreatAsInsecure => {
@@ -164,18 +140,20 @@ pub fn verify_rrsig_record<C: Clock>(
         }
         AlgorithmSupport::Refused => return Err(VerdictReason::NoValidRrsig),
     }
+    check_validity_window(rrsig, clock)?;
 
-    let signed_data = match build_canonical_signed_data(rrsig, rrset) {
-        Ok(data) => data,
-        Err(_) => return Err(VerdictReason::NoValidRrsig),
-    };
-
-    verify_crypto_signature(
+    let signed_data =
+        build_canonical_signed_data(rrsig, rrset).map_err(|_| VerdictReason::NoValidRrsig)?;
+    if verify_crypto_signature(
         rrsig.algorithm(),
         dnskey.public_key(),
         &signed_data,
         rrsig.signature(),
-    )
+    ) {
+        Ok(())
+    } else {
+        Err(VerdictReason::NoValidRrsig)
+    }
 }
 
 /// Computes the cryptographic digest of a DNSKEY according to RFC 4034 §5.1.4.
@@ -199,15 +177,15 @@ pub fn compute_dnskey_digest(
     input.extend_from_slice(&rdata_bytes);
 
     match digest_type {
-        1 => {
+        AlgorithmSet::DIGEST_SHA1 => {
             let digest = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &input);
             Some(digest.as_ref().to_vec())
         }
-        2 => {
+        AlgorithmSet::DIGEST_SHA256 => {
             let digest = ring::digest::digest(&ring::digest::SHA256, &input);
             Some(digest.as_ref().to_vec())
         }
-        4 => {
+        AlgorithmSet::DIGEST_SHA384 => {
             let digest = ring::digest::digest(&ring::digest::SHA384, &input);
             Some(digest.as_ref().to_vec())
         }
@@ -224,5 +202,71 @@ pub fn check_single_ds_linkage(zone_name: &Name, ds: &DsRdata, dnskey: &DnskeyRd
     match compute_dnskey_digest(zone_name, dnskey, ds.digest_type()) {
         Some(computed) => computed.as_slice() == ds.digest(),
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use styx_core::test_util::TestClock;
+    use styx_proto::RecordType;
+
+    use super::*;
+
+    fn rrsig(inception: u32, expiration: u32) -> RrsigRdata {
+        RrsigRdata::new(
+            RecordType::A,
+            AlgorithmSet::ED25519,
+            0,
+            300,
+            expiration,
+            inception,
+            0,
+            Name::root(),
+            Vec::new(),
+        )
+    }
+
+    fn clock_at(seconds: u64) -> TestClock {
+        let clock = TestClock::new();
+        let now = SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds));
+        clock.set_utc(now.unwrap());
+        clock
+    }
+
+    #[test]
+    fn a_window_spanning_the_32_bit_wrap_is_valid_on_both_sides() {
+        let window = rrsig(0xFFFF_FF00, 0x0000_0100);
+        assert_eq!(
+            check_validity_window(&window, &clock_at(0xFFFF_FFF0)),
+            Ok(())
+        );
+        assert_eq!(
+            check_validity_window(&window, &clock_at(0x1_0000_0010)),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_window_spanning_the_32_bit_wrap_still_expires() {
+        let window = rrsig(0xFFFF_FF00, 0x0000_0100);
+        assert_eq!(
+            check_validity_window(&window, &clock_at(0x1_0000_0200)),
+            Err(VerdictReason::SignatureExpired)
+        );
+        assert_eq!(
+            check_validity_window(&window, &clock_at(0xFFFF_FE00)),
+            Err(VerdictReason::SignatureNotYetValid)
+        );
+    }
+
+    #[test]
+    fn time_after_2106_wraps_instead_of_saturating() {
+        let window = rrsig(0x0000_0010, 0x0000_1000);
+        assert_eq!(
+            check_validity_window(&window, &clock_at(0x1_0000_0100)),
+            Ok(())
+        );
     }
 }

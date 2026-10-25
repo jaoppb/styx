@@ -62,12 +62,29 @@ pub struct AlgorithmSet {
 }
 
 impl AlgorithmSet {
+    /// RSA/SHA-256 (RFC 5702).
+    pub const RSASHA256: u8 = 8;
+    /// ECDSA P-256 with SHA-256 (RFC 6605).
+    pub const ECDSAP256SHA256: u8 = 13;
+    /// Ed25519 (RFC 8080).
+    pub const ED25519: u8 = 15;
+    /// DS digest type SHA-1 (RFC 4034).
+    pub const DIGEST_SHA1: u8 = 1;
+    /// DS digest type SHA-256 (RFC 4509).
+    pub const DIGEST_SHA256: u8 = 2;
+    /// DS digest type SHA-384 (RFC 6605).
+    pub const DIGEST_SHA384: u8 = 4;
+
     /// Creates a new [`AlgorithmSet`] with default supported algorithms.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            supported_sig: [8, 13, 15].into_iter().collect(),
-            supported_digest: [2, 4].into_iter().collect(),
+            supported_sig: [Self::RSASHA256, Self::ECDSAP256SHA256, Self::ED25519]
+                .into_iter()
+                .collect(),
+            supported_digest: [Self::DIGEST_SHA256, Self::DIGEST_SHA384]
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -92,7 +109,7 @@ impl AlgorithmSet {
         }
         match digest_type {
             // SHA-1 (RFC 4034) is deprecated for DNSSEC DS records (RFC 8624)
-            1 => AlgorithmSupport::Refused,
+            Self::DIGEST_SHA1 => AlgorithmSupport::Refused,
             _ => AlgorithmSupport::UnknownTreatAsInsecure,
         }
     }
