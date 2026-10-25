@@ -2,7 +2,7 @@
 
 use std::cmp::Ordering;
 
-use styx_proto::{Label, Name, RData, RecordType, ResourceRecord};
+use styx_proto::{Name, RData, RecordType, ResourceRecord};
 
 use crate::domain::denial::{prepend_wildcard, Nsec3Params, Nsec3Proof};
 use crate::domain::error::DenialError;
@@ -140,19 +140,9 @@ pub fn find_closest_encloser(
     qname: &Name,
     cap: Nsec3IterationsCap,
 ) -> Result<Name, DenialError> {
-    let count = qname.label_count();
-    for to_skip in 0..=count {
-        let mut labels = Vec::new();
-        for l in qname.labels().skip(to_skip) {
-            let label_obj = match Label::new(l.as_bytes().to_vec()) {
-                Ok(lbl) => lbl,
-                Err(e) => return Err(DenialError::from(e)),
-            };
-            labels.push(label_obj);
-        }
-        let candidate = match Name::new(labels) {
-            Ok(c) => c,
-            Err(_) => continue,
+    for label_count in (0..=qname.label_count()).rev() {
+        let Some(candidate) = qname.ancestor(label_count) else {
+            continue;
         };
         let hash = hash_nsec3_name(&candidate, &proof.params, cap)?;
         let found = proof
@@ -167,19 +157,11 @@ pub fn find_closest_encloser(
 }
 
 /// Finds the next closer name with one more label than `ce` under `qname`.
-fn get_next_closer_name(qname: &Name, ce: &Name) -> Option<Name> {
-    let q_count = qname.label_count();
-    let ce_count = ce.label_count();
-    if q_count <= ce_count {
+fn get_next_closer_name(qname: &Name, closest_encloser: &Name) -> Option<Name> {
+    if qname.label_count() <= closest_encloser.label_count() {
         return None;
     }
-    let to_drop = q_count.saturating_sub(ce_count.saturating_add(1));
-    let mut labels = Vec::new();
-    for l in qname.labels().skip(to_drop) {
-        let label_obj = Label::new(l.as_bytes().to_vec()).ok()?;
-        labels.push(label_obj);
-    }
-    Name::new(labels).ok()
+    qname.ancestor(closest_encloser.label_count().saturating_add(1))
 }
 
 /// Verifies whether `target_hash` is covered by any NSEC3 in `records`.

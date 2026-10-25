@@ -22,6 +22,21 @@ impl Name {
         Self::new(labels).ok()
     }
 
+    /// The ancestor of this name, or the name itself, that keeps only its rightmost
+    /// `label_count` labels: `ancestor(1)` of `www.example.com.` is `com.`, and
+    /// `ancestor(0)` is the root. `None` when `label_count` exceeds this name's.
+    #[must_use]
+    pub fn ancestor(&self, label_count: usize) -> Option<Self> {
+        let skip = self.label_count().checked_sub(label_count)?;
+        let start = match self.label_offsets().nth(skip) {
+            Some(offset) => offset,
+            None => self.wire.len().checked_sub(1)?,
+        };
+        Some(Self {
+            wire: Box::from(self.wire.get(start..)?),
+        })
+    }
+
     /// Parses an uncompressed wire-format name occupying exactly `octets`, as in
     /// DNAME RDATA (RFC 6672 §2.1: the target is never compressed).
     ///
@@ -69,6 +84,17 @@ mod tests {
             name("old.example.").substitute_suffix(&name("old.example."), &name("x.")),
             None
         );
+    }
+
+    #[test]
+    fn ancestor_keeps_the_rightmost_labels() {
+        let www = name("www.Example.com.");
+        assert_eq!(www.ancestor(3), Some(www.clone()));
+        assert_eq!(www.ancestor(2), Some(name("example.com.")));
+        assert_eq!(www.ancestor(1), Some(name("com.")));
+        assert_eq!(www.ancestor(0), Some(Name::root()));
+        assert_eq!(www.ancestor(4), None);
+        assert_eq!(Name::root().ancestor(0), Some(Name::root()));
     }
 
     #[test]

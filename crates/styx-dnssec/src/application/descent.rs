@@ -2,7 +2,7 @@
 
 use styx_core::Clock;
 use styx_proto::domain::rdata::DnskeyRdata;
-use styx_proto::{Label, Name, RData, ResourceRecord};
+use styx_proto::{Name, RData, ResourceRecord};
 
 use crate::application::validator::Validator;
 use crate::domain::chain::ZoneCutMaterial;
@@ -219,19 +219,10 @@ fn verify_ds_denial(policy: &ValidationPolicy, cut: &ZoneCutMaterial) -> bool {
     }
 }
 
-/// Helper to derive the next intermediate zone cut between `current_zone` and `qname`.
+/// The name one label below `current_zone` on the way down to `qname`.
 pub(crate) fn find_next_zone_cut(qname: &Name, current_zone: &Name) -> Option<Name> {
-    let q_count = qname.label_count();
-    let cur_count = current_zone.label_count();
-    if cur_count >= q_count {
+    if current_zone.label_count() >= qname.label_count() {
         return None;
     }
-    let next_len = cur_count.saturating_add(1);
-    let to_drop = q_count.saturating_sub(next_len);
-    let mut labels = Vec::new();
-    for l in qname.labels().skip(to_drop) {
-        let lbl = Label::new(l.as_bytes().to_vec()).ok()?;
-        labels.push(lbl);
-    }
-    Name::new(labels).ok()
+    qname.ancestor(current_zone.label_count().saturating_add(1))
 }
