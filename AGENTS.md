@@ -133,8 +133,9 @@ styx/
 │   │   └── src/{domain, application, infrastructure}/
 │   └── styx-dnssec/            # DNSSEC validation engine and denial-of-existence verifier
 │       └── src/
-│           ├── domain/         # Wire canonicalization, crypto signatures, NSEC/NSEC3, verdicts
-│           ├── application/    # Validator, descent walker, denial verifier
+│           ├── domain/         # Wire canonicalization, crypto signatures, NSEC/NSEC3,
+│           │                   # chain material (Delegation), policy, verdicts
+│           ├── application/    # Validator, authenticator, descent walker, denial verifier
 │           └── infrastructure/ # Pinned/file trust anchors, pushed/pull chain sources
 ├── config/                     # named.root (IANA) and an example styx.toml
 └── xtask/                      # Gate tasks (deps, hickory, module-size) and the
