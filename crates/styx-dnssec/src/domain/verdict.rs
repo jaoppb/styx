@@ -1,4 +1,8 @@
-//! DNSSEC verdict, policy, and cryptographic algorithm classifications.
+//! DNSSEC validation verdicts and their mapping onto a response.
+
+use styx_proto::{Message, ResponseCode};
+
+use crate::domain::policy::FailureMode;
 
 /// Primary validation verdict for a DNS resolution outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,183 +51,32 @@ pub struct ValidationOutcome {
     pub verdict: ValidationVerdict,
     /// Specific reason for the verdict.
     pub reason: VerdictReason,
-    /// Whether this verdict was enforced (modifying response or returning SERVFAIL).
-    pub enforced: bool,
 }
 
 impl ValidationOutcome {
     /// Constructs a new [`ValidationOutcome`].
     #[must_use]
-    pub fn new(verdict: ValidationVerdict, reason: VerdictReason, enforced: bool) -> Self {
-        Self {
-            verdict,
-            reason,
-            enforced,
-        }
+    pub fn new(verdict: ValidationVerdict, reason: VerdictReason) -> Self {
+        Self { verdict, reason }
     }
 
-    /// Applies the validation outcome to the DNS response message header and answers.
-    pub fn apply_to_message(&self, msg: &mut styx_proto::Message) {
+    /// Applies the validation outcome to the response's AD bit and, for a `Bogus`
+    /// verdict under [`FailureMode::HardFail`], turns the response into SERVFAIL.
+    pub fn apply_to_message(&self, message: &mut Message, mode: FailureMode) {
         match self.verdict {
             ValidationVerdict::Secure => {
-                msg.header.authentic_data = true;
+                message.header.authentic_data = true;
             }
             ValidationVerdict::Insecure | ValidationVerdict::Indeterminate => {
-                msg.header.authentic_data = false;
+                message.header.authentic_data = false;
             }
             ValidationVerdict::Bogus => {
-                msg.header.authentic_data = false;
-                if self.enforced {
-                    msg.header.rcode = styx_proto::ResponseCode::SERVFAIL;
-                    msg.answers.clear();
+                message.header.authentic_data = false;
+                if mode == FailureMode::HardFail {
+                    message.header.rcode = ResponseCode::SERVFAIL;
+                    message.answers.clear();
                 }
             }
-        }
-    }
-}
-
-/// Failure enforcement mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FailureMode {
-    /// Log verdicts at warn level without altering client response or setting SERVFAIL.
-    WarnOnly,
-    /// Reject bogus responses with SERVFAIL and assert Authentic Data (AD) bit on secure ones.
-    #[default]
-    HardFail,
-}
-
-/// Mandatory cap on NSEC3 hashing iterations (RFC 9276).
-///
-/// Uncapped NSEC3 is a remote denial of service vector because an attacker can specify
-/// high iteration counts in records. RFC 9276 specifies that resolvers should set a
-/// maximum iteration cap of 100 for all key sizes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Nsec3IterationsCap(u16);
-
-impl Nsec3IterationsCap {
-    /// RFC 9276 recommended maximum iteration cap (100).
-    pub const DEFAULT: Self = Self(100);
-
-    /// Creates a new [`Nsec3IterationsCap`].
-    #[must_use]
-    pub const fn new(cap: u16) -> Self {
-        Self(cap)
-    }
-
-    /// Returns the numerical iteration cap.
-    #[must_use]
-    pub const fn value(&self) -> u16 {
-        self.0
-    }
-}
-
-impl Default for Nsec3IterationsCap {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
-/// Support status of a cryptographic algorithm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlgorithmSupport {
-    /// Cryptographic algorithm is supported and safe to evaluate.
-    Supported,
-    /// Unknown or unrecognised algorithm; zone is treated as Insecure.
-    UnknownTreatAsInsecure,
-    /// Broken or deprecated algorithm; zone is refused as Bogus.
-    Refused,
-}
-
-use std::collections::BTreeSet;
-
-/// Explicit set of cryptographic algorithms recognised by the validator.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AlgorithmSet {
-    supported_sig: BTreeSet<u8>,
-    supported_digest: BTreeSet<u8>,
-}
-
-impl AlgorithmSet {
-    /// Creates a new [`AlgorithmSet`] with default supported algorithms.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            supported_sig: [8, 13, 15].into_iter().collect(),
-            supported_digest: [2, 4].into_iter().collect(),
-        }
-    }
-
-    /// Classifies a DNSSEC signature algorithm number.
-    #[must_use]
-    pub fn classify_sig(&self, algorithm: u8) -> AlgorithmSupport {
-        if self.supported_sig.contains(&algorithm) {
-            return AlgorithmSupport::Supported;
-        }
-        match algorithm {
-            // Deprecated algorithms (RFC 8624): RSAMD5 (1), DSA (3), DSA-NSEC3-SHA1 (6), RSASHA1-NSEC3-SHA1 (7)
-            1 | 3 | 6 | 7 => AlgorithmSupport::Refused,
-            _ => AlgorithmSupport::UnknownTreatAsInsecure,
-        }
-    }
-
-    /// Classifies a DS digest algorithm number.
-    #[must_use]
-    pub fn classify_digest(&self, digest_type: u8) -> AlgorithmSupport {
-        if self.supported_digest.contains(&digest_type) {
-            return AlgorithmSupport::Supported;
-        }
-        match digest_type {
-            // SHA-1 (RFC 4034) is deprecated for DNSSEC DS records (RFC 8624)
-            1 => AlgorithmSupport::Refused,
-            _ => AlgorithmSupport::UnknownTreatAsInsecure,
-        }
-    }
-}
-
-impl Default for AlgorithmSet {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Configuration policy for DNSSEC validation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ValidationPolicy {
-    /// Enforcement behavior on validation failures.
-    pub failure_mode: FailureMode,
-    /// Permitted cryptographic algorithms.
-    pub algorithms: AlgorithmSet,
-    /// Iteration cap for NSEC3 records.
-    pub nsec3_max_iterations: Nsec3IterationsCap,
-    /// Maximum zone cuts to traverse during descent.
-    pub max_zone_cuts: u8,
-}
-
-impl ValidationPolicy {
-    /// Creates a new [`ValidationPolicy`].
-    #[must_use]
-    pub fn new(
-        failure_mode: FailureMode,
-        algorithms: AlgorithmSet,
-        nsec3_max_iterations: Nsec3IterationsCap,
-        max_zone_cuts: u8,
-    ) -> Self {
-        Self {
-            failure_mode,
-            algorithms,
-            nsec3_max_iterations,
-            max_zone_cuts,
-        }
-    }
-}
-
-impl Default for ValidationPolicy {
-    fn default() -> Self {
-        Self {
-            failure_mode: FailureMode::default(),
-            algorithms: AlgorithmSet::new(),
-            nsec3_max_iterations: Nsec3IterationsCap::DEFAULT,
-            max_zone_cuts: 10,
         }
     }
 }

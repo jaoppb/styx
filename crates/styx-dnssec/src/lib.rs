@@ -15,11 +15,11 @@ pub use application::validator::Validator;
 pub use domain::chain::{ChainMaterial, MaterialOrigin, ZoneCutMaterial};
 pub use domain::denial::{DenialProof, Nsec3Flags, Nsec3Params, Nsec3Proof, NsecProof};
 pub use domain::error::{ChainSourceError, DenialError, TrustAnchorError, ValidationError};
+pub use domain::policy::{
+    AlgorithmSet, AlgorithmSupport, FailureMode, Nsec3IterationsCap, ValidationPolicy,
+};
 pub use domain::ports::{ChainRequest, ChainSource, TrustAnchorSource};
 pub use domain::trust_anchor::TrustAnchor;
-pub use domain::verdict::{
-    AlgorithmSet, AlgorithmSupport, FailureMode, Nsec3IterationsCap, ValidationOutcome,
-    ValidationPolicy, ValidationVerdict, VerdictReason,
-};
+pub use domain::verdict::{ValidationOutcome, ValidationVerdict, VerdictReason};
 pub use infrastructure::chain_source::{PullChainSource, PushedChainSource};
 pub use infrastructure::trust_anchor::{FileTrustAnchor, PinnedRootAnchor};

@@ -8,12 +8,11 @@ use crate::application::validator::Validator;
 use crate::domain::chain::ZoneCutMaterial;
 use crate::domain::denial::DenialProof;
 use crate::domain::nsec3::verify_nsec3_ds_absence;
+use crate::domain::policy::ValidationPolicy;
 use crate::domain::ports::{ChainRequest, ChainSource};
 use crate::domain::signature::check_single_ds_linkage;
 use crate::domain::trust_anchor::TrustAnchor;
-use crate::domain::verdict::{
-    ValidationOutcome, ValidationPolicy, ValidationVerdict, VerdictReason,
-};
+use crate::domain::verdict::{ValidationOutcome, ValidationVerdict, VerdictReason};
 
 /// Result of walking the DNSSEC chain descent from trust anchors.
 #[derive(Debug)]
@@ -42,7 +41,6 @@ pub(crate) fn walk_chain_descent<C: Clock, S: ChainSource>(
         return DescentResult::Terminated(ValidationOutcome::new(
             ValidationVerdict::Indeterminate,
             VerdictReason::NoPathToAnchor,
-            validator.is_enforced(),
         ));
     };
 
@@ -72,7 +70,6 @@ pub(crate) fn walk_chain_descent<C: Clock, S: ChainSource>(
                 return DescentResult::Terminated(ValidationOutcome::new(
                     ValidationVerdict::Insecure,
                     VerdictReason::ProvenUnsignedDelegation,
-                    validator.is_enforced(),
                 ));
             }
             Ok(StepResult::NoCut) => {
@@ -96,7 +93,6 @@ fn fetch_and_auth_root<C: Clock, S: ChainSource>(
         ValidationOutcome::new(
             ValidationVerdict::Indeterminate,
             VerdictReason::ChainMaterialUnavailable,
-            validator.is_enforced(),
         )
     })?;
 
@@ -104,7 +100,6 @@ fn fetch_and_auth_root<C: Clock, S: ChainSource>(
         ValidationOutcome::new(
             ValidationVerdict::Indeterminate,
             VerdictReason::NoPathToAnchor,
-            validator.is_enforced(),
         )
     })?;
 
@@ -149,7 +144,6 @@ pub(crate) fn verify_child_zone_cut<C: Clock>(
             return Err(ValidationOutcome::new(
                 ValidationVerdict::Indeterminate,
                 VerdictReason::NoPathToAnchor,
-                validator.is_enforced(),
             ));
         }
     };
@@ -160,12 +154,11 @@ pub(crate) fn verify_child_zone_cut<C: Clock>(
             return Err(ValidationOutcome::new(
                 ValidationVerdict::Bogus,
                 VerdictReason::DsDnskeyMismatch,
-                validator.is_enforced(),
             ));
         }
     };
 
-    let child_key = find_authenticated_child_key(validator, cut, ds_records, child_dnskeys)?;
+    let child_key = find_authenticated_child_key(cut, ds_records, child_dnskeys)?;
 
     if !validator.has_valid_signature_for_set(
         child_dnskeys,
@@ -176,15 +169,13 @@ pub(crate) fn verify_child_zone_cut<C: Clock>(
         return Err(ValidationOutcome::new(
             ValidationVerdict::Bogus,
             VerdictReason::NoValidRrsig,
-            validator.is_enforced(),
         ));
     }
 
     Ok(Some(child_dnskeys.clone()))
 }
 
-fn find_authenticated_child_key<C: Clock>(
-    validator: &Validator<C>,
+fn find_authenticated_child_key(
     cut: &ZoneCutMaterial,
     ds_records: &[ResourceRecord],
     child_dnskeys: &[ResourceRecord],
@@ -205,7 +196,6 @@ fn find_authenticated_child_key<C: Clock>(
     Err(ValidationOutcome::new(
         ValidationVerdict::Bogus,
         VerdictReason::DsDnskeyMismatch,
-        validator.is_enforced(),
     ))
 }
 

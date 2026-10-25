@@ -9,12 +9,11 @@ use styx_proto::{Message, Name, RData, RecordType, ResourceRecord};
 use crate::application::denial_verifier::verify_denial_proofs;
 use crate::application::descent::{walk_chain_descent, DescentResult};
 use crate::domain::chain::ZoneCutMaterial;
+use crate::domain::policy::ValidationPolicy;
 use crate::domain::ports::{ChainSource, TrustAnchorSource};
 use crate::domain::signature::{compute_dnskey_digest, verify_rrsig_record};
 use crate::domain::trust_anchor::TrustAnchor;
-use crate::domain::verdict::{
-    FailureMode, ValidationOutcome, ValidationPolicy, ValidationVerdict, VerdictReason,
-};
+use crate::domain::verdict::{ValidationOutcome, ValidationVerdict, VerdictReason};
 
 /// Pure DNSSEC validator orchestrating chain-of-trust verification.
 pub struct Validator<C: Clock> {
@@ -41,15 +40,6 @@ impl<C: Clock> Validator<C> {
         self.clock.as_ref()
     }
 
-    /// Returns whether the validator is actively enforcing failures.
-    #[must_use]
-    pub fn is_enforced(&self) -> bool {
-        match self.policy.failure_mode {
-            FailureMode::WarnOnly => false,
-            FailureMode::HardFail => true,
-        }
-    }
-
     /// Evaluates a DNS message and returns a [`ValidationOutcome`].
     pub fn validate<S: ChainSource, A: TrustAnchorSource>(
         &self,
@@ -61,7 +51,6 @@ impl<C: Clock> Validator<C> {
             return ValidationOutcome::new(
                 ValidationVerdict::Indeterminate,
                 VerdictReason::NoPathToAnchor,
-                self.is_enforced(),
             );
         };
 
@@ -76,7 +65,7 @@ impl<C: Clock> Validator<C> {
         tracing::info!(
             verdict = ?outcome.verdict,
             reason = ?outcome.reason,
-            enforced = outcome.enforced,
+            failure_mode = ?self.policy.failure_mode,
             "DNSSEC validation completed"
         );
         outcome
@@ -96,7 +85,6 @@ impl<C: Clock> Validator<C> {
                 return ValidationOutcome::new(
                     ValidationVerdict::Indeterminate,
                     VerdictReason::NoPathToAnchor,
-                    self.is_enforced(),
                 );
             }
         };
@@ -125,7 +113,6 @@ impl<C: Clock> Validator<C> {
                 return Err(ValidationOutcome::new(
                     ValidationVerdict::Bogus,
                     VerdictReason::NoPathToAnchor,
-                    self.is_enforced(),
                 ));
             }
         };
@@ -136,7 +123,6 @@ impl<C: Clock> Validator<C> {
             return Err(ValidationOutcome::new(
                 ValidationVerdict::Bogus,
                 VerdictReason::NoValidRrsig,
-                self.is_enforced(),
             ));
         }
 
@@ -168,7 +154,6 @@ impl<C: Clock> Validator<C> {
         Err(ValidationOutcome::new(
             ValidationVerdict::Bogus,
             VerdictReason::DsDnskeyMismatch,
-            self.is_enforced(),
         ))
     }
 
@@ -236,18 +221,10 @@ impl<C: Clock> Validator<C> {
         if data_records.is_empty()
             || !self.verify_records_signature(&data_records, &signatures, dnskeys)
         {
-            return ValidationOutcome::new(
-                ValidationVerdict::Bogus,
-                VerdictReason::NoValidRrsig,
-                self.is_enforced(),
-            );
+            return ValidationOutcome::new(ValidationVerdict::Bogus, VerdictReason::NoValidRrsig);
         }
 
-        ValidationOutcome::new(
-            ValidationVerdict::Secure,
-            VerdictReason::AnchorMatched,
-            self.is_enforced(),
-        )
+        ValidationOutcome::new(ValidationVerdict::Secure, VerdictReason::AnchorMatched)
     }
 }
 

@@ -194,7 +194,6 @@ fn test_ed25519_positive_chain_validation() {
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
     assert_eq!(outcome.reason, VerdictReason::AnchorMatched);
-    assert!(outcome.enforced);
 }
 
 #[test]

@@ -8,8 +8,8 @@ use styx_core::test_util::TestClock;
 use styx_dnssec::domain::canonical::build_canonical_signed_data;
 use styx_dnssec::domain::signature::compute_dnskey_digest;
 use styx_dnssec::{
-    AlgorithmSet, FailureMode, PullChainSource, TrustAnchor, TrustAnchorSource, ValidationPolicy,
-    ValidationVerdict, Validator, VerdictReason, ZoneCutMaterial,
+    PullChainSource, TrustAnchor, TrustAnchorSource, ValidationPolicy, ValidationVerdict,
+    Validator, VerdictReason, ZoneCutMaterial,
 };
 use styx_proto::domain::rdata::{DnskeyRdata, RrsigRdata};
 use styx_proto::{
@@ -191,22 +191,4 @@ fn test_multi_key_rollover_validates_with_any_valid_signature() {
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
     assert_eq!(outcome.reason, VerdictReason::AnchorMatched);
-}
-
-#[test]
-fn test_failure_mode_enforcement_flag() {
-    let clock = Arc::new(TestClock::new());
-
-    let warn_policy = ValidationPolicy::new(
-        FailureMode::WarnOnly,
-        AlgorithmSet::new(),
-        styx_dnssec::Nsec3IterationsCap::DEFAULT,
-        8,
-    );
-    let warn_validator = Validator::new(clock.clone(), warn_policy);
-    assert!(!warn_validator.is_enforced());
-
-    let hard_policy = ValidationPolicy::default();
-    let hard_validator = Validator::new(clock, hard_policy);
-    assert!(hard_validator.is_enforced());
 }

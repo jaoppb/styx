@@ -6,9 +6,8 @@ use styx_proto::{Message, Name, RData, RecordType, ResourceRecord, ResponseCode}
 use crate::application::validator::Validator;
 use crate::domain::denial::{Nsec3Flags, Nsec3Params, Nsec3Proof, NsecProof};
 use crate::domain::nsec3::{verify_nsec3_nodata, verify_nsec3_nxdomain};
-use crate::domain::verdict::{
-    Nsec3IterationsCap, ValidationOutcome, ValidationVerdict, VerdictReason,
-};
+use crate::domain::policy::Nsec3IterationsCap;
+use crate::domain::verdict::{ValidationOutcome, ValidationVerdict, VerdictReason};
 
 /// Verifies denial-of-existence proofs present in `msg.authorities`.
 pub(crate) fn verify_denial_proofs<C: Clock>(
@@ -40,18 +39,12 @@ pub(crate) fn verify_denial_proofs<C: Clock>(
         if denial_records.is_empty()
             || !validator.verify_records_signature(denial_records, &signatures, active_keys)
         {
-            return ValidationOutcome::new(
-                ValidationVerdict::Bogus,
-                VerdictReason::NoValidRrsig,
-                validator.is_enforced(),
-            );
+            return ValidationOutcome::new(ValidationVerdict::Bogus, VerdictReason::NoValidRrsig);
         }
     }
 
     if !nsec_records.is_empty() {
-        if let Some(outcome) =
-            verify_nsec_denial(qname, qtype, msg, nsec_records, validator.is_enforced())
-        {
+        if let Some(outcome) = verify_nsec_denial(qname, qtype, msg, nsec_records) {
             return outcome;
         }
     }
@@ -62,7 +55,6 @@ pub(crate) fn verify_denial_proofs<C: Clock>(
             qtype,
             msg,
             nsec3_records,
-            validator.is_enforced(),
             validator.policy().nsec3_max_iterations,
         ) {
             return outcome;
@@ -72,7 +64,6 @@ pub(crate) fn verify_denial_proofs<C: Clock>(
     ValidationOutcome::new(
         ValidationVerdict::Bogus,
         VerdictReason::DenialProofIncomplete,
-        validator.is_enforced(),
     )
 }
 
@@ -81,7 +72,6 @@ fn verify_nsec_denial(
     qtype: RecordType,
     msg: &Message,
     records: Vec<ResourceRecord>,
-    enforced: bool,
 ) -> Option<ValidationOutcome> {
     let proof = NsecProof::new(records);
     if msg.header.rcode == ResponseCode::NXDOMAIN {
@@ -97,7 +87,7 @@ fn verify_nsec_denial(
         } else {
             ValidationVerdict::Bogus
         };
-        return Some(ValidationOutcome::new(verdict, reason, enforced));
+        return Some(ValidationOutcome::new(verdict, reason));
     }
 
     if msg.header.rcode == ResponseCode::NOERROR {
@@ -112,7 +102,7 @@ fn verify_nsec_denial(
         } else {
             ValidationVerdict::Bogus
         };
-        return Some(ValidationOutcome::new(verdict, reason, enforced));
+        return Some(ValidationOutcome::new(verdict, reason));
     }
 
     None
@@ -123,7 +113,6 @@ fn verify_nsec3_denial(
     qtype: RecordType,
     msg: &Message,
     records: Vec<ResourceRecord>,
-    enforced: bool,
     max_iterations: Nsec3IterationsCap,
 ) -> Option<ValidationOutcome> {
     let first = records.first()?;
@@ -151,7 +140,7 @@ fn verify_nsec3_denial(
         } else {
             ValidationVerdict::Bogus
         };
-        return Some(ValidationOutcome::new(verdict, reason, enforced));
+        return Some(ValidationOutcome::new(verdict, reason));
     }
 
     if msg.header.rcode == ResponseCode::NOERROR {
@@ -166,7 +155,7 @@ fn verify_nsec3_denial(
         } else {
             ValidationVerdict::Bogus
         };
-        return Some(ValidationOutcome::new(verdict, reason, enforced));
+        return Some(ValidationOutcome::new(verdict, reason));
     }
 
     None

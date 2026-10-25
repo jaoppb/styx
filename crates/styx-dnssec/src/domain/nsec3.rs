@@ -6,7 +6,7 @@ use styx_proto::{Name, RData, RecordType, ResourceRecord};
 
 use crate::domain::denial::{prepend_wildcard, Nsec3Params, Nsec3Proof};
 use crate::domain::error::DenialError;
-use crate::domain::verdict::Nsec3IterationsCap;
+use crate::domain::policy::Nsec3IterationsCap;
 
 const BASE32HEX_CHARS: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
 

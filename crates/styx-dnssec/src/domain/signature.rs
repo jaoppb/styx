@@ -5,7 +5,8 @@ use styx_proto::domain::rdata::{DnskeyRdata, DsRdata, RrsigRdata};
 use styx_proto::{Name, ResourceRecord};
 
 use crate::domain::canonical::build_canonical_signed_data;
-use crate::domain::verdict::{AlgorithmSet, AlgorithmSupport, VerdictReason};
+use crate::domain::policy::{AlgorithmSet, AlgorithmSupport};
+use crate::domain::verdict::VerdictReason;
 
 /// Verifies an RSA-SHA256 signature according to RFC 5702 and RFC 3110.
 fn verify_rsa_signature(

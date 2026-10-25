@@ -6,7 +6,7 @@ use styx_proto::application::canonical::canonical_name_cmp;
 use styx_proto::{Label, Name, RData, RecordType, ResourceRecord};
 
 use crate::domain::error::DenialError;
-use crate::domain::verdict::Nsec3IterationsCap;
+use crate::domain::policy::Nsec3IterationsCap;
 
 /// Prepends a `*` wildcard label to `name`.
 pub fn prepend_wildcard(name: &Name) -> Result<Name, styx_proto::NameError> {

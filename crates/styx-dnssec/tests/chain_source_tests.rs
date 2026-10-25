@@ -1,7 +1,7 @@
 //! Integration tests for ChainSource strategies and wire response outcome application (Sub-phase 6d).
 
 use styx_dnssec::{
-    ChainRequest, ChainSource, ChainSourceError, MaterialOrigin, PullChainSource,
+    ChainRequest, ChainSource, ChainSourceError, FailureMode, MaterialOrigin, PullChainSource,
     PushedChainSource, ValidationOutcome, ValidationVerdict, VerdictReason, ZoneCutMaterial,
 };
 use styx_proto::{
@@ -60,13 +60,9 @@ fn test_pull_chain_source_on_demand() {
 #[test]
 fn test_wire_mapping_secure_sets_ad_bit() {
     let mut msg = Message::new(Header::new_query(1, Opcode::Query, false));
-    let outcome = ValidationOutcome::new(
-        ValidationVerdict::Secure,
-        VerdictReason::AnchorMatched,
-        true,
-    );
+    let outcome = ValidationOutcome::new(ValidationVerdict::Secure, VerdictReason::AnchorMatched);
 
-    outcome.apply_to_message(&mut msg);
+    outcome.apply_to_message(&mut msg, FailureMode::HardFail);
 
     assert!(msg.header.authentic_data);
     assert_eq!(msg.header.rcode, ResponseCode::NOERROR);
@@ -80,10 +76,9 @@ fn test_wire_mapping_insecure_clears_ad_bit() {
     let outcome = ValidationOutcome::new(
         ValidationVerdict::Insecure,
         VerdictReason::ProvenUnsignedDelegation,
-        true,
     );
 
-    outcome.apply_to_message(&mut msg);
+    outcome.apply_to_message(&mut msg, FailureMode::HardFail);
 
     assert!(!msg.header.authentic_data);
     assert_eq!(msg.header.rcode, ResponseCode::NOERROR);
@@ -102,11 +97,9 @@ fn test_wire_mapping_bogus_warn_only_preserves_response() {
     );
     msg.answers.push(answer);
 
-    // Warn-only (enforced: false)
-    let outcome =
-        ValidationOutcome::new(ValidationVerdict::Bogus, VerdictReason::NoValidRrsig, false);
+    let outcome = ValidationOutcome::new(ValidationVerdict::Bogus, VerdictReason::NoValidRrsig);
 
-    outcome.apply_to_message(&mut msg);
+    outcome.apply_to_message(&mut msg, FailureMode::WarnOnly);
 
     assert!(!msg.header.authentic_data);
     assert_eq!(msg.header.rcode, ResponseCode::NOERROR);
@@ -126,11 +119,9 @@ fn test_wire_mapping_bogus_hard_fail_returns_servfail() {
     );
     msg.answers.push(answer);
 
-    // Hard-fail (enforced: true)
-    let outcome =
-        ValidationOutcome::new(ValidationVerdict::Bogus, VerdictReason::NoValidRrsig, true);
+    let outcome = ValidationOutcome::new(ValidationVerdict::Bogus, VerdictReason::NoValidRrsig);
 
-    outcome.apply_to_message(&mut msg);
+    outcome.apply_to_message(&mut msg, FailureMode::HardFail);
 
     assert!(!msg.header.authentic_data);
     assert_eq!(msg.header.rcode, ResponseCode::SERVFAIL);
