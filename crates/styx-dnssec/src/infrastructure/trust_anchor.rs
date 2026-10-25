@@ -69,7 +69,7 @@ impl FileTrustAnchor {
         let path_buf = path.as_ref().to_path_buf();
         let content = tokio::fs::read_to_string(&path_buf)
             .await
-            .map_err(|e| TrustAnchorError::Io(e.to_string()))?;
+            .map_err(|error| TrustAnchorError::Io(error.to_string()))?;
         Self::from_str_and_path(&content, path_buf)
     }
 
@@ -104,25 +104,25 @@ impl FileTrustAnchor {
     }
 }
 
-fn parse_hex_byte(h1: u8, h2: u8) -> Option<u8> {
-    let d1 = char::from(h1).to_digit(16)?;
-    let d2 = char::from(h2).to_digit(16)?;
-    let val = (d1 << 4) | d2;
-    u8::try_from(val).ok()
+fn parse_hex_byte(high: u8, low: u8) -> Option<u8> {
+    let high_digit = char::from(high).to_digit(16)?;
+    let low_digit = char::from(low).to_digit(16)?;
+    let value = (high_digit << 4) | low_digit;
+    u8::try_from(value).ok()
 }
 
-fn decode_hex_string(hex_str: &str) -> Option<Vec<u8>> {
-    let bytes = hex_str.as_bytes();
+fn decode_hex_string(hex_text: &str) -> Option<Vec<u8>> {
+    let bytes = hex_text.as_bytes();
     if (bytes.len() & 1) != 0 {
         return None;
     }
     let mut out = Vec::with_capacity(bytes.len() >> 1);
-    let mut idx = 0;
-    while idx < bytes.len() {
-        let b1 = *bytes.get(idx)?;
-        let b2 = *bytes.get(idx.saturating_add(1))?;
-        out.push(parse_hex_byte(b1, b2)?);
-        idx = idx.saturating_add(2);
+    let mut index = 0;
+    while index < bytes.len() {
+        let high = *bytes.get(index)?;
+        let low = *bytes.get(index.saturating_add(1))?;
+        out.push(parse_hex_byte(high, low)?);
+        index = index.saturating_add(2);
     }
     Some(out)
 }
@@ -135,34 +135,36 @@ fn parse_anchor_line(line: &str) -> Option<TrustAnchor> {
     let parts: Vec<&str> = trimmed.split_whitespace().collect();
     // Allow either: `<owner> [ttl] [IN] DS <key_tag> <alg> <digest_type> <digest>`
     // or: `<owner> <key_tag> <alg> <digest_type> <digest>`
-    let ds_idx = parts.iter().position(|&p| p.eq_ignore_ascii_case("DS"));
-    let (owner_str, tag_str, alg_str, dtype_str, digest_str) = match ds_idx {
-        Some(idx) => {
+    let ds_index = parts
+        .iter()
+        .position(|&part| part.eq_ignore_ascii_case("DS"));
+    let (owner_text, key_tag_text, algorithm_text, digest_type_text, digest_text) = match ds_index {
+        Some(index) => {
             let owner = *parts.first()?;
-            let tag = *parts.get(idx.saturating_add(1))?;
-            let alg = *parts.get(idx.saturating_add(2))?;
-            let dtype = *parts.get(idx.saturating_add(3))?;
-            let digest = *parts.get(idx.saturating_add(4))?;
-            (owner, tag, alg, dtype, digest)
+            let key_tag = *parts.get(index.saturating_add(1))?;
+            let algorithm = *parts.get(index.saturating_add(2))?;
+            let digest_type = *parts.get(index.saturating_add(3))?;
+            let digest = *parts.get(index.saturating_add(4))?;
+            (owner, key_tag, algorithm, digest_type, digest)
         }
         None => {
             if parts.len() < 5 {
                 return None;
             }
             let owner = *parts.first()?;
-            let tag = *parts.get(1)?;
-            let alg = *parts.get(2)?;
-            let dtype = *parts.get(3)?;
+            let key_tag = *parts.get(1)?;
+            let algorithm = *parts.get(2)?;
+            let digest_type = *parts.get(3)?;
             let digest = *parts.get(4)?;
-            (owner, tag, alg, dtype, digest)
+            (owner, key_tag, algorithm, digest_type, digest)
         }
     };
 
-    let owner = Name::from_ascii(owner_str).ok()?;
-    let key_tag: u16 = tag_str.parse().ok()?;
-    let algorithm: u8 = alg_str.parse().ok()?;
-    let digest_type: u8 = dtype_str.parse().ok()?;
-    let digest = decode_hex_string(digest_str)?;
+    let owner = Name::from_ascii(owner_text).ok()?;
+    let key_tag: u16 = key_tag_text.parse().ok()?;
+    let algorithm: u8 = algorithm_text.parse().ok()?;
+    let digest_type: u8 = digest_type_text.parse().ok()?;
+    let digest = decode_hex_string(digest_text)?;
 
     Some(TrustAnchor::new(
         owner,

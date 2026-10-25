@@ -11,11 +11,11 @@ use crate::domain::policy::Nsec3IterationsCap;
 const BASE32HEX_CHARS: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
 
 /// Converts an ASCII character to its 5-bit base32hex value.
-fn base32hex_val(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c.saturating_sub(b'0')),
-        b'a'..=b'v' => Some(c.saturating_sub(b'a').saturating_add(10)),
-        b'A'..=b'V' => Some(c.saturating_sub(b'A').saturating_add(10)),
+fn base32hex_val(character: u8) -> Option<u8> {
+    match character {
+        b'0'..=b'9' => Some(character.saturating_sub(b'0')),
+        b'a'..=b'v' => Some(character.saturating_sub(b'a').saturating_add(10)),
+        b'A'..=b'V' => Some(character.saturating_sub(b'A').saturating_add(10)),
         _ => None,
     }
 }
@@ -27,15 +27,15 @@ pub fn base32hex_decode(input: &[u8]) -> Option<Vec<u8>> {
     let mut bit_buf: u64 = 0;
     let mut bit_count: usize = 0;
 
-    for &b in input {
-        let val = base32hex_val(b)?;
-        bit_buf = (bit_buf << 5) | u64::from(val);
+    for &symbol in input {
+        let value = base32hex_val(symbol)?;
+        bit_buf = (bit_buf << 5) | u64::from(value);
         bit_count = bit_count.saturating_add(5);
         if bit_count >= 8 {
             bit_count = bit_count.saturating_sub(8);
             let byte = (bit_buf >> bit_count) & 0xFF;
-            if let Ok(b_u8) = u8::try_from(byte) {
-                out.push(b_u8);
+            if let Ok(decoded) = u8::try_from(byte) {
+                out.push(decoded);
             }
         }
     }
@@ -54,17 +54,17 @@ pub fn base32hex_encode(input: &[u8]) -> String {
         bit_count = bit_count.saturating_add(8);
         while bit_count >= 5 {
             bit_count = bit_count.saturating_sub(5);
-            let idx = (bit_buf >> bit_count) & 0x1F;
-            if let Some(&ch) = BASE32HEX_CHARS.get(idx as usize) {
-                out.push(ch as char);
+            let index = (bit_buf >> bit_count) & 0x1F;
+            if let Some(&symbol) = BASE32HEX_CHARS.get(index as usize) {
+                out.push(symbol as char);
             }
         }
     }
     if bit_count > 0 {
         let shift = 5usize.saturating_sub(bit_count);
-        let idx = (bit_buf << shift) & 0x1F;
-        if let Some(&ch) = BASE32HEX_CHARS.get(idx as usize) {
-            out.push(ch as char);
+        let index = (bit_buf << shift) & 0x1F;
+        if let Some(&symbol) = BASE32HEX_CHARS.get(index as usize) {
+            out.push(symbol as char);
         }
     }
     out
@@ -126,8 +126,8 @@ pub fn nsec3_covers_hash(owner: &[u8], next: &[u8], target: &[u8]) -> bool {
 }
 
 /// Extracts the binary owner hash from an NSEC3 record's first label.
-fn extract_owner_hash(rr: &ResourceRecord) -> Option<Vec<u8>> {
-    let first_label = rr.owner.labels().next()?;
+fn extract_owner_hash(record: &ResourceRecord) -> Option<Vec<u8>> {
+    let first_label = record.owner.labels().next()?;
     base32hex_decode(first_label.as_bytes())
 }
 
@@ -148,7 +148,7 @@ pub fn find_closest_encloser(
         let found = proof
             .records
             .iter()
-            .any(|rr| extract_owner_hash(rr).is_some_and(|owner_hash| owner_hash == hash));
+            .any(|record| extract_owner_hash(record).is_some_and(|owner_hash| owner_hash == hash));
         if found {
             return Ok(candidate);
         }
@@ -166,11 +166,11 @@ fn get_next_closer_name(qname: &Name, closest_encloser: &Name) -> Option<Name> {
 
 /// Verifies whether `target_hash` is covered by any NSEC3 in `records`.
 fn is_hash_covered(records: &[ResourceRecord], target_hash: &[u8]) -> bool {
-    records.iter().any(|rr| {
-        let RData::Nsec3(ref nsec3) = rr.rdata else {
+    records.iter().any(|record| {
+        let RData::Nsec3(ref nsec3) = record.rdata else {
             return false;
         };
-        let Some(owner_hash) = extract_owner_hash(rr) else {
+        let Some(owner_hash) = extract_owner_hash(record) else {
             return false;
         };
         nsec3_covers_hash(&owner_hash, nsec3.next_hashed_owner(), target_hash)
@@ -187,25 +187,25 @@ pub fn verify_nsec3_nxdomain(
     cap: Nsec3IterationsCap,
 ) -> Result<(), DenialError> {
     // 1. Closest encloser exists
-    let ce = find_closest_encloser(proof, qname, cap)?;
+    let closest_encloser = find_closest_encloser(proof, qname, cap)?;
 
     // 2. Next closer is covered
-    let nc = match get_next_closer_name(qname, &ce) {
-        Some(nc) => nc,
+    let next_closer = match get_next_closer_name(qname, &closest_encloser) {
+        Some(next_closer) => next_closer,
         None => return Err(DenialError::DenialProofIncomplete),
     };
-    let nc_hash = hash_nsec3_name(&nc, &proof.params, cap)?;
-    if !is_hash_covered(&proof.records, &nc_hash) {
+    let next_closer_hash = hash_nsec3_name(&next_closer, &proof.params, cap)?;
+    if !is_hash_covered(&proof.records, &next_closer_hash) {
         return Err(DenialError::DenialProofIncomplete);
     }
 
     // 3. Wildcard at closest encloser is covered or proven absent
-    let wildcard = match prepend_wildcard(&ce) {
-        Ok(w) => w,
+    let wildcard = match prepend_wildcard(&closest_encloser) {
+        Ok(wildcard) => wildcard,
         Err(_) => return Err(DenialError::DenialProofIncomplete),
     };
-    let wc_hash = hash_nsec3_name(&wildcard, &proof.params, cap)?;
-    if !is_hash_covered(&proof.records, &wc_hash) {
+    let wildcard_hash = hash_nsec3_name(&wildcard, &proof.params, cap)?;
+    if !is_hash_covered(&proof.records, &wildcard_hash) {
         return Err(DenialError::DenialProofIncomplete);
     }
 
@@ -222,11 +222,11 @@ pub fn verify_nsec3_ds_absence(
     cap: Nsec3IterationsCap,
 ) -> Result<(), DenialError> {
     let zone_hash = hash_nsec3_name(zone, &proof.params, cap)?;
-    for rr in &proof.records {
-        let RData::Nsec3(ref nsec3) = rr.rdata else {
+    for record in &proof.records {
+        let RData::Nsec3(ref nsec3) = record.rdata else {
             continue;
         };
-        let Some(owner_hash) = extract_owner_hash(rr) else {
+        let Some(owner_hash) = extract_owner_hash(record) else {
             continue;
         };
         let matches_exact_without_ds =
@@ -245,11 +245,11 @@ fn nsec3_matches_nodata(
     target_hash: &[u8],
     qtype: RecordType,
 ) -> Result<bool, DenialError> {
-    for rr in records {
-        let RData::Nsec3(ref nsec3) = rr.rdata else {
+    for record in records {
+        let RData::Nsec3(ref nsec3) = record.rdata else {
             continue;
         };
-        let Some(owner_hash) = extract_owner_hash(rr) else {
+        let Some(owner_hash) = extract_owner_hash(record) else {
             continue;
         };
         if owner_hash.as_slice() == target_hash {
@@ -277,19 +277,20 @@ pub fn verify_nsec3_nodata(
         return Ok(());
     }
 
-    let ce = find_closest_encloser(proof, qname, cap)?;
-    let nc = match get_next_closer_name(qname, &ce) {
-        Some(nc) => nc,
+    let closest_encloser = find_closest_encloser(proof, qname, cap)?;
+    let next_closer = match get_next_closer_name(qname, &closest_encloser) {
+        Some(next_closer) => next_closer,
         None => return Err(DenialError::DenialProofIncomplete),
     };
-    let nc_hash = hash_nsec3_name(&nc, &proof.params, cap)?;
-    if !is_hash_covered(&proof.records, &nc_hash) {
+    let next_closer_hash = hash_nsec3_name(&next_closer, &proof.params, cap)?;
+    if !is_hash_covered(&proof.records, &next_closer_hash) {
         return Err(DenialError::DenialProofIncomplete);
     }
 
-    let wildcard = prepend_wildcard(&ce).map_err(|_| DenialError::DenialProofIncomplete)?;
-    let wc_hash = hash_nsec3_name(&wildcard, &proof.params, cap)?;
-    if nsec3_matches_nodata(&proof.records, &wc_hash, qtype)? {
+    let wildcard =
+        prepend_wildcard(&closest_encloser).map_err(|_| DenialError::DenialProofIncomplete)?;
+    let wildcard_hash = hash_nsec3_name(&wildcard, &proof.params, cap)?;
+    if nsec3_matches_nodata(&proof.records, &wildcard_hash, qtype)? {
         return Ok(());
     }
 

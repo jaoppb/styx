@@ -39,18 +39,18 @@ pub fn canonical_owner_for_rrsig(owner: &Name, rrsig_labels: u8) -> Result<Name,
 fn encode_canonical_rr(
     encoder: &mut Encoder,
     canonical_owner: &Name,
-    rr: &ResourceRecord,
+    record: &ResourceRecord,
     original_ttl: u32,
 ) -> Result<(), EncodeError> {
     encoder.write_name(canonical_owner)?;
-    encoder.write_u16(rr.rtype.value())?;
-    encoder.write_u16(rr.rclass.to_u16())?;
+    encoder.write_u16(record.rtype.value())?;
+    encoder.write_u16(record.rclass.to_u16())?;
     encoder.write_u32(original_ttl)?;
 
     let rdlength_pos = encoder.buf.len();
     encoder.write_u16(0)?;
     let rdata_start = encoder.buf.len();
-    encoder.encode_rdata(&rr.rdata)?;
+    encoder.encode_rdata(&record.rdata)?;
     let rdata_len = encoder.buf.len().saturating_sub(rdata_start);
     let rdlen_u16 =
         u16::try_from(rdata_len).map_err(|_| EncodeError::RdLengthOverflow(rdata_len))?;
@@ -89,9 +89,9 @@ pub fn build_canonical_signed_data<R: Borrow<ResourceRecord>>(
     sorted_records.sort_by(|left, right| canonical_rr_cmp(left, right));
 
     // 3. Serialize sorted records with canonical owner and original TTL
-    for rr in sorted_records {
-        let canonical_owner = canonical_owner_for_rrsig(&rr.owner, rrsig.labels())?;
-        encode_canonical_rr(&mut encoder, &canonical_owner, rr, rrsig.original_ttl())?;
+    for record in sorted_records {
+        let canonical_owner = canonical_owner_for_rrsig(&record.owner, rrsig.labels())?;
+        encode_canonical_rr(&mut encoder, &canonical_owner, record, rrsig.original_ttl())?;
     }
 
     Ok(encoder.buf)

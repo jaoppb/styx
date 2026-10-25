@@ -12,8 +12,8 @@ use crate::domain::policy::Nsec3IterationsCap;
 pub fn prepend_wildcard(name: &Name) -> Result<Name, styx_proto::NameError> {
     let mut labels = Vec::with_capacity(name.label_count().saturating_add(1));
     labels.push(Label::new(b"*".to_vec())?);
-    for l in name.labels() {
-        labels.push(Label::new(l.as_bytes().to_vec())?);
+    for label in name.labels() {
+        labels.push(Label::new(label.as_bytes().to_vec())?);
     }
     Name::new(labels)
 }
@@ -117,8 +117,8 @@ impl NsecProof {
     /// # Errors
     /// Returns [`DenialError::NotCovered`] if no NSEC covers `qname`.
     pub fn prove_name_does_not_exist(&self, qname: &Name) -> Result<(), DenialError> {
-        let covered = self.records.iter().any(|rr| match rr.rdata {
-            RData::Nsec(ref nsec) => nsec_covers_name(&rr.owner, nsec.next_domain(), qname),
+        let covered = self.records.iter().any(|record| match record.rdata {
+            RData::Nsec(ref nsec) => nsec_covers_name(&record.owner, nsec.next_domain(), qname),
             _ => false,
         });
         if covered {
@@ -137,11 +137,11 @@ impl NsecProof {
         qname: &Name,
         qtype: RecordType,
     ) -> Result<(), DenialError> {
-        for rr in &self.records {
-            if &rr.owner != qname {
+        for record in &self.records {
+            if &record.owner != qname {
                 continue;
             }
-            let RData::Nsec(ref nsec) = rr.rdata else {
+            let RData::Nsec(ref nsec) = record.rdata else {
                 continue;
             };
             if nsec.types().contains(qtype) || nsec.types().contains(RecordType::CNAME) {
@@ -169,11 +169,11 @@ impl NsecProof {
     /// # Errors
     /// Returns [`DenialError::NotCovered`] if proof fails.
     pub fn prove_ds_absence(&self, zone: &Name) -> Result<(), DenialError> {
-        for rr in &self.records {
-            if &rr.owner != zone {
+        for record in &self.records {
+            if &record.owner != zone {
                 continue;
             }
-            let RData::Nsec(ref nsec) = rr.rdata else {
+            let RData::Nsec(ref nsec) = record.rdata else {
                 continue;
             };
             if !nsec.types().contains(RecordType::DS) {
