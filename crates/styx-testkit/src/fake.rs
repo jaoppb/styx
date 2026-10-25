@@ -71,15 +71,9 @@ impl FakeNameServer {
         let received = Arc::new(Mutex::new(Vec::new()));
         let script = Arc::new(script);
 
-        let (udp_socket, tcp_listener) = if address.port() == 0 {
-            bind_ephemeral_pair(address).await?
-        } else {
-            let udp = Arc::new(UdpSocket::bind(address).await?);
-            let udp_addr = udp.local_addr()?;
-            let tcp = TcpListener::bind(udp_addr).await?;
-            (udp, tcp)
-        };
+        let udp_socket = Arc::new(UdpSocket::bind(address).await?);
         let udp_addr = udp_socket.local_addr()?;
+        let tcp_listener = TcpListener::bind(udp_addr).await?;
         let tcp_addr = tcp_listener.local_addr()?;
 
         let shared = Shared {
@@ -156,25 +150,6 @@ impl Shared {
             Err(poisoned) => poisoned.into_inner().push(exchange.received),
         }
         exchange.reply
-    }
-}
-
-async fn bind_ephemeral_pair(
-    address: SocketAddr,
-) -> Result<(Arc<UdpSocket>, TcpListener), HarnessError> {
-    loop {
-        let tcp = match TcpListener::bind(address).await {
-            Ok(listener) => listener,
-            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
-            Err(err) => return Err(err.into()),
-        };
-        let port = tcp.local_addr()?.port();
-        let try_udp_addr = SocketAddr::new(address.ip(), port);
-        match UdpSocket::bind(try_udp_addr).await {
-            Ok(udp) => return Ok((Arc::new(udp), tcp)),
-            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
-            Err(err) => return Err(err.into()),
-        }
     }
 }
 

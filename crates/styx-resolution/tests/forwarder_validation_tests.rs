@@ -206,17 +206,11 @@ fn encode_response(id: u16, question: &Question, truncated: bool) -> Option<Vec<
 
 #[tokio::test]
 async fn tcp_fallback_reuses_udp_transaction_id() {
-    let (udp, tcp, addr) = loop {
-        let Ok(tcp) = tokio::net::TcpListener::bind("127.0.0.1:0").await else {
-            continue;
-        };
-        let Ok(addr) = tcp.local_addr() else {
-            continue;
-        };
-        if let Ok(udp) = tokio::net::UdpSocket::bind(addr).await {
-            break (udp, tcp, addr);
-        }
-    };
+    let udp = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind udp");
+    let addr = udp.local_addr().expect("udp addr");
+    let tcp = tokio::net::TcpListener::bind(addr).await.expect("bind tcp");
 
     let udp_task = tokio::spawn(async move {
         let mut buf = [0u8; 4096];
