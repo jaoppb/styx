@@ -137,11 +137,23 @@ async fn the_query_id_is_overwritten_and_varies_across_exchanges() {
     assert!(ports.len() > 1, "every exchange reused one source port");
 }
 
+async fn bind_dual_stack_ephemeral() -> (UdpSocket, TcpListener, SocketAddr) {
+    loop {
+        let Ok(tcp) = TcpListener::bind("127.0.0.1:0").await else {
+            continue;
+        };
+        let Ok(addr) = tcp.local_addr() else {
+            continue;
+        };
+        if let Ok(udp) = UdpSocket::bind(addr).await {
+            return (udp, tcp, addr);
+        }
+    }
+}
+
 #[tokio::test]
 async fn truncation_retries_over_tcp_with_the_identical_message() {
-    let udp = UdpSocket::bind("127.0.0.1:0").await.expect("bind udp");
-    let server_addr = udp.local_addr().expect("addr");
-    let tcp = TcpListener::bind(server_addr).await.expect("bind tcp");
+    let (udp, tcp, server_addr) = bind_dual_stack_ephemeral().await;
     let (client, clock) = client();
     let deadline = clock.now_monotonic() + Duration::from_secs(1);
 
@@ -178,9 +190,7 @@ async fn truncation_retries_over_tcp_with_the_identical_message() {
 
 #[tokio::test]
 async fn a_mismatched_tcp_reply_is_an_error() {
-    let udp = UdpSocket::bind("127.0.0.1:0").await.expect("bind udp");
-    let server_addr = udp.local_addr().expect("addr");
-    let tcp = TcpListener::bind(server_addr).await.expect("bind tcp");
+    let (udp, tcp, server_addr) = bind_dual_stack_ephemeral().await;
     let (client, clock) = client();
     let deadline = clock.now_monotonic() + Duration::from_secs(1);
 
