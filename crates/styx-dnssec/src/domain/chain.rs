@@ -15,19 +15,74 @@ pub enum MaterialOrigin {
     PulledOnDemand,
 }
 
-/// Authentication and denial material for a single zone cut delegation.
+/// An RRset together with the RRSIG records that cover it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedRrset {
+    /// The records of the RRset.
+    pub records: Vec<ResourceRecord>,
+    /// The RRSIG records covering `records`.
+    pub signatures: Vec<ResourceRecord>,
+}
+
+impl SignedRrset {
+    /// Constructs a new [`SignedRrset`].
+    #[must_use]
+    pub fn new(records: Vec<ResourceRecord>, signatures: Vec<ResourceRecord>) -> Self {
+        Self {
+            records,
+            signatures,
+        }
+    }
+}
+
+/// What the chain source knows about one name on the way down to the answer.
+///
+/// None of this material is trusted as delivered: the validator authenticates every
+/// RRset against keys it has already authenticated before relying on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delegation {
+    /// The name is not a zone cut; the enclosing zone stays authoritative for it.
+    NotACut,
+    /// A zone apex with no parent-side material, as at the root: only a trust anchor
+    /// can vouch for its DNSKEY RRset.
+    Apex {
+        /// The zone's DNSKEY RRset and its self-signatures.
+        dnskey: SignedRrset,
+    },
+    /// A secure delegation.
+    Signed {
+        /// The DS RRset at the delegation, signed by the parent zone.
+        ds: SignedRrset,
+        /// The child zone's DNSKEY RRset and its self-signatures.
+        dnskey: SignedRrset,
+    },
+    /// An unsigned delegation.
+    Unsigned {
+        /// The parent zone's proof that no DS RRset exists at the delegation.
+        ds_denial: DenialProof,
+        /// The RRSIG records covering the proof's NSEC or NSEC3 records.
+        signatures: Vec<ResourceRecord>,
+    },
+}
+
+impl Delegation {
+    /// The zone's own signed DNSKEY RRset, when this material carries one.
+    #[must_use]
+    pub fn dnskey(&self) -> Option<&SignedRrset> {
+        match self {
+            Self::Apex { dnskey } | Self::Signed { dnskey, .. } => Some(dnskey),
+            Self::NotACut | Self::Unsigned { .. } => None,
+        }
+    }
+}
+
+/// Chain material for a single name: whether it is a zone cut, and the proof material.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZoneCutMaterial {
-    /// Delegated child zone name.
+    /// The name this material describes.
     pub zone: Name,
-    /// DS records authenticated by the parent zone.
-    pub ds: Option<Vec<ResourceRecord>>,
-    /// Denial-of-existence proof if DS records do not exist at the delegation.
-    pub ds_denial: Option<DenialProof>,
-    /// DNSKEY records published by the child zone.
-    pub dnskey: Option<Vec<ResourceRecord>>,
-    /// Signatures over the child zone's DNSKEY RRset.
-    pub dnskey_signatures: Vec<ResourceRecord>,
+    /// The delegation material for `zone`.
+    pub delegation: Delegation,
     /// Provenance origin of this material.
     pub origin: MaterialOrigin,
 }
@@ -35,58 +90,11 @@ pub struct ZoneCutMaterial {
 impl ZoneCutMaterial {
     /// Constructs a new [`ZoneCutMaterial`].
     #[must_use]
-    pub fn new(
-        zone: Name,
-        ds: Option<Vec<ResourceRecord>>,
-        ds_denial: Option<DenialProof>,
-        dnskey: Option<Vec<ResourceRecord>>,
-        dnskey_signatures: Vec<ResourceRecord>,
-        origin: MaterialOrigin,
-    ) -> Self {
+    pub fn new(zone: Name, delegation: Delegation, origin: MaterialOrigin) -> Self {
         Self {
             zone,
-            ds,
-            ds_denial,
-            dnskey,
-            dnskey_signatures,
+            delegation,
             origin,
         }
-    }
-}
-
-/// Collection of zone cuts forming the chain from trust anchor to answer.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ChainMaterial {
-    cuts: Vec<ZoneCutMaterial>,
-}
-
-impl ChainMaterial {
-    /// Creates an empty [`ChainMaterial`].
-    #[must_use]
-    pub fn new() -> Self {
-        Self { cuts: Vec::new() }
-    }
-
-    /// Creates a [`ChainMaterial`] containing the specified `cuts`.
-    #[must_use]
-    pub fn with_cuts(cuts: Vec<ZoneCutMaterial>) -> Self {
-        Self { cuts }
-    }
-
-    /// Adds a cut to the collected material.
-    pub fn add_cut(&mut self, cut: ZoneCutMaterial) {
-        self.cuts.push(cut);
-    }
-
-    /// Returns a slice over all collected cuts.
-    #[must_use]
-    pub fn cuts(&self) -> &[ZoneCutMaterial] {
-        &self.cuts
-    }
-
-    /// Finds material for the specified zone name.
-    #[must_use]
-    pub fn cut_for(&self, zone: &Name) -> Option<&ZoneCutMaterial> {
-        self.cuts.iter().find(|cut| &cut.zone == zone)
     }
 }

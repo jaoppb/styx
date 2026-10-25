@@ -12,7 +12,7 @@ pub mod domain;
 pub mod infrastructure;
 
 pub use application::validator::Validator;
-pub use domain::chain::{ChainMaterial, MaterialOrigin, ZoneCutMaterial};
+pub use domain::chain::{Delegation, MaterialOrigin, SignedRrset, ZoneCutMaterial};
 pub use domain::denial::{DenialProof, Nsec3Flags, Nsec3Params, Nsec3Proof, NsecProof};
 pub use domain::error::{ChainSourceError, DenialError, TrustAnchorError, ValidationError};
 pub use domain::policy::{

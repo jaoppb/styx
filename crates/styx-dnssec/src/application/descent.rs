@@ -1,212 +1,176 @@
 //! Chain descent walking and intermediate zone cut validation.
+//!
+//! Every function here returns `Result<_, ValidationOutcome>`, where the error is the
+//! outcome that ends the validation early — `Insecure` for a proven unsigned
+//! delegation as much as `Bogus` or `Indeterminate`.
 
 use styx_core::Clock;
-use styx_proto::domain::rdata::DnskeyRdata;
+use styx_proto::domain::rdata::DsRdata;
 use styx_proto::{Name, RData, ResourceRecord};
 
-use crate::application::validator::Validator;
-use crate::domain::chain::ZoneCutMaterial;
+use crate::application::authenticator::Authenticator;
+use crate::domain::chain::{Delegation, ZoneCutMaterial};
 use crate::domain::denial::DenialProof;
 use crate::domain::nsec3::verify_nsec3_ds_absence;
-use crate::domain::policy::ValidationPolicy;
 use crate::domain::ports::{ChainRequest, ChainSource};
-use crate::domain::signature::check_single_ds_linkage;
 use crate::domain::trust_anchor::TrustAnchor;
-use crate::domain::verdict::{ValidationOutcome, ValidationVerdict, VerdictReason};
+use crate::domain::verdict::{ValidationOutcome, VerdictReason};
 
-/// Result of walking the DNSSEC chain descent from trust anchors.
-#[derive(Debug)]
-pub(crate) enum DescentResult {
-    /// Chain descent reached the target zone with authenticated DNSKEYs.
-    AuthenticatedKeys(Vec<ResourceRecord>),
-    /// Descent terminated early with a final validation outcome.
-    Terminated(ValidationOutcome),
+/// The trust-anchored zone a descent starts from, with its anchors in DS form.
+struct AnchoredZone {
+    zone: Name,
+    vouchers: Vec<DsRdata>,
 }
 
-enum StepResult {
-    Authenticated(Vec<ResourceRecord>),
-    UnsignedDelegation,
-    NoCut,
+impl AnchoredZone {
+    /// The deepest anchored zone that encloses `qname`, with every anchor configured
+    /// for it, so that a rollover's old and new anchors both count.
+    fn closest(qname: &Name, anchors: &[TrustAnchor]) -> Option<Self> {
+        let zone = anchors
+            .iter()
+            .map(TrustAnchor::owner)
+            .filter(|owner| qname.is_subdomain_of(owner))
+            .max_by_key(|owner| owner.label_count())?
+            .clone();
+        let vouchers = anchors
+            .iter()
+            .filter(|anchor| anchor.owner() == &zone)
+            .map(|anchor| {
+                DsRdata::new(
+                    anchor.key_tag(),
+                    anchor.algorithm(),
+                    anchor.digest_type(),
+                    anchor.digest().to_vec(),
+                )
+            })
+            .collect();
+        Some(Self { zone, vouchers })
+    }
 }
 
-/// Walks zone cuts from the root trust anchor down to the target zone.
+/// Walks zone cuts from the closest trust anchor down to `qname` and returns the
+/// DNSKEY RRset authenticated for the zone that `qname` lives in.
 pub(crate) fn walk_chain_descent<C: Clock, S: ChainSource>(
-    validator: &Validator<C>,
+    authenticator: &Authenticator<C>,
     qname: &Name,
     chain_source: &S,
     anchors: &[TrustAnchor],
-) -> DescentResult {
-    let root = Name::root();
-    let Some(anchor) = anchors.iter().find(|a| a.owner() == &root) else {
-        return DescentResult::Terminated(ValidationOutcome::new(
-            ValidationVerdict::Indeterminate,
-            VerdictReason::NoPathToAnchor,
-        ));
-    };
+) -> Result<Vec<ResourceRecord>, ValidationOutcome> {
+    let anchored = AnchoredZone::closest(qname, anchors)
+        .ok_or_else(|| ValidationOutcome::indeterminate(VerdictReason::NoPathToAnchor))?;
+    let request = ChainRequest::new(qname.clone());
 
-    let request = ChainRequest::new(Some(qname.clone()));
-    let mut current_keys =
-        match fetch_and_auth_root(validator, chain_source, anchor, &request, &root) {
-            Ok(keys) => keys,
-            Err(outcome) => return DescentResult::Terminated(outcome),
-        };
+    let material = fetch_material(chain_source, &anchored.zone, &request)?;
+    let dnskey = material
+        .delegation
+        .dnskey()
+        .ok_or_else(|| ValidationOutcome::indeterminate(VerdictReason::ChainMaterialUnavailable))?;
+    let mut keys = authenticator.authenticate_keys(&anchored.zone, dnskey, &anchored.vouchers)?;
 
-    let cuts_limit = usize::from(validator.policy().max_zone_cuts);
-    let mut current_zone = root;
-    let mut cuts_count = 0usize;
-
-    while &current_zone != qname && cuts_count < cuts_limit {
-        cuts_count = cuts_count.saturating_add(1);
-        let Some(next_zone) = find_next_zone_cut(qname, &current_zone) else {
-            break;
-        };
-
-        match step_child_cut(validator, chain_source, &next_zone, &request, &current_keys) {
-            Ok(StepResult::Authenticated(new_keys)) => {
-                current_keys = new_keys;
-                current_zone = next_zone;
-            }
-            Ok(StepResult::UnsignedDelegation) => {
-                return DescentResult::Terminated(ValidationOutcome::new(
-                    ValidationVerdict::Insecure,
-                    VerdictReason::ProvenUnsignedDelegation,
+    let mut current_zone = anchored.zone;
+    let mut cuts_crossed = 0u8;
+    while let Some(next_zone) = find_next_zone_cut(qname, &current_zone) {
+        let material = fetch_material(chain_source, &next_zone, &request)?;
+        if let Some(child_keys) = step_into_cut(authenticator, &material, &keys)? {
+            cuts_crossed = cuts_crossed.saturating_add(1);
+            if cuts_crossed > authenticator.policy().max_zone_cuts {
+                return Err(ValidationOutcome::indeterminate(
+                    VerdictReason::NoPathToAnchor,
                 ));
             }
-            Ok(StepResult::NoCut) => {
-                break;
-            }
-            Err(outcome) => return DescentResult::Terminated(outcome),
+            keys = child_keys;
         }
+        current_zone = next_zone;
     }
 
-    DescentResult::AuthenticatedKeys(current_keys)
+    Ok(keys)
 }
 
-fn fetch_and_auth_root<C: Clock, S: ChainSource>(
-    validator: &Validator<C>,
+fn fetch_material<S: ChainSource>(
     chain_source: &S,
-    anchor: &TrustAnchor,
+    zone: &Name,
     request: &ChainRequest,
-    root: &Name,
-) -> Result<Vec<ResourceRecord>, ValidationOutcome> {
-    let root_material = chain_source.material_for(root, request).map_err(|_| {
-        ValidationOutcome::new(
-            ValidationVerdict::Indeterminate,
-            VerdictReason::ChainMaterialUnavailable,
-        )
-    })?;
-
-    let root_cut = root_material.cut_for(root).ok_or_else(|| {
-        ValidationOutcome::new(
-            ValidationVerdict::Indeterminate,
-            VerdictReason::NoPathToAnchor,
-        )
-    })?;
-
-    validator.authenticate_root_cut(root_cut, anchor)
+) -> Result<ZoneCutMaterial, ValidationOutcome> {
+    chain_source.material_for(zone, request).map_err(|error| {
+        tracing::warn!(%zone, %error, "DNSSEC chain material unavailable");
+        ValidationOutcome::indeterminate(VerdictReason::ChainMaterialUnavailable)
+    })
 }
 
-fn step_child_cut<C: Clock, S: ChainSource>(
-    validator: &Validator<C>,
-    chain_source: &S,
-    next_zone: &Name,
-    request: &ChainRequest,
-    current_keys: &[ResourceRecord],
-) -> Result<StepResult, ValidationOutcome> {
-    let material = match chain_source.material_for(next_zone, request) {
-        Ok(m) => m,
-        Err(_) => return Ok(StepResult::NoCut),
-    };
-
-    let cut = match material.cut_for(next_zone) {
-        Some(c) => c,
-        None => return Ok(StepResult::NoCut),
-    };
-
-    match verify_child_zone_cut(validator, cut, current_keys)? {
-        Some(keys) => Ok(StepResult::Authenticated(keys)),
-        None => Ok(StepResult::UnsignedDelegation),
-    }
-}
-
-/// Verifies cryptographic linkage and delegation for a child zone cut.
-pub(crate) fn verify_child_zone_cut<C: Clock>(
-    validator: &Validator<C>,
-    cut: &ZoneCutMaterial,
-    _parent_keys: &[ResourceRecord],
+/// Crosses the name `material` describes: `None` when it is not a zone cut, otherwise
+/// the child zone's DNSKEY RRset authenticated through `parent_keys`.
+fn step_into_cut<C: Clock>(
+    authenticator: &Authenticator<C>,
+    material: &ZoneCutMaterial,
+    parent_keys: &[ResourceRecord],
 ) -> Result<Option<Vec<ResourceRecord>>, ValidationOutcome> {
-    let ds_records = match cut.ds.as_ref() {
-        Some(ds) if !ds.is_empty() => ds,
-        _ => {
-            if verify_ds_denial(validator.policy(), cut) {
-                return Ok(None);
+    match material.delegation {
+        Delegation::NotACut => Ok(None),
+        Delegation::Apex { .. } => Err(ValidationOutcome::indeterminate(
+            VerdictReason::NoPathToAnchor,
+        )),
+        Delegation::Signed { ref ds, ref dnskey } => {
+            if !authenticator.records_signed_by_any(&ds.records, &ds.signatures, parent_keys) {
+                return Err(ValidationOutcome::bogus(VerdictReason::NoValidRrsig));
             }
-            return Err(ValidationOutcome::new(
-                ValidationVerdict::Indeterminate,
-                VerdictReason::NoPathToAnchor,
-            ));
+            let vouchers = ds_records_at(&material.zone, &ds.records);
+            authenticator
+                .authenticate_keys(&material.zone, dnskey, &vouchers)
+                .map(Some)
+        }
+        Delegation::Unsigned {
+            ref ds_denial,
+            ref signatures,
+        } => {
+            verify_ds_denial(
+                authenticator,
+                &material.zone,
+                ds_denial,
+                signatures,
+                parent_keys,
+            )?;
+            Err(ValidationOutcome::insecure(
+                VerdictReason::ProvenUnsignedDelegation,
+            ))
+        }
+    }
+}
+
+fn ds_records_at(zone: &Name, records: &[ResourceRecord]) -> Vec<DsRdata> {
+    records
+        .iter()
+        .filter(|record| &record.owner == zone)
+        .filter_map(|record| match record.rdata {
+            RData::Ds(ref ds) => Some(ds.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Accepts a proof of DS absence only when the parent zone signed it.
+fn verify_ds_denial<C: Clock>(
+    authenticator: &Authenticator<C>,
+    zone: &Name,
+    proof: &DenialProof,
+    signatures: &[ResourceRecord],
+    parent_keys: &[ResourceRecord],
+) -> Result<(), ValidationOutcome> {
+    if !authenticator.records_signed_by_any(proof.records(), signatures, parent_keys) {
+        return Err(ValidationOutcome::bogus(VerdictReason::NoValidRrsig));
+    }
+    let proven = match proof {
+        DenialProof::Nsec(nsec) => nsec.prove_ds_absence(zone).is_ok(),
+        DenialProof::Nsec3(nsec3) => {
+            verify_nsec3_ds_absence(nsec3, zone, authenticator.policy().nsec3_max_iterations)
+                .is_ok()
         }
     };
-
-    let child_dnskeys = match cut.dnskey.as_ref() {
-        Some(k) if !k.is_empty() => k,
-        _ => {
-            return Err(ValidationOutcome::new(
-                ValidationVerdict::Bogus,
-                VerdictReason::DsDnskeyMismatch,
-            ));
-        }
-    };
-
-    let child_key = find_authenticated_child_key(cut, ds_records, child_dnskeys)?;
-
-    if !validator.has_valid_signature_for_set(
-        child_dnskeys,
-        &cut.dnskey_signatures,
-        &child_key,
-        &cut.zone,
-    ) {
-        return Err(ValidationOutcome::new(
-            ValidationVerdict::Bogus,
-            VerdictReason::NoValidRrsig,
+    if !proven {
+        return Err(ValidationOutcome::indeterminate(
+            VerdictReason::NoPathToAnchor,
         ));
     }
-
-    Ok(Some(child_dnskeys.clone()))
-}
-
-fn find_authenticated_child_key(
-    cut: &ZoneCutMaterial,
-    ds_records: &[ResourceRecord],
-    child_dnskeys: &[ResourceRecord],
-) -> Result<DnskeyRdata, ValidationOutcome> {
-    for child_rr in child_dnskeys {
-        let RData::Dnskey(ref child_key) = child_rr.rdata else {
-            continue;
-        };
-        let matches = ds_records.iter().any(|ds_rr| match ds_rr.rdata {
-            RData::Ds(ref ds) => check_single_ds_linkage(&cut.zone, ds, child_key),
-            _ => false,
-        });
-        if matches {
-            return Ok(child_key.clone());
-        }
-    }
-
-    Err(ValidationOutcome::new(
-        ValidationVerdict::Bogus,
-        VerdictReason::DsDnskeyMismatch,
-    ))
-}
-
-fn verify_ds_denial(policy: &ValidationPolicy, cut: &ZoneCutMaterial) -> bool {
-    match cut.ds_denial.as_ref() {
-        Some(DenialProof::Nsec(nsec)) => nsec.prove_ds_absence(&cut.zone).is_ok(),
-        Some(DenialProof::Nsec3(nsec3)) => {
-            verify_nsec3_ds_absence(nsec3, &cut.zone, policy.nsec3_max_iterations).is_ok()
-        }
-        None => false,
-    }
+    Ok(())
 }
 
 /// The name one label below `current_zone` on the way down to `qname`.

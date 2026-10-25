@@ -60,6 +60,30 @@ impl ValidationOutcome {
         Self { verdict, reason }
     }
 
+    /// A [`ValidationVerdict::Secure`] outcome.
+    #[must_use]
+    pub fn secure(reason: VerdictReason) -> Self {
+        Self::new(ValidationVerdict::Secure, reason)
+    }
+
+    /// A [`ValidationVerdict::Insecure`] outcome.
+    #[must_use]
+    pub fn insecure(reason: VerdictReason) -> Self {
+        Self::new(ValidationVerdict::Insecure, reason)
+    }
+
+    /// A [`ValidationVerdict::Bogus`] outcome.
+    #[must_use]
+    pub fn bogus(reason: VerdictReason) -> Self {
+        Self::new(ValidationVerdict::Bogus, reason)
+    }
+
+    /// A [`ValidationVerdict::Indeterminate`] outcome.
+    #[must_use]
+    pub fn indeterminate(reason: VerdictReason) -> Self {
+        Self::new(ValidationVerdict::Indeterminate, reason)
+    }
+
     /// Applies the validation outcome to the response's AD bit and, for a `Bogus`
     /// verdict under [`FailureMode::HardFail`], turns the response into SERVFAIL.
     pub fn apply_to_message(&self, message: &mut Message, mode: FailureMode) {

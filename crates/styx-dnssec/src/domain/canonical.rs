@@ -1,5 +1,7 @@
 //! RFC 4034 canonical serialization and RRset ordering for signature validation.
 
+use std::borrow::Borrow;
+
 use styx_proto::application::canonical::canonical_rr_cmp;
 use styx_proto::application::encoder::Encoder;
 use styx_proto::domain::error::EncodeError;
@@ -66,9 +68,9 @@ fn encode_canonical_rr(
 ///
 /// # Errors
 /// Returns [`EncodeError`] if serialization fails.
-pub fn build_canonical_signed_data(
+pub fn build_canonical_signed_data<R: Borrow<ResourceRecord>>(
     rrsig: &RrsigRdata,
-    rrset: &[ResourceRecord],
+    rrset: &[R],
 ) -> Result<Vec<u8>, EncodeError> {
     let mut encoder = Encoder::new_canonical(usize::MAX);
 
@@ -83,11 +85,11 @@ pub fn build_canonical_signed_data(
     encoder.write_name(rrsig.signer_name())?;
 
     // 2. Sort RRset according to RFC 4034 §6.3 canonical RR ordering
-    let mut sorted_records = rrset.to_vec();
-    sorted_records.sort_by(canonical_rr_cmp);
+    let mut sorted_records: Vec<&ResourceRecord> = rrset.iter().map(Borrow::borrow).collect();
+    sorted_records.sort_by(|left, right| canonical_rr_cmp(left, right));
 
     // 3. Serialize sorted records with canonical owner and original TTL
-    for rr in &sorted_records {
+    for rr in sorted_records {
         let canonical_owner = canonical_owner_for_rrsig(&rr.owner, rrsig.labels())?;
         encode_canonical_rr(&mut encoder, &canonical_owner, rr, rrsig.original_ttl())?;
     }

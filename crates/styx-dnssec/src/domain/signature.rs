@@ -1,5 +1,7 @@
 //! Cryptographic signature verification and DS-to-DNSKEY digest computation.
 
+use std::borrow::Borrow;
+
 use ring::signature::{self, RsaPublicKeyComponents};
 use styx_core::Clock;
 use styx_proto::domain::rdata::{DnskeyRdata, DsRdata, RrsigRdata};
@@ -119,9 +121,9 @@ fn check_validity_window<C: Clock>(rrsig: &RrsigRdata, clock: &C) -> Result<(), 
 ///
 /// # Errors
 /// Returns a [`VerdictReason`] if validation fails.
-pub fn verify_rrsig_record<C: Clock>(
+pub fn verify_rrsig_record<C: Clock, R: Borrow<ResourceRecord>>(
     rrsig: &RrsigRdata,
-    rrset: &[ResourceRecord],
+    rrset: &[R],
     dnskey: &DnskeyRdata,
     dnskey_owner: &Name,
     clock: &C,

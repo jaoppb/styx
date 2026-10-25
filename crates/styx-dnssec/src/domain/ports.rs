@@ -2,36 +2,39 @@
 
 use styx_proto::Name;
 
-use crate::domain::chain::ChainMaterial;
+use crate::domain::chain::ZoneCutMaterial;
 use crate::domain::error::{ChainSourceError, TrustAnchorError};
 use crate::domain::trust_anchor::TrustAnchor;
 
 /// Context passed when requesting chain material.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainRequest {
-    /// Optional question name that prompted the chain request.
-    pub qname: Option<Name>,
+    /// Question name that prompted the chain request.
+    pub qname: Name,
 }
 
 impl ChainRequest {
-    /// Creates a new [`ChainRequest`] with optional qname.
+    /// Creates a new [`ChainRequest`] for `qname`.
     #[must_use]
-    pub fn new(qname: Option<Name>) -> Self {
+    pub fn new(qname: Name) -> Self {
         Self { qname }
     }
 }
 
 /// Port through which the validator obtains chain material (DS, DNSKEY, and DS-denial proofs).
 pub trait ChainSource: Send + Sync {
-    /// Obtains chain material for the given zone cut.
+    /// Obtains chain material for `zone`, including whether it is a zone cut at all.
     ///
     /// # Errors
-    /// Returns [`ChainSourceError`] if material could not be retrieved.
+    /// Returns [`ChainSourceError`] if material could not be retrieved. That is never
+    /// a claim that `zone` is not a cut: report that as [`Delegation::NotACut`].
+    ///
+    /// [`Delegation::NotACut`]: crate::domain::chain::Delegation::NotACut
     fn material_for(
         &self,
         zone: &Name,
         context: &ChainRequest,
-    ) -> Result<ChainMaterial, ChainSourceError>;
+    ) -> Result<ZoneCutMaterial, ChainSourceError>;
 }
 
 /// Port supplying the configured cryptographic trust anchors.

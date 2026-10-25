@@ -1,7 +1,7 @@
 //! Integration tests for ChainSource strategies and wire response outcome application (Sub-phase 6d).
 
 use styx_dnssec::{
-    ChainRequest, ChainSource, ChainSourceError, FailureMode, MaterialOrigin, PullChainSource,
+    ChainRequest, ChainSource, Delegation, FailureMode, MaterialOrigin, PullChainSource,
     PushedChainSource, ValidationOutcome, ValidationVerdict, VerdictReason, ZoneCutMaterial,
 };
 use styx_proto::{
@@ -13,15 +13,11 @@ use styx_proto::{
 fn test_pushed_chain_source_accumulation() {
     let source = PushedChainSource::new();
     let zone = Name::from_ascii("example.com.").unwrap();
+    let request = ChainRequest::new(zone.clone());
 
-    let request = ChainRequest::new(Some(zone.clone()));
+    source.record_referral(zone.clone(), Delegation::NotACut);
 
-    // Record a referral observed during descent
-    source.record_referral(zone.clone(), None, None, None, Vec::new());
-
-    let material = source.material_for(&zone, &request).unwrap();
-    let cut = material.cut_for(&zone).unwrap();
-
+    let cut = source.material_for(&zone, &request).unwrap();
     assert_eq!(cut.zone, zone);
     assert_eq!(cut.origin, MaterialOrigin::PushedFromDescent);
 }
@@ -31,30 +27,20 @@ fn test_pull_chain_source_on_demand() {
     let source = PullChainSource::new();
     let zone = Name::from_ascii("example.com.").unwrap();
     let other_zone = Name::from_ascii("other.com.").unwrap();
+    let request = ChainRequest::new(zone.clone());
 
-    let cut = ZoneCutMaterial::new(
+    source.insert_cut(ZoneCutMaterial::new(
         zone.clone(),
-        None,
-        None,
-        None,
-        Vec::new(),
+        Delegation::NotACut,
         MaterialOrigin::PulledOnDemand,
-    );
-    source.insert_cut(cut);
+    ));
 
-    let request = ChainRequest::new(Some(zone.clone()));
-
-    // Existing zone succeeds
-    let material = source.material_for(&zone, &request).unwrap();
-    let retrieved_cut = material.cut_for(&zone).unwrap();
+    let retrieved_cut = source.material_for(&zone, &request).unwrap();
     assert_eq!(retrieved_cut.origin, MaterialOrigin::PulledOnDemand);
 
-    // Unregistered zone returns ChainSourceError::Unavailable
-    let err = source.material_for(&other_zone, &request).unwrap_err();
-    match err {
-        ChainSourceError::Unavailable(z) => assert_eq!(z, other_zone),
-        _ => panic!("expected Unavailable error"),
-    }
+    let unknown = source.material_for(&other_zone, &request).unwrap();
+    assert_eq!(unknown.zone, other_zone);
+    assert_eq!(unknown.delegation, Delegation::NotACut);
 }
 
 #[test]

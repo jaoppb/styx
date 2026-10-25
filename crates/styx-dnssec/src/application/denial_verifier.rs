@@ -3,160 +3,102 @@
 use styx_core::Clock;
 use styx_proto::{Message, Name, RData, RecordType, ResourceRecord, ResponseCode};
 
-use crate::application::validator::Validator;
+use crate::application::authenticator::Authenticator;
 use crate::domain::denial::{Nsec3Flags, Nsec3Params, Nsec3Proof, NsecProof};
+use crate::domain::error::DenialError;
 use crate::domain::nsec3::{verify_nsec3_nodata, verify_nsec3_nxdomain};
 use crate::domain::policy::Nsec3IterationsCap;
-use crate::domain::verdict::{ValidationOutcome, ValidationVerdict, VerdictReason};
+use crate::domain::verdict::{ValidationOutcome, VerdictReason};
 
-/// Verifies denial-of-existence proofs present in `msg.authorities`.
+/// Verifies the denial-of-existence proof in `message`'s authority section.
 pub(crate) fn verify_denial_proofs<C: Clock>(
-    validator: &Validator<C>,
+    authenticator: &Authenticator<C>,
     qname: &Name,
     qtype: RecordType,
-    msg: &Message,
+    message: &Message,
     active_keys: &[ResourceRecord],
 ) -> ValidationOutcome {
     let mut nsec_records = Vec::new();
     let mut nsec3_records = Vec::new();
     let mut signatures = Vec::new();
-
-    for rr in &msg.authorities {
-        match rr.rdata {
-            RData::Nsec(_) => nsec_records.push(rr.clone()),
-            RData::Nsec3(_) => nsec3_records.push(rr.clone()),
-            RData::Rrsig(_) => signatures.push(rr.clone()),
+    for record in &message.authorities {
+        match record.rdata {
+            RData::Nsec(_) => nsec_records.push(record),
+            RData::Nsec3(_) => nsec3_records.push(record),
+            RData::Rrsig(_) => signatures.push(record),
             _ => {}
         }
     }
 
-    if !active_keys.is_empty() {
-        let denial_records = if !nsec_records.is_empty() {
-            &nsec_records
-        } else {
-            &nsec3_records
-        };
-        if denial_records.is_empty()
-            || !validator.verify_records_signature(denial_records, &signatures, active_keys)
-        {
-            return ValidationOutcome::new(ValidationVerdict::Bogus, VerdictReason::NoValidRrsig);
-        }
+    let denial_records: Vec<&ResourceRecord> =
+        nsec_records.iter().chain(&nsec3_records).copied().collect();
+    if denial_records.is_empty() {
+        return ValidationOutcome::bogus(VerdictReason::DenialProofIncomplete);
+    }
+    if !authenticator.records_signed_by_any(&denial_records, &signatures, active_keys) {
+        return ValidationOutcome::bogus(VerdictReason::NoValidRrsig);
     }
 
-    if !nsec_records.is_empty() {
-        if let Some(outcome) = verify_nsec_denial(qname, qtype, msg, nsec_records) {
-            return outcome;
-        }
-    }
-
-    if !nsec3_records.is_empty() {
-        if let Some(outcome) = verify_nsec3_denial(
+    let rcode = message.header.rcode;
+    let proven = if nsec_records.is_empty() {
+        prove_with_nsec3(
             qname,
             qtype,
-            msg,
+            rcode,
             nsec3_records,
-            validator.policy().nsec3_max_iterations,
-        ) {
-            return outcome;
-        }
-    }
-
-    ValidationOutcome::new(
-        ValidationVerdict::Bogus,
-        VerdictReason::DenialProofIncomplete,
-    )
-}
-
-fn verify_nsec_denial(
-    qname: &Name,
-    qtype: RecordType,
-    msg: &Message,
-    records: Vec<ResourceRecord>,
-) -> Option<ValidationOutcome> {
-    let proof = NsecProof::new(records);
-    if msg.header.rcode == ResponseCode::NXDOMAIN {
-        let valid = proof.prove_name_does_not_exist(qname).is_ok()
-            && proof.prove_no_wildcard(qname).is_ok();
-        let reason = if valid {
-            VerdictReason::AnchorMatched
-        } else {
-            VerdictReason::DenialProofIncomplete
-        };
-        let verdict = if valid {
-            ValidationVerdict::Secure
-        } else {
-            ValidationVerdict::Bogus
-        };
-        return Some(ValidationOutcome::new(verdict, reason));
-    }
-
-    if msg.header.rcode == ResponseCode::NOERROR {
-        let valid = proof.prove_type_does_not_exist(qname, qtype).is_ok();
-        let reason = if valid {
-            VerdictReason::AnchorMatched
-        } else {
-            VerdictReason::DenialProofIncomplete
-        };
-        let verdict = if valid {
-            ValidationVerdict::Secure
-        } else {
-            ValidationVerdict::Bogus
-        };
-        return Some(ValidationOutcome::new(verdict, reason));
-    }
-
-    None
-}
-
-fn verify_nsec3_denial(
-    qname: &Name,
-    qtype: RecordType,
-    msg: &Message,
-    records: Vec<ResourceRecord>,
-    max_iterations: Nsec3IterationsCap,
-) -> Option<ValidationOutcome> {
-    let first = records.first()?;
-    let RData::Nsec3(ref rdata) = first.rdata else {
-        return None;
+            authenticator.policy().nsec3_max_iterations,
+        )
+    } else {
+        prove_with_nsec(qname, qtype, rcode, nsec_records)
     };
+    match proven {
+        Ok(()) => ValidationOutcome::secure(VerdictReason::AnchorMatched),
+        Err(DenialError::Nsec3IterationsExceeded) => {
+            ValidationOutcome::bogus(VerdictReason::Nsec3IterationsExceeded)
+        }
+        Err(_) => ValidationOutcome::bogus(VerdictReason::DenialProofIncomplete),
+    }
+}
 
+fn prove_with_nsec(
+    qname: &Name,
+    qtype: RecordType,
+    rcode: ResponseCode,
+    records: Vec<&ResourceRecord>,
+) -> Result<(), DenialError> {
+    let proof = NsecProof::new(records.into_iter().cloned().collect());
+    if rcode == ResponseCode::NXDOMAIN {
+        proof.prove_name_does_not_exist(qname)?;
+        return proof.prove_no_wildcard(qname);
+    }
+    if rcode == ResponseCode::NOERROR {
+        return proof.prove_type_does_not_exist(qname, qtype);
+    }
+    Err(DenialError::DenialProofIncomplete)
+}
+
+fn prove_with_nsec3(
+    qname: &Name,
+    qtype: RecordType,
+    rcode: ResponseCode,
+    records: Vec<&ResourceRecord>,
+    max_iterations: Nsec3IterationsCap,
+) -> Result<(), DenialError> {
+    let Some(RData::Nsec3(rdata)) = records.first().map(|record| &record.rdata) else {
+        return Err(DenialError::DenialProofIncomplete);
+    };
     let params = Nsec3Params::new(
         rdata.hash_algorithm(),
         Nsec3Flags::new(rdata.flags()),
         rdata.iterations(),
         rdata.salt().to_vec(),
     );
-    let proof = Nsec3Proof::new(params, records);
-
-    if msg.header.rcode == ResponseCode::NXDOMAIN {
-        let valid = verify_nsec3_nxdomain(&proof, qname, max_iterations).is_ok();
-        let reason = if valid {
-            VerdictReason::AnchorMatched
-        } else {
-            VerdictReason::DenialProofIncomplete
-        };
-        let verdict = if valid {
-            ValidationVerdict::Secure
-        } else {
-            ValidationVerdict::Bogus
-        };
-        return Some(ValidationOutcome::new(verdict, reason));
+    let proof = Nsec3Proof::new(params, records.into_iter().cloned().collect());
+    if rcode == ResponseCode::NXDOMAIN {
+        return verify_nsec3_nxdomain(&proof, qname, max_iterations);
     }
-
-    if msg.header.rcode == ResponseCode::NOERROR {
-        let valid = verify_nsec3_nodata(&proof, qname, qtype, max_iterations).is_ok();
-        let reason = if valid {
-            VerdictReason::AnchorMatched
-        } else {
-            VerdictReason::DenialProofIncomplete
-        };
-        let verdict = if valid {
-            ValidationVerdict::Secure
-        } else {
-            ValidationVerdict::Bogus
-        };
-        return Some(ValidationOutcome::new(verdict, reason));
+    if rcode == ResponseCode::NOERROR {
+        return verify_nsec3_nodata(&proof, qname, qtype, max_iterations);
     }
-
-    None
+    Err(DenialError::DenialProofIncomplete)
 }

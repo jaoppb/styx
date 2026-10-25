@@ -215,3 +215,14 @@ pub enum DenialProof {
     /// NSEC3 proof.
     Nsec3(Nsec3Proof),
 }
+
+impl DenialProof {
+    /// The NSEC or NSEC3 records the proof rests on.
+    #[must_use]
+    pub fn records(&self) -> &[ResourceRecord] {
+        match self {
+            Self::Nsec(proof) => &proof.records,
+            Self::Nsec3(proof) => &proof.records,
+        }
+    }
+}
