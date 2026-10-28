@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- DNS over TLS and DNS over HTTPS (HTTP/2, `GET` and `POST`) listeners, configured in a new
+  `[tls]` section and off by default. They answer through the same pipeline as UDP and TCP.
+  An operator certificate is named with `cert_path` and `key_path`; without them styx
+  generates a self-signed certificate once, keeps it in `self_signed_dir`, and logs its SPKI
+  pin on that first boot. `styx pin [config]` prints the pin again. Connection, handshake,
+  idle, stream, per-connection query and request-body bounds are `[tls]` keys. See
+  `docs/operator/encrypted-inbound.md`.
+
 ### Changed
 
 - **Breaking:** the default `query_timeout_secs` is now 5 (it was 2). A dead upstream can
