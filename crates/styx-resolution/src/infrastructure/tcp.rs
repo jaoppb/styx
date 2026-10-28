@@ -24,7 +24,7 @@ use crate::infrastructure::tcp_connection::{Connection, ConnectionSettings};
 pub const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Back-off before retrying `accept()` after the process ran out of descriptors.
-const DESCRIPTOR_EXHAUSTION_BACKOFF: Duration = Duration::from_millis(100);
+pub(crate) const DESCRIPTOR_EXHAUSTION_BACKOFF: Duration = Duration::from_millis(100);
 
 /// `EMFILE`: the process has reached its descriptor limit (same value on Linux and BSDs).
 const EMFILE: i32 = 24;
@@ -70,6 +70,7 @@ where
             write_timeout: limits.tcp_write_timeout(),
             max_in_flight: limits.max_in_flight_per_connection(),
             transport: Transport::Tcp,
+            max_queries: None,
         };
         let malformed_warning = MalformedWarning::new(
             ListenerKind::Tcp,
@@ -172,7 +173,7 @@ where
 }
 
 /// Returns `true` for accept errors caused by running out of file descriptors.
-fn is_descriptor_exhaustion(err: &std::io::Error) -> bool {
+pub(crate) fn is_descriptor_exhaustion(err: &std::io::Error) -> bool {
     matches!(err.raw_os_error(), Some(EMFILE | ENFILE))
 }
 

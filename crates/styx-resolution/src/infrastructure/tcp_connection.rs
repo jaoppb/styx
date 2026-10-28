@@ -2,13 +2,13 @@
 //! pipelined queries, one task per query, and a single writer that owns the write half.
 
 use std::net::SocketAddr;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use styx_proto::application::Decoder;
 use styx_proto::{DecodeError, Message, MessageKind};
-use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -107,6 +107,8 @@ pub(crate) struct ConnectionSettings {
     pub(crate) write_timeout: Duration,
     pub(crate) max_in_flight: NonZeroUsize,
     pub(crate) transport: Transport,
+    /// Queries one connection may carry before the reader stops; `None` is unbounded.
+    pub(crate) max_queries: Option<NonZeroU64>,
 }
 
 /// One accepted connection.
@@ -167,6 +169,7 @@ where
         frames: mpsc::Sender<OutboundFrame>,
         in_flight: &ConnectionInFlight,
     ) {
+        let mut admitted: u64 = 0;
         loop {
             let frame = tokio::select! {
                 () = self.closing.cancelled() => return,
@@ -176,6 +179,15 @@ where
                 return;
             };
             if !self.admit(frame, &frames, in_flight).await {
+                return;
+            }
+            admitted = admitted.saturating_add(1);
+            if self
+                .settings
+                .max_queries
+                .is_some_and(|max| admitted >= max.get())
+            {
+                tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, admitted, "per-connection query ceiling reached; closing after the answers");
                 return;
             }
         }
@@ -273,6 +285,12 @@ where
                     return;
                 }
             }
+        }
+        // Every answer is written: close our side, which over TLS sends close_notify so
+        // the client sees a clean end rather than a truncated stream.
+        let closed = tokio::time::timeout(self.settings.write_timeout, write_half.shutdown()).await;
+        if !matches!(closed, Ok(Ok(()))) {
+            tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, "stream did not close cleanly");
         }
     }
 }

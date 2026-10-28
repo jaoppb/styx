@@ -11,6 +11,7 @@ pub mod admission;
 pub mod cache;
 pub mod cert_fs;
 pub mod do53;
+pub mod dot;
 pub(crate) mod early_reply;
 pub mod filter;
 pub mod framing;
@@ -22,6 +23,7 @@ pub mod server;
 pub mod supervisor;
 pub mod tcp;
 pub mod tcp_connection;
+pub mod tls;
 pub mod udp;
 pub mod udp_socket;
 mod warn_gate;
@@ -29,11 +31,12 @@ mod warn_gate;
 pub use admission::{ConnectionBudget, ConnectionPermit, ListenerShared, QueryBudget, QueryPermit};
 pub use cache::{Eviction, EvictionReport, ShardedAnswerCache, DEFAULT_SHARDS};
 pub use do53::Do53Forwarder;
+pub use dot::DotListener;
 pub use filter::AllowAllFilter;
 pub use local::NoLocalRecords;
 pub use observer::DiscardObserver;
 pub use response::ResponseWriter;
-pub use server::{Server, ServerConfig};
+pub use server::{EncryptedListeners, Server, ServerConfig};
 pub use styx_net::{write_framed, FrameWriteError};
 pub use supervisor::{
     run_listener_supervisor, SupervisedListener, SupervisorBackoff, SupervisorBackoffPolicy,
@@ -41,5 +44,6 @@ pub use supervisor::{
 };
 pub use tcp::TcpListener;
 pub use tcp_connection::{ConnectionInFlight, InFlightSlot, OutboundFrame};
+pub use tls::TlsServerSetup;
 pub use udp::UdpListener;
 pub use udp_socket::{bind_reuseport_group, default_socket_count};
