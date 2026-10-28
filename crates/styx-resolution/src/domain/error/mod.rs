@@ -2,6 +2,7 @@
 
 pub mod certificate;
 pub mod config;
+pub mod doh;
 pub mod listener;
 pub mod pipeline;
 pub mod pool;
@@ -10,6 +11,7 @@ pub mod tls;
 
 pub use certificate::CertificateError;
 pub use config::ConfigError;
+pub use doh::DohError;
 pub use listener::ListenerError;
 pub use pipeline::PipelineError;
 pub use pool::PoolError;

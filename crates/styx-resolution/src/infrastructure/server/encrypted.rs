@@ -17,6 +17,7 @@ use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
 use crate::domain::tls::TlsConfig;
 use crate::infrastructure::admission::ListenerShared;
+use crate::infrastructure::doh::DohListener;
 use crate::infrastructure::dot::DotListener;
 use crate::infrastructure::supervisor::{spawn_listener_supervisor, SupervisorBackoffPolicy};
 use crate::infrastructure::tls::TlsServerSetup;
@@ -43,6 +44,7 @@ impl EncryptedListeners {
 #[derive(Default)]
 pub(super) struct BoundEncrypted {
     pub(super) dot_addrs: Vec<SocketAddr>,
+    pub(super) doh_addrs: Vec<SocketAddr>,
     pub(super) handles: Vec<JoinHandle<Result<(), ListenerError>>>,
 }
 
@@ -64,7 +66,7 @@ where
     T: TerminalHandler + Send + Sync + 'static,
     S: Sleeper + Send + Sync + 'static,
 {
-    /// Binds every configured DoT address; any bind failure aborts startup.
+    /// Binds every configured DoT and DoH address; any bind failure aborts startup.
     pub(super) async fn bind(
         &self,
         encrypted: &EncryptedListeners,
@@ -84,6 +86,23 @@ where
             bound.dot_addrs.push(dot.bound_addr());
             bound.handles.push(spawn_listener_supervisor(
                 dot,
+                Arc::clone(self.clock),
+                self.supervisor,
+                self.cancel.clone(),
+            ));
+        }
+        for &addr in encrypted.config.doh_listen_addrs() {
+            let doh = DohListener::bind(
+                addr,
+                encrypted.setup.doh(),
+                self.shared.clone(),
+                &encrypted.config,
+            )
+            .await
+            .map_err(|e| bind_error(addr, e))?;
+            bound.doh_addrs.push(doh.bound_addr());
+            bound.handles.push(spawn_listener_supervisor(
+                doh,
                 Arc::clone(self.clock),
                 self.supervisor,
                 self.cancel.clone(),

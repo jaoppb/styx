@@ -56,9 +56,10 @@ rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "
 x509-parser = "0.18.1"
 base64 = "0.23"
 time = "0.3"
-hyper = { version = "1.12", features = ["server", "http2"] }
-hyper-util = { version = "0.1.21", features = ["tokio", "server", "http1", "http2"] }
+hyper = { version = "1.12", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "server", "server-auto", "http1", "http2"] }
 http-body-util = "0.1.5"
+h2 = "0.4.20"
 
 # ---------------------------------------------------------------------------
 # The denied lint set, declared once. Every member opts in with

@@ -220,6 +220,7 @@ pub struct Server<L, F, O, C, T = RefusedTerminal> {
     _clock: Arc<C>,
     local_addrs: Vec<SocketAddr>,
     dot_addrs: Vec<SocketAddr>,
+    doh_addrs: Vec<SocketAddr>,
     listeners: Vec<JoinHandle<Result<(), ListenerError>>>,
     cancel: CancellationToken,
     budget: QueryBudget,
@@ -294,6 +295,7 @@ where
             _clock: clock,
             local_addrs,
             dot_addrs: bound.dot_addrs,
+            doh_addrs: bound.doh_addrs,
             listeners,
             cancel,
             budget: shared.budget,
@@ -403,6 +405,12 @@ impl<L, F, O, C, T> Server<L, F, O, C, T> {
     #[must_use]
     pub fn dot_addrs(&self) -> Vec<SocketAddr> {
         self.dot_addrs.clone()
+    }
+
+    /// Returns the OS-assigned addresses of the DoH listeners, in configured order.
+    #[must_use]
+    pub fn doh_addrs(&self) -> Vec<SocketAddr> {
+        self.doh_addrs.clone()
     }
 
     /// Returns how many spawned connection and query tasks are still alive.

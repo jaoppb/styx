@@ -36,6 +36,10 @@ styx-testkit = { path = "../styx-testkit" }
 criterion.workspace = true
 stats_alloc.workspace = true
 tracing-subscriber.workspace = true
+# The DoH test client: hyper's HTTP/2 client, and h2 directly to read the stream ceiling
+# the server advertises in its SETTINGS.
+hyper = { workspace = true, features = ["client"] }
+h2.workspace = true
 
 [[bench]]
 name = "pipeline"

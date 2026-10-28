@@ -242,13 +242,13 @@ where
             return false;
         };
 
-        let query = QueryTask {
-            shared: self.shared.clone(),
-            malformed_warning: Arc::clone(&self.malformed_warning),
-            peer: self.peer,
-            transport: self.settings.transport,
+        let query = QueryTask::new(
+            self.shared.clone(),
+            Arc::clone(&self.malformed_warning),
+            self.peer,
+            self.settings.transport,
             received_at,
-        };
+        );
         let frames = frames.clone();
         let abort = self.shared.abort.clone();
         self.shared.tasks.spawn(async move {
@@ -295,8 +295,9 @@ where
     }
 }
 
-/// One pipelined query, answered on its own task.
-struct QueryTask<L, F, O, C, T, S> {
+/// One query, answered on its own task: decoded, run through the pipeline and encoded the
+/// same way for every stream transport, DoH included.
+pub(crate) struct QueryTask<L, F, O, C, T, S> {
     shared: ListenerShared<L, F, O, C, T, S>,
     malformed_warning: Arc<MalformedWarning<C, S>>,
     peer: SocketAddr,
@@ -336,7 +337,25 @@ where
         }
     }
 
-    async fn respond(&self, bytes: &[u8]) -> Option<Vec<u8>> {
+    /// A query task for `peer` on `transport`, received at `received_at`.
+    pub(crate) fn new(
+        shared: ListenerShared<L, F, O, C, T, S>,
+        malformed_warning: Arc<MalformedWarning<C, S>>,
+        peer: SocketAddr,
+        transport: Transport,
+        received_at: Instant,
+    ) -> Self {
+        Self {
+            shared,
+            malformed_warning,
+            peer,
+            transport,
+            received_at,
+        }
+    }
+
+    /// The encoded answer to `bytes`, or `None` when the message gets no answer at all.
+    pub(crate) async fn respond(&self, bytes: &[u8]) -> Option<Vec<u8>> {
         let mut decoder = Decoder::new(bytes);
         let query = match decoder.decode_message() {
             Ok(msg) => msg,

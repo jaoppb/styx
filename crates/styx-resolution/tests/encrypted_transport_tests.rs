@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use harness::encrypted::{
-    dot_exchange, read_frame, tls_connect, write_frame, AnsweringTerminal, EncryptedOptions,
-    EncryptedTestServer,
+    dot_exchange, read_frame, tls_connect, write_frame, AnsweringTerminal, DohClient,
+    EncryptedOptions, EncryptedTestServer,
 };
 use hickory_proto::op::{Message, MessageType, OpCode, Query};
 use hickory_proto::rr::{Name, RecordType};
@@ -72,18 +72,40 @@ async fn closed_by_server<R: AsyncReadExt + Unpin>(stream: &mut R, within: Durat
     }
 }
 
-#[tokio::test]
-async fn dot_answers_byte_for_byte_like_udp_and_tcp() {
-    let mut server = boot(EncryptedOptions::default()).await;
-    for name in ["example.com.", "signed.example.com."] {
-        let bytes = query(name, RecordType::A);
-        let udp = udp_exchange(server.udp_addr, &bytes).await;
-        let tcp = tcp_exchange(server.tcp_addr, &bytes).await;
-        let dot = dot_exchange(server.dot(), &server.certificate, &bytes).await;
-        assert_eq!(dot, udp, "{name}: DoT differs from UDP");
-        assert_eq!(dot, tcp, "{name}: DoT differs from TCP");
+/// The same question over every transport. Phase 8 adds its blocked-reply modes, and #133
+/// its DNSSEC verdicts, as new questions here rather than a new test.
+const CROSS_TRANSPORT_QUESTIONS: &[&str] = &["example.com.", "signed.example.com."];
 
-        let answer = Message::from_vec(&dot).unwrap();
+/// The answer bytes each transport returns for `bytes`, labelled by transport.
+async fn answers_over_every_transport(
+    server: &EncryptedTestServer<AnsweringTerminal>,
+    bytes: &[u8],
+) -> Vec<(&'static str, Vec<u8>)> {
+    let mut doh = DohClient::connect(server.doh(), &server.certificate).await;
+    vec![
+        ("udp", udp_exchange(server.udp_addr, bytes).await),
+        ("tcp", tcp_exchange(server.tcp_addr, bytes).await),
+        (
+            "dot",
+            dot_exchange(server.dot(), &server.certificate, bytes).await,
+        ),
+        ("doh-get", doh.get(bytes).await.body),
+        ("doh-post", doh.post(bytes).await.body),
+    ]
+}
+
+#[tokio::test]
+async fn every_transport_answers_byte_for_byte_alike() {
+    let mut server = boot(EncryptedOptions::default()).await;
+    for name in CROSS_TRANSPORT_QUESTIONS {
+        let bytes = query(name, RecordType::A);
+        let answers = answers_over_every_transport(&server, &bytes).await;
+        let (_, reference) = answers.first().unwrap();
+        for (transport, answer) in &answers {
+            assert_eq!(answer, reference, "{name}: {transport} differs from udp");
+        }
+
+        let answer = Message::from_vec(reference).unwrap();
         assert_eq!(answer.answers.len(), 1, "{name}");
         assert_eq!(
             answer.metadata.authentic_data,

@@ -347,7 +347,7 @@ fmt:
 # stream framing and the DoH request extraction).
 # Continuous from phase 1 (ROADMAP.md:78). Not part of `gate` because fuzzing
 # is non-deterministic and requires the nightly toolchain.
-[doc("Run cargo-fuzz targets locally (target=all|decode_arbitrary|decode_encode_roundtrip|stream_framing, duration in seconds).")]
+[doc("Run cargo-fuzz targets locally (target=all|decode_arbitrary|decode_encode_roundtrip|stream_framing|doh_extract, duration in seconds).")]
 fuzz target="all" duration="60":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -364,10 +364,11 @@ fuzz target="all" duration="60":
         [decode_arbitrary]=styx-proto
         [decode_encode_roundtrip]=styx-proto
         [stream_framing]=styx-resolution
+        [doh_extract]=styx-resolution
     )
     targets=()
     if [[ "{{ target }}" == "all" ]]; then
-        targets=("decode_arbitrary" "decode_encode_roundtrip" "stream_framing")
+        targets=("decode_arbitrary" "decode_encode_roundtrip" "stream_framing" "doh_extract")
     else
         targets=("{{ target }}")
     fi

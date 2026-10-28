@@ -116,7 +116,7 @@ impl<T: TerminalHandler + Send + Sync + 'static> EncryptedTestServer<T> {
             udp_addr: addrs.first().copied().unwrap(),
             tcp_addr: addrs.get(1).copied().unwrap(),
             dot_addr: server.dot_addrs().first().copied(),
-            doh_addr: None,
+            doh_addr: server.doh_addrs().first().copied(),
             server,
             certificate,
             scratch,
@@ -278,4 +278,105 @@ impl TerminalHandler for AnsweringTerminal {
         };
         Ok(styx_resolution::ResolutionResponse::new(response, outcome))
     }
+}
+
+/// What a DoH exchange came back with.
+#[derive(Debug)]
+pub struct DohReply {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub cache_control: Option<String>,
+    pub body: Vec<u8>,
+}
+
+/// An HTTP/2 client on one TLS connection to the DoH listener.
+pub struct DohClient {
+    pub sender: hyper::client::conn::http2::SendRequest<http_body_util::Full<hyper::body::Bytes>>,
+    pub connection: tokio::task::JoinHandle<()>,
+}
+
+impl DohClient {
+    /// Connects offering `h2`.
+    pub async fn connect(server: SocketAddr, certificate: &TestCertificate) -> Self {
+        let tls = tls_connect(server, certificate, &[b"h2"]).await.unwrap();
+        let (sender, connection) = hyper::client::conn::http2::handshake(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(tls),
+        )
+        .await
+        .unwrap();
+        let connection = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        Self { sender, connection }
+    }
+
+    /// Sends `request`; `Err` when the connection refuses or drops it.
+    pub async fn send(
+        &mut self,
+        request: hyper::Request<http_body_util::Full<hyper::body::Bytes>>,
+    ) -> Result<DohReply, hyper::Error> {
+        use http_body_util::BodyExt;
+
+        let response = self.sender.send_request(request).await?;
+        let header = |name| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|v: &hyper::header::HeaderValue| v.to_str().ok())
+                .map(str::to_owned)
+        };
+        let status = response.status().as_u16();
+        let content_type = header(hyper::header::CONTENT_TYPE);
+        let cache_control = header(hyper::header::CACHE_CONTROL);
+        let body = response.into_body().collect().await?.to_bytes().to_vec();
+        Ok(DohReply {
+            status,
+            content_type,
+            cache_control,
+            body,
+        })
+    }
+
+    /// `GET /dns-query?dns=<base64url>`.
+    pub async fn get(&mut self, wire: &[u8]) -> DohReply {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+
+        let uri = format!(
+            "https://localhost/dns-query?dns={}",
+            URL_SAFE_NO_PAD.encode(wire)
+        );
+        self.send(request("GET", &uri, None, Vec::new()))
+            .await
+            .unwrap()
+    }
+
+    /// `POST /dns-query` with the wire-format media type.
+    pub async fn post(&mut self, wire: &[u8]) -> DohReply {
+        self.send(request(
+            "POST",
+            "https://localhost/dns-query",
+            Some("application/dns-message"),
+            wire.to_vec(),
+        ))
+        .await
+        .unwrap()
+    }
+}
+
+/// An HTTP request with an optional content type.
+pub fn request(
+    method: &str,
+    uri: &str,
+    content_type: Option<&str>,
+    body: Vec<u8>,
+) -> hyper::Request<http_body_util::Full<hyper::body::Bytes>> {
+    let mut builder = hyper::Request::builder().method(method).uri(uri);
+    if let Some(content_type) = content_type {
+        builder = builder.header(hyper::header::CONTENT_TYPE, content_type);
+    }
+    builder
+        .body(http_body_util::Full::new(hyper::body::Bytes::from(body)))
+        .unwrap()
 }

@@ -12,6 +12,7 @@ use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
+use crate::infrastructure::doh::DohListener;
 use crate::infrastructure::dot::DotListener;
 use crate::infrastructure::tcp::TcpListener;
 use crate::infrastructure::udp::UdpListener;
@@ -174,6 +175,27 @@ where
 {
     fn transport_name(&self) -> &'static str {
         "DoT"
+    }
+
+    fn run(
+        &self,
+        cancel: CancellationToken,
+    ) -> impl std::future::Future<Output = Result<(), ListenerError>> + Send {
+        self.run(cancel)
+    }
+}
+
+impl<L, F, O, C, T, S> SupervisedListener for DohListener<L, F, O, C, T, S>
+where
+    L: LocalRecords + Send + Sync + 'static,
+    F: FilterPolicy + Send + Sync + 'static,
+    O: QueryObserver + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    T: TerminalHandler + Send + Sync + 'static,
+    S: Sleeper + Send + Sync + 'static,
+{
+    fn transport_name(&self) -> &'static str {
+        "DoH"
     }
 
     fn run(

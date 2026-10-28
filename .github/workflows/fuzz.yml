@@ -36,6 +36,8 @@ jobs:
             target: decode_encode_roundtrip
           - crate: styx-resolution
             target: stream_framing
+          - crate: styx-resolution
+            target: doh_extract
     steps:
       - uses: actions/checkout@v7
 

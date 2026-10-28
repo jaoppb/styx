@@ -18,4 +18,10 @@ path = "fuzz_targets/stream_framing.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "doh_extract"
+path = "fuzz_targets/doh_extract.rs"
+test = false
+doc = false
+
 [workspace]
