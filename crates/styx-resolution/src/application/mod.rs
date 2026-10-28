@@ -9,12 +9,14 @@
 
 pub mod cache_config;
 pub mod cache_stage;
+pub mod certificate;
 pub mod pipeline;
 pub mod pool;
 pub mod probe_scheduler;
 pub(crate) mod reply_judge;
 pub mod strategies;
 pub mod terminal;
+pub mod tls_config;
 pub mod trial_guard;
 
 pub use cache_config::CacheConfig;

@@ -39,3 +39,4 @@ As defined in [`AGENTS.md`](../../AGENTS.md):
 | [0025](0025-extended-rcode-lives-in-the-header.md) | The extended RCODE lives in the header, and BADVERS answers a bad EDNS version | Phase 1 — Wire codec | 2026-10-16 | Accepted |
 | [0026](0026-cancelled-half-open-trial-releases-its-slot.md) | A cancelled half-open trial releases its slot | Phase 3 — Upstream pool and Do53 forwarder | 2026-10-16 | Accepted |
 | [0027](0027-partitioned-capacity-and-second-chance-eviction.md) | Partitioned capacity and second-chance eviction | Phase 4 — Answer cache | 2026-10-16 | Accepted |
+| [0028](0028-encrypted-inbound-transports-and-the-serving-certificate.md) | Encrypted inbound transports and the serving certificate | Phase 7 — Encrypted inbound (DoT / DoH) | 2026-10-28 | Accepted |

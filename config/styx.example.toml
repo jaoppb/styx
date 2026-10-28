@@ -3,7 +3,7 @@
 # Copy to styx.toml (or pass the path as the first argument) and adjust. styx exits at
 # startup when there is no styx.toml in the current directory and no path is given.
 #
-# Every key the server, supervisor, upstream, cache and recursion sections accept appears below,
+# Every key the server, supervisor, upstream, cache, tls and recursion sections accept appears below,
 # live or as a commented-out line showing its built-in default. Uncomment a line to
 # change it.
 
@@ -95,6 +95,31 @@ addr = "9.9.9.9:53"
 # max_entries = 10000
 # max_bytes = 20971520
 # shards = 32
+
+# Encrypted inbound: DNS over TLS (RFC 7858) and DNS over HTTPS over HTTP/2 (RFC 8484),
+# in front of the same pipeline as UDP and TCP. Off unless enabled. With both cert_path and
+# key_path set, styx serves that certificate and refuses to start if it cannot load it.
+# With neither, it generates a self-signed certificate once into self_signed_dir and logs
+# its SPKI pin; that is enough for curl and DoH clients that accept a pin, not for Android
+# Private DNS, which wants a publicly-valid name: bring a certificate for that. A
+# certificate replaced on disk is only picked up on restart. Every limit is per listener.
+# See docs/operator/encrypted-inbound.md.
+# [tls]
+# enabled = false
+# dot_listen_addrs = ["127.0.0.1:853"]
+# doh_listen_addrs = ["127.0.0.1:443"]
+# cert_path = "/etc/styx/tls/fullchain.pem"
+# key_path = "/etc/styx/tls/privkey.pem"
+# self_signed_dir = "/var/lib/styx/tls"
+# self_signed_names = ["localhost"]
+# doh_path = "/dns-query"
+# allow_http1 = false
+# handshake_timeout_secs = 5
+# idle_timeout_secs = 30
+# max_connections = 128
+# max_streams_per_connection = 100
+# max_queries_per_connection = 10000
+# max_request_body_bytes = 65535
 
 # Infrastructure for the recursor. The root-hints file is the only source of root
 # servers: a missing or unparseable file stops styx at startup.

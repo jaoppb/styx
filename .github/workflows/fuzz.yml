@@ -1,6 +1,7 @@
 name: fuzz
 
-# Scheduled continuous fuzzing on the wire codec (ROADMAP.md:78).
+# Scheduled continuous fuzzing on the wire codec (ROADMAP.md:78) and on the
+# stream framing and DoH request extraction of the inbound listeners.
 # Fuzzing is non-deterministic and requires nightly, so it runs separately
 # from the per-push gate to keep the push path hermetic and fast.
 on:
@@ -28,9 +29,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - decode_arbitrary
-          - decode_encode_roundtrip
+        include:
+          - crate: styx-proto
+            target: decode_arbitrary
+          - crate: styx-proto
+            target: decode_encode_roundtrip
+          - crate: styx-resolution
+            target: stream_framing
+          - crate: styx-resolution
+            target: doh_extract
     steps:
       - uses: actions/checkout@v7
 
@@ -52,7 +59,7 @@ jobs:
         uses: actions/cache@v6
         id: corpus-cache
         with:
-          path: crates/styx-proto/fuzz/corpus/${{ matrix.target }}
+          path: crates/${{ matrix.crate }}/fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: |
             fuzz-corpus-${{ matrix.target }}-
@@ -60,18 +67,18 @@ jobs:
       - name: Run cargo-fuzz
         run: |
           set -euo pipefail
-          mkdir -p "crates/styx-proto/fuzz/corpus/${{ matrix.target }}"
+          mkdir -p "crates/${{ matrix.crate }}/fuzz/corpus/${{ matrix.target }}"
           duration="${{ inputs.duration }}"
           duration="${duration:-600}"
           echo "Running fuzz target ${{ matrix.target }} for ${duration}s..."
-          cd crates/styx-proto
+          cd crates/${{ matrix.crate }}
           cargo +nightly fuzz run "${{ matrix.target }}" -- -max_total_time="${duration}"
 
-      # LibFuzzer writes crashes to crates/styx-proto/fuzz/artifacts/<target>/
+      # LibFuzzer writes crashes to crates/<crate>/fuzz/artifacts/<target>/
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts-${{ matrix.target }}
-          path: crates/styx-proto/fuzz/artifacts/${{ matrix.target }}
+          path: crates/${{ matrix.crate }}/fuzz/artifacts/${{ matrix.target }}
           if-no-files-found: ignore
