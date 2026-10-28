@@ -15,6 +15,7 @@ pub mod probe_scheduler;
 pub(crate) mod reply_judge;
 pub mod strategies;
 pub mod terminal;
+pub mod tls_config;
 pub mod trial_guard;
 
 pub use cache_config::CacheConfig;
