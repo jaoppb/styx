@@ -15,6 +15,7 @@ use crate::domain::limits::ConcurrencyLimits;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
+use crate::domain::request::Transport;
 use crate::infrastructure::admission::{ConnectionBudget, ListenerShared, WarnLimiter};
 use crate::infrastructure::malformed_warning::{ListenerKind, MalformedWarning};
 use crate::infrastructure::tcp_connection::{Connection, ConnectionSettings};
@@ -68,6 +69,7 @@ where
             idle_timeout: idle_timeout.unwrap_or(DEFAULT_TCP_IDLE_TIMEOUT),
             write_timeout: limits.tcp_write_timeout(),
             max_in_flight: limits.max_in_flight_per_connection(),
+            transport: Transport::Tcp,
         };
         let malformed_warning = MalformedWarning::new(
             ListenerKind::Tcp,

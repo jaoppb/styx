@@ -12,6 +12,7 @@ pub mod cache;
 pub mod do53;
 pub(crate) mod early_reply;
 pub mod filter;
+pub mod framing;
 pub mod local;
 mod malformed_warning;
 pub mod observer;

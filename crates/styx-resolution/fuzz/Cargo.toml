@@ -1,0 +1,21 @@
+[package]
+name = "styx-resolution-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+styx-resolution = { path = ".." }
+tokio = { version = "1.43", features = ["rt", "time", "io-util"] }
+
+[[bin]]
+name = "stream_framing"
+path = "fuzz_targets/stream_framing.rs"
+test = false
+doc = false
+
+[workspace]

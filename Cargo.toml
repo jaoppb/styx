@@ -20,7 +20,7 @@ members = [
 # The gate self-test fixtures are deliberate rule violations. They stay
 # committed and reviewable, but they are not built by `cargo build --workspace`
 # and not analysed by the normal `arch-lint check` run.
-exclude = ["gate-selftest", "crates/styx-proto/fuzz"]
+exclude = ["gate-selftest", "crates/styx-proto/fuzz", "crates/styx-resolution/fuzz"]
 
 [workspace.package]
 version = "0.1.0"
