@@ -170,6 +170,7 @@ pub struct TlsConfig {
     dot_listen_addrs: Vec<SocketAddr>,
     doh_listen_addrs: Vec<SocketAddr>,
     source: CertificateSource,
+    self_signed_dir: PathBuf,
     doh_path: DohResourcePath,
     allow_http1: bool,
     limits: EncryptedLimits,
@@ -225,7 +226,7 @@ impl TlsConfig {
                 return Err(invalid("self_signed_names must name at least one host"));
             }
             (None, None) => CertificateSource::SelfSigned {
-                dir: parts.self_signed_dir,
+                dir: parts.self_signed_dir.clone(),
                 names: parts.self_signed_names,
             },
             _ => return Err(invalid("cert_path and key_path must be set together")),
@@ -234,6 +235,7 @@ impl TlsConfig {
             dot_listen_addrs: parts.dot_listen_addrs,
             doh_listen_addrs: parts.doh_listen_addrs,
             source,
+            self_signed_dir: parts.self_signed_dir,
             doh_path: parts.doh_path,
             allow_http1: parts.allow_http1,
             limits: parts.limits,
@@ -258,13 +260,11 @@ impl TlsConfig {
         &self.source
     }
 
-    /// The directory self-signed material would live in, if the source is self-signed.
+    /// The directory self-signed material lives in. Read even when an operator
+    /// certificate is configured, to warn about material left there from an earlier boot.
     #[must_use]
-    pub fn self_signed_dir(&self) -> Option<&Path> {
-        match &self.source {
-            CertificateSource::SelfSigned { dir, .. } => Some(dir),
-            CertificateSource::OperatorSupplied { .. } => None,
-        }
+    pub fn self_signed_dir(&self) -> &Path {
+        &self.self_signed_dir
     }
 
     /// The DoH resource path.
@@ -350,7 +350,7 @@ mod tests {
             config.certificate_source(),
             CertificateSource::OperatorSupplied { .. }
         ));
-        assert_eq!(config.self_signed_dir(), None);
+        assert_eq!(config.self_signed_dir(), Path::new("tls"));
     }
 
     #[test]

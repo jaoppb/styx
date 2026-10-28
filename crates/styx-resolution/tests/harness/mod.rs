@@ -6,6 +6,7 @@
 
 #![allow(unused_imports, dead_code)]
 
+pub mod certificates;
 pub mod server;
 
 pub use server::{ServerSettings, TestServer};

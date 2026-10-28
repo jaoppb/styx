@@ -45,6 +45,20 @@ hickory-proto = { version = "0.26", default-features = false, features = ["std",
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 stats_alloc = "0.1"
 rand = "0.10"
+ring = "0.17"
+# Encrypted inbound (DoT and DoH). An established TLS and HTTP/2 stack, never a
+# hand-written one: the from-scratch rule covers the DNS stack only. `ring` is the
+# crypto provider because aws-lc-rs needs cmake and a C toolchain under the musl
+# `cross` release build.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+x509-parser = "0.18.1"
+base64 = "0.23"
+time = "0.3"
+hyper = { version = "1.12", features = ["server", "http2"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "server", "http1", "http2"] }
+http-body-util = "0.1.5"
 
 # ---------------------------------------------------------------------------
 # The denied lint set, declared once. Every member opts in with

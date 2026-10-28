@@ -9,6 +9,7 @@
 
 pub mod cache_config;
 pub mod cache_stage;
+pub mod certificate;
 pub mod pipeline;
 pub mod pool;
 pub mod probe_scheduler;
