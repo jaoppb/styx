@@ -150,7 +150,7 @@ where
         self.stats
             .record_descent(result.is_err(), context.fallbacks);
         let finished = self.ports.clock.now_monotonic();
-        if let Some(snapshot) = self.stats.snapshot_if_due(finished) {
+        if let Some(snapshot) = self.stats.snapshot_if_due(&self.id, finished) {
             self.ports.diagnostics.publish(snapshot);
         }
         match result {

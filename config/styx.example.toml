@@ -96,8 +96,9 @@ addr = "9.9.9.9:53"
 # max_bytes = 20971520
 # shards = 32
 
-# Infrastructure for the recursor. The root-hints file is the only source of root
-# servers: a missing or unparseable file stops styx at startup.
+# Infrastructure for the recursor, shared by every recursor member as its default. The
+# root-hints file is the only source of root servers: a missing or unparseable file stops
+# styx at startup. wall_clock_ms must stay below query_timeout_secs.
 [recursion]
 root_hints = "config/named.root"
 # This path is relative to the directory styx is started from, so run styx from the
@@ -115,3 +116,10 @@ use_ipv6 = true
 # Bounds on how many delegations and nameservers the recursor remembers.
 # max_delegations = 10000
 # max_servers = 10000
+
+# Per-member overrides: a [recursion.members.<name>] table, named after a recursor
+# member of the pool, may set any key above for that member alone. Unset keys fall back
+# to [recursion], then to the built-in defaults. A member that sets its own root_hints
+# needs no [recursion] section at all.
+# [recursion.members.recursor]
+# use_ipv6 = true
