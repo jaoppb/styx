@@ -25,6 +25,7 @@ const SCHEMA: &[SchemaTable] = &[
             "query_timeout_secs",
             "max_in_flight_queries",
             "max_tcp_connections",
+            "filter_aaaa",
         ],
     },
     SchemaTable {
@@ -45,6 +46,7 @@ fn server_fields(raw: &RawConfig) {
         query_timeout_secs: _,
         max_in_flight_queries: _,
         max_tcp_connections: _,
+        filter_aaaa: _,
         supervisor: _,
         upstream: _,
         other: _,

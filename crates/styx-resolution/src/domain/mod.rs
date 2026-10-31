@@ -10,6 +10,7 @@
 //!
 //! No synchronous I/O, no `unwrap`, no `expect`, no `panic!`.
 
+pub mod aaaa_policy;
 pub mod answer;
 pub mod bad_edns_version;
 pub mod cache;
@@ -27,6 +28,7 @@ pub mod request;
 pub mod selection;
 pub mod weight;
 
+pub use aaaa_policy::AaaaPolicy;
 pub use answer::{
     AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse,
     ResolutionResponseParts, ResolvedSource,

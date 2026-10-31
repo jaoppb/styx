@@ -19,6 +19,7 @@ pub use application::{
     PoolTerminal, ProbeScheduler, RaceAll, RefusedTerminal, RoundRobin, TerminalHandler,
     TrialGuard, UpstreamPool, Weighted,
 };
+pub use domain::aaaa_policy::AaaaPolicy;
 pub use domain::answer::{
     AnswerSource, ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse,
     ResolutionResponseParts, ResolvedSource,

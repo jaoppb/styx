@@ -14,6 +14,8 @@ pub enum AnswerSource {
     LocalRecord,
     /// Synthesized via block policy (e.g. adlist filter).
     Blocked,
+    /// Answered NODATA because the `filter_aaaa` switch is on.
+    AaaaFiltered,
     /// Retrieved from the in-memory answer cache.
     CacheHit,
     /// Forwarded to and answered by an upstream resolver.
@@ -31,6 +33,8 @@ pub enum ForgedSource {
     LocalRecord,
     /// Synthesized via block policy (e.g. adlist filter).
     Blocked,
+    /// Answered NODATA because the `filter_aaaa` switch is on.
+    AaaaFiltered,
 }
 
 impl From<ForgedSource> for AnswerSource {
@@ -38,6 +42,7 @@ impl From<ForgedSource> for AnswerSource {
         match source {
             ForgedSource::LocalRecord => Self::LocalRecord,
             ForgedSource::Blocked => Self::Blocked,
+            ForgedSource::AaaaFiltered => Self::AaaaFiltered,
         }
     }
 }
@@ -136,6 +141,7 @@ impl ResolutionOutcome {
             Self::Forged { source, .. } => match source {
                 ForgedSource::LocalRecord => AnswerSource::LocalRecord,
                 ForgedSource::Blocked => AnswerSource::Blocked,
+                ForgedSource::AaaaFiltered => AnswerSource::AaaaFiltered,
             },
             Self::Resolved { source, .. } => match source {
                 ResolvedSource::CacheHit => AnswerSource::CacheHit,

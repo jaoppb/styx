@@ -13,7 +13,6 @@
 mod upstream;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{bail, Context};
 use styx_core::{SystemClock, SystemSleeper, UpstreamId, UpstreamKind};
@@ -71,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
         None => None,
     };
     let pool = build_pool(pool_config, recursion.as_ref(), &clock)?;
-    let pipeline = build_pipeline(pool.clone(), clock.clone(), config.query_timeout, cache)?;
+    let pipeline = build_pipeline(pool.clone(), clock.clone(), &config, cache)?;
 
     let probe_cancel = CancellationToken::new();
     let scheduler = ProbeScheduler::new(pool, clock.clone(), pool_config.probe.tick);
@@ -205,7 +204,7 @@ fn build_pool(
 fn build_pipeline(
     pool: Arc<ConcretePool>,
     clock: Arc<SystemClock>,
-    query_timeout: Duration,
+    config: &ServerConfig,
     cache_config: CacheConfig,
 ) -> anyhow::Result<Arc<ConcretePipeline>> {
     let cache = ShardedAnswerCache::new(
@@ -216,7 +215,12 @@ fn build_pipeline(
     )
     .context("failed to size the answer cache from [cache]")?;
     let cache = Arc::new(cache);
-    let cache_stage = Arc::new(CacheStage::new(cache, pool, clock.clone(), query_timeout));
+    let cache_stage = Arc::new(CacheStage::new(
+        cache,
+        pool,
+        clock.clone(),
+        config.query_timeout,
+    ));
     Ok(Arc::new(
         Pipeline::new(
             Arc::new(NoLocalRecords::new()),
@@ -224,6 +228,7 @@ fn build_pipeline(
             Arc::new(DiscardObserver::new()),
             clock,
         )
+        .with_aaaa_policy(config.aaaa_policy)
         .with_terminal(cache_stage),
     ))
 }
