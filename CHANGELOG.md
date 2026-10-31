@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `[cache]` takes `ttl_floor_secs`, `ttl_ceiling_secs` and `negative_ttl_ceiling_secs`,
+  defaulting to 5, 86400 and 300 seconds. A floor above the ceiling is a startup error.
+- The answer cache's counters are logged at `debug` every 60 seconds.
+
 ### Changed
 
 - **Breaking:** the default `query_timeout_secs` is now 5 (it was 2). A dead upstream can

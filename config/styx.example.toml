@@ -95,6 +95,12 @@ addr = "9.9.9.9:53"
 # max_entries = 10000
 # max_bytes = 20971520
 # shards = 32
+# Every admitted answer's TTL is raised to the floor and cut to the ceiling; a negative
+# answer (NXDOMAIN, NODATA) is cut to its own ceiling instead. The floor must not exceed
+# the ceiling.
+# ttl_floor_secs = 5
+# ttl_ceiling_secs = 86400
+# negative_ttl_ceiling_secs = 300
 
 # Infrastructure for the recursor. The root-hints file is the only source of root
 # servers: a missing or unparseable file stops styx at startup.
