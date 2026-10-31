@@ -623,6 +623,19 @@ touch resolution because nothing resolution needs lives there. **Accepted conseq
 changing an upstream requires SSH and a restart, which is the thing people most want to do
 from the UI.**
 
+**Recursion settings are per recursor member (#75).** The `[recursion]` section holds the
+defaults every recursor member shares; a `[recursion.members.<name>]` table, named after a
+recursor member of the pool, overrides any of its keys for that member alone. Each key
+resolves member override → `[recursion]` → the built-in constant. The overrides live under
+`[recursion]`, not on the pool member, so `styx-resolution`'s member schema never names a
+recursion setting. Both tables reject unknown keys, and an override table that names no
+recursor of the pool is a startup error, so a typo cannot fall back to a default in
+silence. Validation runs on each merged result, with the member's name in the error: a
+zero limit, no `root_hints` anywhere, or a `wall_clock_ms` that does not end before
+`query_timeout` (the deadline would otherwise cut a descent off before its own budget
+could fail it). The shared section is optional: a member that names its own `root_hints`
+needs none.
+
 ### 8. Errors and observability
 
 - Errors are `thiserror` enums returned through `Result<T, E>`. There is no exception
@@ -1152,21 +1165,24 @@ first.**
    the injected `Clock`. `ExchangeError` maps onto this crate's transport error at the
    adapter boundary.
 3. **Root hints**: loaded from a path in the **TOML file** (file owns infrastructure) —
-   the only source; there is no compiled-in copy. A missing or unparseable file is a
-   `ConfigError` at construction, and the recursor is not built. Priming is **lazy and
-   non-blocking** (`application/priming.rs`): the recursor is constructed from hints
-   alone and serves at once; the first descent's prerequisite is a single-flighted
-   priming query whose live root NS set replaces the hints in `InfraCache`. A failed
-   prime is retried with backoff while descents keep using the hints, and the prime is
-   repeated when the root NS TTL expires. The box boots before its WAN link, so nothing
-   here may block startup.
+   the only source; there is no compiled-in copy. The path is part of each recursor
+   member's merged settings (Approach §7), and the file is loaded once per member. A
+   missing or unparseable file is a `ConfigError` at construction, and the recursor is not
+   built. Priming is **lazy and non-blocking** (`application/priming.rs`): the recursor
+   is constructed from hints alone and serves at once; the first descent's prerequisite
+   is a single-flighted priming query whose live root NS set replaces the hints in
+   `InfraCache`. A failed prime is retried with backoff while descents keep using the
+   hints, and the prime is repeated when the root NS TTL expires. The box boots before
+   its WAN link, so nothing here may block startup.
 4. **Constraints**:
    **no EDNS Client Subnet option is ever attached to an outbound query.** No DoQ. Every
    response is parsed through `styx-proto`.
 
 ### 9. Create `Recursor` — the driver and the `Upstream` implementation
 
-1. **Responsibility**: run descents, and be an ordinary pool member.
+1. **Responsibility**: run descents, and be an ordinary pool member. Each recursor member
+   is its own `Recursor` with its own infrastructure cache, built from that member's
+   merged settings (Approach §7); two recursors share nothing but the diagnostics store.
 2. **Core method**: `resolve(&self, question: &Question) -> Result<Message, RecursionError>`,
    the inherent descent driver. The `Upstream` implementation wraps it, converting a
    `RecursionError` to an `UpstreamError` at that boundary.
@@ -1213,7 +1229,9 @@ first.**
    `NeverContacted`, and the UI presents `last_contact` as an age so a stale entry looks
    stale.
 4. **Publication**: assembled by `Recursor` and published through `DiagnosticsSink` as a
-   snapshot replaced wholesale. The admin/web layer reads it **directly**.
+   snapshot replaced wholesale. Each snapshot carries its recursor's `UpstreamId`, and
+   the store keeps the latest one per member, so several recursors sharing it do not
+   overwrite each other. The admin/web layer reads it **directly**.
 5. **Constraints**:
    - **Never routed through the pool**, and never merged into or derived from
      `HealthState`.
@@ -1498,6 +1516,11 @@ constraint 3.
 - Root hints, budgets, timeouts and the recursor's pool membership live in the
   **TOML file**; the database owns none of them. A dead database must not affect
   resolution.
+- Every recursion setting is overridable per recursor member through
+  `[recursion.members.<name>]`, and every merged result is validated with the member's
+  name in the error: unknown keys, zero limits, missing root hints, an override for a name
+  that is not a recursor, and a wall clock that does not end before `query_timeout` all
+  stop startup.
 - **Accepted consequence, carried forward: changing an upstream requires SSH and a
   restart, which is the thing people most want to do from the UI.**
 

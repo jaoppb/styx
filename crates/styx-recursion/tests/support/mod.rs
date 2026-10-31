@@ -149,6 +149,16 @@ impl Network {
 
     /// A recursor whose root hints name the fake root at 127.0.0.2.
     pub fn recursor(&self, limits: DescentLimits) -> Result<TestRecursor, ConfigError> {
+        self.recursor_named("recursor", limits)
+    }
+
+    /// Like [`Self::recursor`], as the pool member `name`. Every recursor of one network
+    /// shares its diagnostics store and infrastructure cache.
+    pub fn recursor_named(
+        &self,
+        name: &str,
+        limits: DescentLimits,
+    ) -> Result<TestRecursor, ConfigError> {
         let hints = RootHints::parse(&format!(
             ". 518400 NS ns.root.\nns.root. 518400 A 127.0.0.{ROOT}\n"
         ))?;
@@ -158,7 +168,7 @@ impl Network {
             Arc::clone(&self.clock),
         );
         Ok(Recursor::new(
-            UpstreamId::new("recursor"),
+            UpstreamId::new(name),
             RecursorSettings {
                 limits,
                 use_ipv6: false,
