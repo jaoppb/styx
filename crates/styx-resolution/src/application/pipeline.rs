@@ -8,6 +8,7 @@ use styx_core::Clock;
 use styx_proto::{Message, MessageKind, Opcode, Question, RecordClass, ResponseCode, Ttl};
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
+use crate::domain::aaaa_policy::AaaaPolicy;
 use crate::domain::answer::{
     ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse, ResolutionResponseParts,
 };
@@ -26,10 +27,11 @@ const LOCAL_RECORD_TTL: Ttl = Ttl::from_secs(60);
 
 /// DNS resolution pipeline enforcing fixed stage execution order.
 ///
-/// Order is a correctness property: Local Records -> Filter -> Cache -> Upstream.
+/// Order is a correctness property: Local Records -> Filter -> AAAA filter -> Cache -> Upstream.
 pub struct Pipeline<L, F, O, C, T = RefusedTerminal> {
     local_records: Arc<L>,
     filter: Arc<F>,
+    aaaa: AaaaPolicy,
     observer: Arc<O>,
     clock: Arc<C>,
     terminal: Arc<T>,
@@ -48,6 +50,7 @@ where
         Self {
             local_records,
             filter,
+            aaaa: AaaaPolicy::default(),
             observer,
             clock,
             terminal: Arc::new(RefusedTerminal::new()),
@@ -63,12 +66,20 @@ where
     C: Clock,
     T: TerminalHandler,
 {
+    /// Sets how AAAA questions are treated; the default resolves them.
+    #[must_use]
+    pub const fn with_aaaa_policy(mut self, aaaa: AaaaPolicy) -> Self {
+        self.aaaa = aaaa;
+        self
+    }
+
     /// Substitutes the terminal handler (used by test fixtures).
     #[must_use]
     pub fn with_terminal<T2: TerminalHandler>(self, terminal: Arc<T2>) -> Pipeline<L, F, O, C, T2> {
         Pipeline {
             local_records: self.local_records,
             filter: self.filter,
+            aaaa: self.aaaa,
             observer: self.observer,
             clock: self.clock,
             terminal,
@@ -120,6 +131,12 @@ where
         }
 
         if let Some(forged) = self.try_filter(ctx, question) {
+            let outcome = forged.outcome();
+            self.record_telemetry(ctx, question, &outcome);
+            return Ok(Self::finish(ctx, forged.into_response()));
+        }
+
+        if let Some(forged) = self.try_aaaa_filter(ctx, question) {
             let outcome = forged.outcome();
             self.record_telemetry(ctx, question, &outcome);
             return Ok(Self::finish(ctx, forged.into_response()));
@@ -183,6 +200,20 @@ where
                 ForgedSource::Blocked,
             )),
         }
+    }
+
+    /// NODATA with no SOA: styx asks no one, so it knows no zone apex to cite.
+    fn try_aaaa_filter(&self, ctx: &RequestContext, question: &Question) -> Option<ForgedAnswer> {
+        if !self.aaaa.filters(question) {
+            return None;
+        }
+        Some(ForgedAnswer::build_with_source(
+            ctx,
+            Vec::new(),
+            ResponseCode::NOERROR,
+            BLOCKED_TTL,
+            ForgedSource::AaaaFiltered,
+        ))
     }
 
     async fn run_terminal(

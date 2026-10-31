@@ -164,6 +164,7 @@ where
             tcp_idle_timeout: settings.tcp_idle_timeout,
             query_timeout: settings.query_timeout,
             limits: settings.limits,
+            aaaa_policy: styx_resolution::AaaaPolicy::default(),
             supervisor: settings.supervisor,
             upstream: None,
         };
