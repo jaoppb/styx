@@ -41,6 +41,9 @@ pub(crate) fn verify_denial_proofs<C: Clock>(
                 DenialError::Nsec3IterationsExceeded => {
                     ValidationOutcome::bogus(VerdictReason::Nsec3IterationsExceeded)
                 }
+                DenialError::UnsupportedHashAlgorithm(_) => {
+                    ValidationOutcome::insecure(VerdictReason::UnsupportedAlgorithm)
+                }
                 _ => ValidationOutcome::bogus(VerdictReason::DenialProofIncomplete),
             };
         }
@@ -55,6 +58,9 @@ pub(crate) fn verify_denial_proofs<C: Clock>(
             match error {
                 DenialError::Nsec3IterationsExceeded => {
                     ValidationOutcome::bogus(VerdictReason::Nsec3IterationsExceeded)
+                }
+                DenialError::UnsupportedHashAlgorithm(_) => {
+                    ValidationOutcome::insecure(VerdictReason::UnsupportedAlgorithm)
                 }
                 _ => ValidationOutcome::bogus(VerdictReason::DenialProofIncomplete),
             }

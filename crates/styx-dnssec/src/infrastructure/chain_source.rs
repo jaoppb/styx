@@ -46,9 +46,9 @@ impl ChainSource for InMemoryChainSource {
             Ok(guard) => guard,
             Err(poison) => poison.into_inner(),
         };
-        Ok(map
-            .get(zone)
-            .cloned()
-            .unwrap_or_else(|| ZoneCutMaterial::new(zone.clone(), Delegation::NotACut)))
+        match map.get(zone) {
+            Some(cut) => Ok(cut.clone()),
+            None => Ok(ZoneCutMaterial::new(zone.clone(), Delegation::NotACut)),
+        }
     }
 }

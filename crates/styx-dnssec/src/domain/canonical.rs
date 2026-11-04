@@ -4,7 +4,7 @@ use styx_proto::application::canonical::canonical_rr_cmp;
 use styx_proto::application::encoder::Encoder;
 use styx_proto::domain::error::EncodeError;
 use styx_proto::domain::rdata::RrsigRdata;
-use styx_proto::{Label, Name, ResourceRecord};
+use styx_proto::{Name, ResourceRecord};
 
 /// Resolves the canonical owner name for an RRset under an RRSIG.
 ///
@@ -24,13 +24,10 @@ pub fn canonical_owner_for_rrsig(owner: &Name, rrsig_labels: u8) -> Result<Name,
         return Err(EncodeError::TooManyRecords);
     }
 
-    let to_drop = owner_count.saturating_sub(sig_count);
-    let mut labels: Vec<Label> = Vec::with_capacity(sig_count.saturating_add(1));
-    labels.push(Label::new(b"*".to_vec())?);
-    for label in owner.labels().skip(to_drop) {
-        labels.push(Label::new(label.as_bytes().to_vec())?);
-    }
-    Name::new(labels).map_err(EncodeError::from)
+    let ancestor = owner
+        .ancestor(sig_count)
+        .ok_or(EncodeError::TooManyRecords)?;
+    ancestor.with_wildcard().map_err(EncodeError::from)
 }
 
 /// Encodes one resource record into the canonical wire buffer.

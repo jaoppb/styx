@@ -230,8 +230,10 @@ impl Nsec3Proof {
             let Some(owner_hash) = extract_owner_hash(record) else {
                 continue;
             };
-            let matches_exact_without_ds =
-                owner_hash == zone_hash && !nsec3.types().contains(styx_proto::RecordType::DS);
+            let matches_exact_without_ds = owner_hash == zone_hash
+                && nsec3.types().contains(RecordType::NS)
+                && !nsec3.types().contains(RecordType::DS)
+                && !nsec3.types().contains(RecordType::SOA);
             let opt_out_covers = nsec3.opt_out()
                 && nsec3_covers_hash(&owner_hash, nsec3.next_hashed_owner(), &zone_hash);
             if matches_exact_without_ds || opt_out_covers {

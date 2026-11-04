@@ -167,7 +167,10 @@ impl NsecProof {
             let RData::Nsec(ref nsec) = record.rdata else {
                 continue;
             };
-            if !nsec.types().contains(RecordType::DS) {
+            if nsec.types().contains(RecordType::NS)
+                && !nsec.types().contains(RecordType::DS)
+                && !nsec.types().contains(RecordType::SOA)
+            {
                 return Ok(());
             }
         }
@@ -213,20 +216,22 @@ impl DenialProof {
     /// # Errors
     /// Returns [`DenialError::DenialProofIncomplete`] if no NSEC or NSEC3 records are present.
     pub fn from_records(records: &[&ResourceRecord]) -> Result<Self, DenialError> {
-        let nsec_records: Vec<ResourceRecord> = records
-            .iter()
-            .filter(|record| matches!(record.rdata, RData::Nsec(_)))
-            .map(|&record| record.clone())
-            .collect();
+        let mut nsec_records = Vec::new();
+        let mut nsec3_records = Vec::new();
+        for &record in records {
+            match record.rdata {
+                RData::Nsec(_) => nsec_records.push(record.clone()),
+                RData::Nsec3(_) => nsec3_records.push(record.clone()),
+                _ => {}
+            }
+        }
+        if !nsec_records.is_empty() && !nsec3_records.is_empty() {
+            return Err(DenialError::DenialProofIncomplete);
+        }
         if !nsec_records.is_empty() {
             return Ok(Self::Nsec(NsecProof::new(nsec_records)));
         }
 
-        let nsec3_records: Vec<ResourceRecord> = records
-            .iter()
-            .filter(|record| matches!(record.rdata, RData::Nsec3(_)))
-            .map(|&record| record.clone())
-            .collect();
         let Some(first) = nsec3_records.first() else {
             return Err(DenialError::DenialProofIncomplete);
         };
@@ -239,6 +244,19 @@ impl DenialProof {
             rdata.iterations(),
             rdata.salt().to_vec(),
         );
+
+        for record in nsec3_records.iter().skip(1) {
+            let RData::Nsec3(ref other) = record.rdata else {
+                return Err(DenialError::DenialProofIncomplete);
+            };
+            if other.hash_algorithm() != params.hash_algorithm
+                || other.iterations() != params.iterations
+                || other.salt() != params.salt.as_slice()
+            {
+                return Err(DenialError::DenialProofIncomplete);
+            }
+        }
+
         Ok(Self::Nsec3(Nsec3Proof::new(params, nsec3_records)))
     }
 

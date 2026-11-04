@@ -10,7 +10,7 @@ use crate::domain::denial::DenialProof;
 use crate::domain::error::DenialError;
 use crate::domain::ports::ChainSource;
 use crate::domain::trust_anchor::TrustAnchor;
-use crate::domain::verdict::{ValidationOutcome, VerdictReason};
+use crate::domain::verdict::{ValidationOutcome, ValidationVerdict, VerdictReason};
 
 /// The outcome of walking a chain of trust down to a target zone.
 #[derive(Debug, PartialEq, Eq)]
@@ -141,18 +141,21 @@ fn step_into_cut<C: Clock>(
         Delegation::Unsigned {
             ref ds_denial,
             ref signatures,
-        } => {
-            verify_ds_denial(
-                authenticator,
-                &material.zone,
-                ds_denial,
-                signatures,
-                parent_keys,
-            )?;
-            Ok(CutStep::Ended(ValidationOutcome::insecure(
+        } => match verify_ds_denial(
+            authenticator,
+            &material.zone,
+            ds_denial,
+            signatures,
+            parent_keys,
+        ) {
+            Ok(()) => Ok(CutStep::Ended(ValidationOutcome::insecure(
                 VerdictReason::ProvenUnsignedDelegation,
-            )))
-        }
+            ))),
+            Err(outcome) if outcome.verdict == ValidationVerdict::Insecure => {
+                Ok(CutStep::Ended(outcome))
+            }
+            Err(outcome) => Err(outcome),
+        },
     }
 }
 
@@ -187,6 +190,9 @@ fn verify_ds_denial<C: Clock>(
             match error {
                 DenialError::Nsec3IterationsExceeded => Err(ValidationOutcome::bogus(
                     VerdictReason::Nsec3IterationsExceeded,
+                )),
+                DenialError::UnsupportedHashAlgorithm(_) => Err(ValidationOutcome::insecure(
+                    VerdictReason::UnsupportedAlgorithm,
                 )),
                 _ => Err(ValidationOutcome::bogus(
                     VerdictReason::DenialProofIncomplete,
