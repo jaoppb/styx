@@ -4,17 +4,6 @@ use styx_proto::{Name, ResourceRecord};
 
 use crate::domain::denial::DenialProof;
 
-/// Origin of chain material, used for diagnostics and tracing.
-///
-/// Must not influence validation logic or verdicts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MaterialOrigin {
-    /// Pushed from recursive descent queries (e.g. DS RRsets in referrals).
-    PushedFromDescent,
-    /// Explicitly pulled on demand (e.g. forwarder path).
-    PulledOnDemand,
-}
-
 /// An RRset together with the RRSIG records that cover it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedRrset {
@@ -83,18 +72,12 @@ pub struct ZoneCutMaterial {
     pub zone: Name,
     /// The delegation material for `zone`.
     pub delegation: Delegation,
-    /// Provenance origin of this material.
-    pub origin: MaterialOrigin,
 }
 
 impl ZoneCutMaterial {
     /// Constructs a new [`ZoneCutMaterial`].
     #[must_use]
-    pub fn new(zone: Name, delegation: Delegation, origin: MaterialOrigin) -> Self {
-        Self {
-            zone,
-            delegation,
-            origin,
-        }
+    pub fn new(zone: Name, delegation: Delegation) -> Self {
+        Self { zone, delegation }
     }
 }

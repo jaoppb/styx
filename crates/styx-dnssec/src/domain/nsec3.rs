@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 use styx_proto::{Name, RData, RecordType, ResourceRecord};
 
-use crate::domain::denial::{prepend_wildcard, Nsec3Params, Nsec3Proof};
+use crate::domain::denial::{Nsec3Params, Nsec3Proof};
 use crate::domain::error::DenialError;
 use crate::domain::policy::Nsec3IterationsCap;
 
@@ -177,6 +177,108 @@ fn is_hash_covered(records: &[ResourceRecord], target_hash: &[u8]) -> bool {
     })
 }
 
+impl Nsec3Proof {
+    /// Evaluates a full three-part NSEC3 proof of non-existence (RFC 5155 §7.2.1).
+    ///
+    /// # Errors
+    /// Returns [`DenialError`] if any leg is incomplete or fails to cover.
+    pub fn prove_name_does_not_exist(
+        &self,
+        qname: &Name,
+        cap: Nsec3IterationsCap,
+    ) -> Result<(), DenialError> {
+        // 1. Closest encloser exists
+        let closest_encloser = find_closest_encloser(self, qname, cap)?;
+
+        // 2. Next closer is covered
+        let next_closer = match get_next_closer_name(qname, &closest_encloser) {
+            Some(next_closer) => next_closer,
+            None => return Err(DenialError::DenialProofIncomplete),
+        };
+        let next_closer_hash = hash_nsec3_name(&next_closer, &self.params, cap)?;
+        if !is_hash_covered(&self.records, &next_closer_hash) {
+            return Err(DenialError::DenialProofIncomplete);
+        }
+
+        // 3. Wildcard at closest encloser is covered or proven absent
+        let wildcard = match closest_encloser.with_wildcard() {
+            Ok(wildcard) => wildcard,
+            Err(_) => return Err(DenialError::DenialProofIncomplete),
+        };
+        let wildcard_hash = hash_nsec3_name(&wildcard, &self.params, cap)?;
+        if !is_hash_covered(&self.records, &wildcard_hash) {
+            return Err(DenialError::DenialProofIncomplete);
+        }
+
+        Ok(())
+    }
+
+    /// Verifies an NSEC3 proof of absent DS record at delegation (RFC 5155 §7.2.7).
+    ///
+    /// # Errors
+    /// Returns [`DenialError`] if proof fails.
+    pub fn prove_ds_absence(
+        &self,
+        zone: &Name,
+        cap: Nsec3IterationsCap,
+    ) -> Result<(), DenialError> {
+        let zone_hash = hash_nsec3_name(zone, &self.params, cap)?;
+        for record in &self.records {
+            let RData::Nsec3(ref nsec3) = record.rdata else {
+                continue;
+            };
+            let Some(owner_hash) = extract_owner_hash(record) else {
+                continue;
+            };
+            let matches_exact_without_ds =
+                owner_hash == zone_hash && !nsec3.types().contains(styx_proto::RecordType::DS);
+            let opt_out_covers = nsec3.opt_out()
+                && nsec3_covers_hash(&owner_hash, nsec3.next_hashed_owner(), &zone_hash);
+            if matches_exact_without_ds || opt_out_covers {
+                return Ok(());
+            }
+        }
+        Err(DenialError::NotCovered)
+    }
+
+    /// Verifies an NSEC3 NODATA proof (RFC 5155 §7.2.3 and §7.2.4).
+    ///
+    /// # Errors
+    /// Returns [`DenialError`] if proof fails.
+    pub fn prove_type_does_not_exist(
+        &self,
+        qname: &Name,
+        qtype: RecordType,
+        cap: Nsec3IterationsCap,
+    ) -> Result<(), DenialError> {
+        let qname_hash = hash_nsec3_name(qname, &self.params, cap)?;
+        if nsec3_matches_nodata(&self.records, &qname_hash, qtype)? {
+            return Ok(());
+        }
+
+        let closest_encloser = find_closest_encloser(self, qname, cap)?;
+        let next_closer = match get_next_closer_name(qname, &closest_encloser) {
+            Some(next_closer) => next_closer,
+            None => return Err(DenialError::DenialProofIncomplete),
+        };
+        let next_closer_hash = hash_nsec3_name(&next_closer, &self.params, cap)?;
+        if !is_hash_covered(&self.records, &next_closer_hash) {
+            return Err(DenialError::DenialProofIncomplete);
+        }
+
+        let wildcard = match closest_encloser.with_wildcard() {
+            Ok(wildcard) => wildcard,
+            Err(_) => return Err(DenialError::DenialProofIncomplete),
+        };
+        let wildcard_hash = hash_nsec3_name(&wildcard, &self.params, cap)?;
+        if nsec3_matches_nodata(&self.records, &wildcard_hash, qtype)? {
+            return Ok(());
+        }
+
+        Err(DenialError::NotCovered)
+    }
+}
+
 /// Evaluates a full three-part NSEC3 proof of non-existence (RFC 5155 §7.2.1).
 ///
 /// # Errors
@@ -186,30 +288,7 @@ pub fn verify_nsec3_nxdomain(
     qname: &Name,
     cap: Nsec3IterationsCap,
 ) -> Result<(), DenialError> {
-    // 1. Closest encloser exists
-    let closest_encloser = find_closest_encloser(proof, qname, cap)?;
-
-    // 2. Next closer is covered
-    let next_closer = match get_next_closer_name(qname, &closest_encloser) {
-        Some(next_closer) => next_closer,
-        None => return Err(DenialError::DenialProofIncomplete),
-    };
-    let next_closer_hash = hash_nsec3_name(&next_closer, &proof.params, cap)?;
-    if !is_hash_covered(&proof.records, &next_closer_hash) {
-        return Err(DenialError::DenialProofIncomplete);
-    }
-
-    // 3. Wildcard at closest encloser is covered or proven absent
-    let wildcard = match prepend_wildcard(&closest_encloser) {
-        Ok(wildcard) => wildcard,
-        Err(_) => return Err(DenialError::DenialProofIncomplete),
-    };
-    let wildcard_hash = hash_nsec3_name(&wildcard, &proof.params, cap)?;
-    if !is_hash_covered(&proof.records, &wildcard_hash) {
-        return Err(DenialError::DenialProofIncomplete);
-    }
-
-    Ok(())
+    proof.prove_name_does_not_exist(qname, cap)
 }
 
 /// Verifies an NSEC3 proof of absent DS record at delegation (RFC 5155 §7.2.7).
@@ -221,23 +300,7 @@ pub fn verify_nsec3_ds_absence(
     zone: &Name,
     cap: Nsec3IterationsCap,
 ) -> Result<(), DenialError> {
-    let zone_hash = hash_nsec3_name(zone, &proof.params, cap)?;
-    for record in &proof.records {
-        let RData::Nsec3(ref nsec3) = record.rdata else {
-            continue;
-        };
-        let Some(owner_hash) = extract_owner_hash(record) else {
-            continue;
-        };
-        let matches_exact_without_ds =
-            owner_hash == zone_hash && !nsec3.types().contains(styx_proto::RecordType::DS);
-        let opt_out_covers = nsec3.opt_out()
-            && nsec3_covers_hash(&owner_hash, nsec3.next_hashed_owner(), &zone_hash);
-        if matches_exact_without_ds || opt_out_covers {
-            return Ok(());
-        }
-    }
-    Err(DenialError::NotCovered)
+    proof.prove_ds_absence(zone, cap)
 }
 
 fn nsec3_matches_nodata(
@@ -272,27 +335,5 @@ pub fn verify_nsec3_nodata(
     qtype: RecordType,
     cap: Nsec3IterationsCap,
 ) -> Result<(), DenialError> {
-    let qname_hash = hash_nsec3_name(qname, &proof.params, cap)?;
-    if nsec3_matches_nodata(&proof.records, &qname_hash, qtype)? {
-        return Ok(());
-    }
-
-    let closest_encloser = find_closest_encloser(proof, qname, cap)?;
-    let next_closer = match get_next_closer_name(qname, &closest_encloser) {
-        Some(next_closer) => next_closer,
-        None => return Err(DenialError::DenialProofIncomplete),
-    };
-    let next_closer_hash = hash_nsec3_name(&next_closer, &proof.params, cap)?;
-    if !is_hash_covered(&proof.records, &next_closer_hash) {
-        return Err(DenialError::DenialProofIncomplete);
-    }
-
-    let wildcard =
-        prepend_wildcard(&closest_encloser).map_err(|_| DenialError::DenialProofIncomplete)?;
-    let wildcard_hash = hash_nsec3_name(&wildcard, &proof.params, cap)?;
-    if nsec3_matches_nodata(&proof.records, &wildcard_hash, qtype)? {
-        return Ok(());
-    }
-
-    Err(DenialError::NotCovered)
+    proof.prove_type_does_not_exist(qname, qtype, cap)
 }

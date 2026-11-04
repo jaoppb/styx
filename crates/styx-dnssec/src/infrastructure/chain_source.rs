@@ -1,95 +1,54 @@
-//! Adapters implementing the [`ChainSource`] port for pushed and pulled strategies.
+//! In-memory [`ChainSource`] implementation for testing and referral accumulation.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
 
 use styx_proto::Name;
 
-use crate::domain::chain::{Delegation, MaterialOrigin, ZoneCutMaterial};
+use crate::domain::chain::{Delegation, ZoneCutMaterial};
 use crate::domain::error::ChainSourceError;
-use crate::domain::ports::{ChainRequest, ChainSource};
+use crate::domain::ports::ChainSource;
 
-/// In-memory accumulator collecting referrals observed during recursive descent.
+/// In-memory store for zone cuts and delegation material.
 ///
-/// A name the descent never saw a referral for is reported as not being a zone cut.
+/// Can be pre-populated for forwarder lookups or fed referrals as recursive descent proceeds.
+/// A name with no recorded cut is reported as not being a zone cut ([`Delegation::NotACut`]).
 #[derive(Debug, Default)]
-pub struct PushedChainSource {
-    observed: RwLock<HashMap<Name, Delegation>>,
-}
-
-impl PushedChainSource {
-    /// Creates an empty [`PushedChainSource`].
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Records the delegation material observed in a referral for `zone`.
-    pub fn record_referral(&self, zone: Name, delegation: Delegation) {
-        if let Ok(mut map) = self.observed.write() {
-            map.insert(zone, delegation);
-        }
-    }
-}
-
-impl ChainSource for PushedChainSource {
-    fn material_for(
-        &self,
-        zone: &Name,
-        _context: &ChainRequest,
-    ) -> Result<ZoneCutMaterial, ChainSourceError> {
-        let map = self
-            .observed
-            .read()
-            .map_err(|_| ChainSourceError::Unavailable(zone.clone()))?;
-        let delegation = map.get(zone).cloned().unwrap_or(Delegation::NotACut);
-        Ok(ZoneCutMaterial::new(
-            zone.clone(),
-            delegation,
-            MaterialOrigin::PushedFromDescent,
-        ))
-    }
-}
-
-/// On-demand chain material store, populated with the cuts fetched for a zone.
-///
-/// A name with no inserted cut is reported as not being a zone cut.
-#[derive(Debug, Default)]
-pub struct PullChainSource {
+pub struct InMemoryChainSource {
     cuts: RwLock<HashMap<Name, ZoneCutMaterial>>,
 }
 
-impl PullChainSource {
-    /// Creates a new [`PullChainSource`].
+impl InMemoryChainSource {
+    /// Creates an empty [`InMemoryChainSource`].
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Populates material for a zone.
+    /// Inserts chain material for a zone cut.
     pub fn insert_cut(&self, cut: ZoneCutMaterial) {
-        if let Ok(mut map) = self.cuts.write() {
-            map.insert(cut.zone.clone(), cut);
-        }
+        let mut map = match self.cuts.write() {
+            Ok(guard) => guard,
+            Err(poison) => poison.into_inner(),
+        };
+        map.insert(cut.zone.clone(), cut);
+    }
+
+    /// Records delegation material observed in a referral for `zone`.
+    pub fn record_referral(&self, zone: Name, delegation: Delegation) {
+        self.insert_cut(ZoneCutMaterial::new(zone, delegation));
     }
 }
 
-impl ChainSource for PullChainSource {
-    fn material_for(
-        &self,
-        zone: &Name,
-        _context: &ChainRequest,
-    ) -> Result<ZoneCutMaterial, ChainSourceError> {
-        let map = self
-            .cuts
-            .read()
-            .map_err(|_| ChainSourceError::Unavailable(zone.clone()))?;
-        Ok(map.get(zone).cloned().unwrap_or_else(|| {
-            ZoneCutMaterial::new(
-                zone.clone(),
-                Delegation::NotACut,
-                MaterialOrigin::PulledOnDemand,
-            )
-        }))
+impl ChainSource for InMemoryChainSource {
+    fn material_for(&self, zone: &Name) -> Result<ZoneCutMaterial, ChainSourceError> {
+        let map = match self.cuts.read() {
+            Ok(guard) => guard,
+            Err(poison) => poison.into_inner(),
+        };
+        Ok(map
+            .get(zone)
+            .cloned()
+            .unwrap_or_else(|| ZoneCutMaterial::new(zone.clone(), Delegation::NotACut)))
     }
 }

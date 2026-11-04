@@ -1,8 +1,4 @@
 //! Chain descent walking and intermediate zone cut validation.
-//!
-//! Every function here returns `Result<_, ValidationOutcome>`, where the error is the
-//! outcome that ends the validation early — `Insecure` for a proven unsigned
-//! delegation as much as `Bogus` or `Indeterminate`.
 
 use styx_core::Clock;
 use styx_proto::domain::rdata::DsRdata;
@@ -11,10 +7,30 @@ use styx_proto::{Name, RData, ResourceRecord};
 use crate::application::authenticator::Authenticator;
 use crate::domain::chain::{Delegation, ZoneCutMaterial};
 use crate::domain::denial::DenialProof;
-use crate::domain::nsec3::verify_nsec3_ds_absence;
-use crate::domain::ports::{ChainRequest, ChainSource};
+use crate::domain::error::DenialError;
+use crate::domain::ports::ChainSource;
 use crate::domain::trust_anchor::TrustAnchor;
 use crate::domain::verdict::{ValidationOutcome, VerdictReason};
+
+/// The outcome of walking a chain of trust down to a target zone.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Descent {
+    /// Descent reached the target zone with authenticated DNSKEY records.
+    Secure(Vec<ResourceRecord>),
+    /// Descent completed with a terminal outcome (e.g. Insecure at an unsigned delegation).
+    Ended(ValidationOutcome),
+}
+
+/// The outcome of stepping across a single candidate zone cut.
+#[derive(Debug)]
+enum CutStep {
+    /// Not a cut; continue descent within the existing zone.
+    NotACut,
+    /// Secure cut; advance descent into the child zone with authenticated keys.
+    Child(Vec<ResourceRecord>),
+    /// Terminal outcome (e.g. proven unsigned delegation).
+    Ended(ValidationOutcome),
+}
 
 /// The trust-anchored zone a descent starts from, with its anchors in DS form.
 struct AnchoredZone {
@@ -49,18 +65,17 @@ impl AnchoredZone {
 }
 
 /// Walks zone cuts from the closest trust anchor down to `qname` and returns the
-/// DNSKEY RRset authenticated for the zone that `qname` lives in.
+/// authenticated DNSKEYs or the terminal outcome that ended descent early.
 pub(crate) fn walk_chain_descent<C: Clock, S: ChainSource>(
     authenticator: &Authenticator<C>,
     qname: &Name,
     chain_source: &S,
     anchors: &[TrustAnchor],
-) -> Result<Vec<ResourceRecord>, ValidationOutcome> {
+) -> Result<Descent, ValidationOutcome> {
     let anchored = AnchoredZone::closest(qname, anchors)
         .ok_or_else(|| ValidationOutcome::indeterminate(VerdictReason::NoPathToAnchor))?;
-    let request = ChainRequest::new(qname.clone());
 
-    let material = fetch_material(chain_source, &anchored.zone, &request)?;
+    let material = fetch_material(chain_source, &anchored.zone)?;
     let dnskey = material
         .delegation
         .dnskey()
@@ -70,53 +85,58 @@ pub(crate) fn walk_chain_descent<C: Clock, S: ChainSource>(
     let mut current_zone = anchored.zone;
     let mut cuts_crossed = 0u8;
     while let Some(next_zone) = find_next_zone_cut(qname, &current_zone) {
-        let material = fetch_material(chain_source, &next_zone, &request)?;
-        if let Some(child_keys) = step_into_cut(authenticator, &material, &keys)? {
-            cuts_crossed = cuts_crossed.saturating_add(1);
-            if cuts_crossed > authenticator.policy().max_zone_cuts {
-                return Err(ValidationOutcome::indeterminate(
-                    VerdictReason::NoPathToAnchor,
-                ));
+        let material = fetch_material(chain_source, &next_zone)?;
+        match step_into_cut(authenticator, &material, &keys)? {
+            CutStep::NotACut => {}
+            CutStep::Child(child_keys) => {
+                cuts_crossed = cuts_crossed.saturating_add(1);
+                if cuts_crossed > authenticator.policy().max_zone_cuts {
+                    return Err(ValidationOutcome::indeterminate(
+                        VerdictReason::NoPathToAnchor,
+                    ));
+                }
+                keys = child_keys;
             }
-            keys = child_keys;
+            CutStep::Ended(outcome) => return Ok(Descent::Ended(outcome)),
         }
         current_zone = next_zone;
     }
 
-    Ok(keys)
+    Ok(Descent::Secure(keys))
 }
 
 fn fetch_material<S: ChainSource>(
     chain_source: &S,
     zone: &Name,
-    request: &ChainRequest,
 ) -> Result<ZoneCutMaterial, ValidationOutcome> {
-    chain_source.material_for(zone, request).map_err(|error| {
+    chain_source.material_for(zone).map_err(|error| {
         tracing::warn!(%zone, %error, "DNSSEC chain material unavailable");
         ValidationOutcome::indeterminate(VerdictReason::ChainMaterialUnavailable)
     })
 }
 
-/// Crosses the name `material` describes: `None` when it is not a zone cut, otherwise
-/// the child zone's DNSKEY RRset authenticated through `parent_keys`.
+/// Crosses the name `material` describes: `NotACut` when it is not a zone cut,
+/// `Child` with child DNSKEYs on a signed delegation, or `Ended` on an unsigned delegation.
 fn step_into_cut<C: Clock>(
     authenticator: &Authenticator<C>,
     material: &ZoneCutMaterial,
     parent_keys: &[ResourceRecord],
-) -> Result<Option<Vec<ResourceRecord>>, ValidationOutcome> {
+) -> Result<CutStep, ValidationOutcome> {
     match material.delegation {
-        Delegation::NotACut => Ok(None),
+        Delegation::NotACut => Ok(CutStep::NotACut),
         Delegation::Apex { .. } => Err(ValidationOutcome::indeterminate(
             VerdictReason::NoPathToAnchor,
         )),
         Delegation::Signed { ref ds, ref dnskey } => {
-            if !authenticator.records_signed_by_any(&ds.records, &ds.signatures, parent_keys) {
+            let ds_records: Vec<&ResourceRecord> = ds.records.iter().collect();
+            let ds_signatures: Vec<&ResourceRecord> = ds.signatures.iter().collect();
+            if !authenticator.records_signed_by_any(&ds_records, &ds_signatures, parent_keys) {
                 return Err(ValidationOutcome::bogus(VerdictReason::NoValidRrsig));
             }
             let vouchers = ds_records_at(&material.zone, &ds.records);
             authenticator
                 .authenticate_keys(&material.zone, dnskey, &vouchers)
-                .map(Some)
+                .map(CutStep::Child)
         }
         Delegation::Unsigned {
             ref ds_denial,
@@ -129,9 +149,9 @@ fn step_into_cut<C: Clock>(
                 signatures,
                 parent_keys,
             )?;
-            Err(ValidationOutcome::insecure(
+            Ok(CutStep::Ended(ValidationOutcome::insecure(
                 VerdictReason::ProvenUnsignedDelegation,
-            ))
+            )))
         }
     }
 }
@@ -155,22 +175,25 @@ fn verify_ds_denial<C: Clock>(
     signatures: &[ResourceRecord],
     parent_keys: &[ResourceRecord],
 ) -> Result<(), ValidationOutcome> {
-    if !authenticator.records_signed_by_any(proof.records(), signatures, parent_keys) {
+    let proof_records: Vec<&ResourceRecord> = proof.records().iter().collect();
+    let sig_records: Vec<&ResourceRecord> = signatures.iter().collect();
+    if !authenticator.records_signed_by_any(&proof_records, &sig_records, parent_keys) {
         return Err(ValidationOutcome::bogus(VerdictReason::NoValidRrsig));
     }
-    let proven = match proof {
-        DenialProof::Nsec(nsec) => nsec.prove_ds_absence(zone).is_ok(),
-        DenialProof::Nsec3(nsec3) => {
-            verify_nsec3_ds_absence(nsec3, zone, authenticator.policy().nsec3_max_iterations)
-                .is_ok()
+    match proof.prove_ds_absence(zone, authenticator.policy().nsec3_max_iterations) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            tracing::warn!(%zone, %error, "DS-absence denial proof failed verification");
+            match error {
+                DenialError::Nsec3IterationsExceeded => Err(ValidationOutcome::bogus(
+                    VerdictReason::Nsec3IterationsExceeded,
+                )),
+                _ => Err(ValidationOutcome::bogus(
+                    VerdictReason::DenialProofIncomplete,
+                )),
+            }
         }
-    };
-    if !proven {
-        return Err(ValidationOutcome::indeterminate(
-            VerdictReason::NoPathToAnchor,
-        ));
     }
-    Ok(())
 }
 
 /// The name one label below `current_zone` on the way down to `qname`.

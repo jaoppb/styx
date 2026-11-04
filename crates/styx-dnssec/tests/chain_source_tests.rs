@@ -1,8 +1,8 @@
 //! Integration tests for ChainSource strategies and wire response outcome application (Sub-phase 6d).
 
 use styx_dnssec::{
-    ChainRequest, ChainSource, Delegation, FailureMode, MaterialOrigin, PullChainSource,
-    PushedChainSource, ValidationOutcome, ValidationVerdict, VerdictReason, ZoneCutMaterial,
+    ChainSource, Delegation, FailureMode, InMemoryChainSource, ValidationOutcome,
+    ValidationVerdict, VerdictReason, ZoneCutMaterial,
 };
 use styx_proto::{
     Header, Message, Name, Opcode, RData, RecordClass, RecordType, ResourceRecord, ResponseCode,
@@ -10,36 +10,28 @@ use styx_proto::{
 };
 
 #[test]
-fn test_pushed_chain_source_accumulation() {
-    let source = PushedChainSource::new();
-    let zone = Name::from_ascii("example.com.").unwrap();
-    let request = ChainRequest::new(zone.clone());
-
-    source.record_referral(zone.clone(), Delegation::NotACut);
-
-    let cut = source.material_for(&zone, &request).unwrap();
-    assert_eq!(cut.zone, zone);
-    assert_eq!(cut.origin, MaterialOrigin::PushedFromDescent);
-}
-
-#[test]
-fn test_pull_chain_source_on_demand() {
-    let source = PullChainSource::new();
+fn test_in_memory_chain_source_referral_and_cut_insertion() {
+    let source = InMemoryChainSource::new();
     let zone = Name::from_ascii("example.com.").unwrap();
     let other_zone = Name::from_ascii("other.com.").unwrap();
-    let request = ChainRequest::new(zone.clone());
+    let unknown_zone = Name::from_ascii("unknown.com.").unwrap();
 
+    source.record_referral(zone.clone(), Delegation::NotACut);
     source.insert_cut(ZoneCutMaterial::new(
-        zone.clone(),
+        other_zone.clone(),
         Delegation::NotACut,
-        MaterialOrigin::PulledOnDemand,
     ));
 
-    let retrieved_cut = source.material_for(&zone, &request).unwrap();
-    assert_eq!(retrieved_cut.origin, MaterialOrigin::PulledOnDemand);
+    let cut = source.material_for(&zone).unwrap();
+    assert_eq!(cut.zone, zone);
+    assert_eq!(cut.delegation, Delegation::NotACut);
 
-    let unknown = source.material_for(&other_zone, &request).unwrap();
-    assert_eq!(unknown.zone, other_zone);
+    let other_cut = source.material_for(&other_zone).unwrap();
+    assert_eq!(other_cut.zone, other_zone);
+    assert_eq!(other_cut.delegation, Delegation::NotACut);
+
+    let unknown = source.material_for(&unknown_zone).unwrap();
+    assert_eq!(unknown.zone, unknown_zone);
     assert_eq!(unknown.delegation, Delegation::NotACut);
 }
 
@@ -93,17 +85,19 @@ fn test_wire_mapping_bogus_warn_only_preserves_response() {
 }
 
 #[test]
-fn test_wire_mapping_bogus_hard_fail_returns_servfail() {
+fn test_wire_mapping_bogus_hard_fail_returns_servfail_and_clears_all_sections() {
     let mut msg = Message::new(Header::new_query(1, Opcode::Query, false));
     msg.header.authentic_data = true;
-    let answer = ResourceRecord::new(
+    let record = ResourceRecord::new(
         Name::root(),
         RecordType::A,
         RecordClass::In,
         Ttl::from_secs(300),
         RData::A(std::net::Ipv4Addr::new(1, 1, 1, 1)),
     );
-    msg.answers.push(answer);
+    msg.answers.push(record.clone());
+    msg.authorities.push(record.clone());
+    msg.additionals.push(record);
 
     let outcome = ValidationOutcome::new(ValidationVerdict::Bogus, VerdictReason::NoValidRrsig);
 
@@ -111,5 +105,7 @@ fn test_wire_mapping_bogus_hard_fail_returns_servfail() {
 
     assert!(!msg.header.authentic_data);
     assert_eq!(msg.header.rcode, ResponseCode::SERVFAIL);
-    assert!(msg.answers.is_empty()); // answers cleared
+    assert!(msg.answers.is_empty());
+    assert!(msg.authorities.is_empty());
+    assert!(msg.additionals.is_empty());
 }

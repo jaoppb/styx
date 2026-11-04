@@ -54,6 +54,22 @@ pub enum AlgorithmSupport {
     Refused,
 }
 
+impl AlgorithmSupport {
+    /// Combines signature algorithm support and digest algorithm support into a
+    /// composite support classification for DS vouchers.
+    ///
+    /// Supported only if both are supported; Refused if either is refused;
+    /// otherwise UnknownTreatAsInsecure.
+    #[must_use]
+    pub const fn combine(sig: Self, digest: Self) -> Self {
+        match (sig, digest) {
+            (Self::Supported, Self::Supported) => Self::Supported,
+            (Self::Refused, _) | (_, Self::Refused) => Self::Refused,
+            _ => Self::UnknownTreatAsInsecure,
+        }
+    }
+}
+
 /// Explicit set of cryptographic algorithms recognised by the validator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlgorithmSet {

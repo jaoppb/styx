@@ -65,6 +65,31 @@ impl Name {
             offset = end;
         }
     }
+
+    /// Returns a new name with a `*` wildcard label prepended (`*.example.com.`
+    /// from `example.com.`).
+    ///
+    /// # Errors
+    /// Returns [`NameError::NameTooLong`] if the resulting wire name exceeds 255 octets.
+    pub fn with_wildcard(&self) -> Result<Self, super::NameError> {
+        let total_len = self
+            .wire
+            .len()
+            .checked_add(2)
+            .ok_or(super::NameError::NameTooLong(
+                MAX_NAME_LEN.saturating_add(1),
+            ))?;
+        if total_len > MAX_NAME_LEN {
+            return Err(super::NameError::NameTooLong(total_len));
+        }
+        let mut wire = Vec::with_capacity(total_len);
+        wire.push(1);
+        wire.push(b'*');
+        wire.extend_from_slice(&self.wire);
+        Ok(Self {
+            wire: wire.into_boxed_slice(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -121,5 +146,12 @@ mod tests {
             "unterminated"
         );
         assert_eq!(Name::from_uncompressed_wire(&[]), None);
+    }
+
+    #[test]
+    fn with_wildcard_prepends_wildcard_label() {
+        let example = name("example.com.");
+        assert_eq!(example.with_wildcard().unwrap(), name("*.example.com."));
+        assert_eq!(Name::root().with_wildcard().unwrap(), name("*."));
     }
 }

@@ -158,4 +158,46 @@ fn test_nsec3_opt_out_unsigned_delegation() {
     // DS absence is verified under opt-out span
     let res = verify_nsec3_ds_absence(&proof, &child, cap);
     assert!(res.is_ok());
+    assert!(proof.prove_ds_absence(&child, cap).is_ok());
+}
+
+#[test]
+fn test_denial_proof_from_records_and_verify() {
+    use styx_dnssec::domain::denial::DenialProof;
+    use styx_proto::ResponseCode;
+
+    let owner = Name::from_ascii("host.example.com.").unwrap();
+    let next = Name::from_ascii("other.example.com.").unwrap();
+    let qname = Name::from_ascii("missing.example.com.").unwrap();
+
+    let bitmap = TypeBitmap::new(vec![0x00, 0x01, 0x40]); // A only
+    let nsec_rr = ResourceRecord::new(
+        owner,
+        RecordType::NSEC,
+        RecordClass::In,
+        Ttl::from_secs(300),
+        RData::Nsec(NsecRdata::new(next, bitmap)),
+    );
+
+    let proof = DenialProof::from_records(&[&nsec_rr]).unwrap();
+    assert_eq!(proof.records().len(), 1);
+
+    // NODATA for AAAA at host.example.com.
+    let host = Name::from_ascii("host.example.com.").unwrap();
+    let result = proof.verify(
+        &host,
+        RecordType::AAAA,
+        ResponseCode::NOERROR,
+        Nsec3IterationsCap::DEFAULT,
+    );
+    assert!(result.is_ok());
+
+    // NXDOMAIN requires wildcard coverage, which single nsec doesn't have
+    let nx_result = proof.verify(
+        &qname,
+        RecordType::A,
+        ResponseCode::NXDOMAIN,
+        Nsec3IterationsCap::DEFAULT,
+    );
+    assert!(nx_result.is_err());
 }

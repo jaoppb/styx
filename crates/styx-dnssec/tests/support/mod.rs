@@ -13,8 +13,7 @@ use styx_core::test_util::TestClock;
 use styx_dnssec::domain::canonical::build_canonical_signed_data;
 use styx_dnssec::domain::signature::compute_dnskey_digest;
 use styx_dnssec::{
-    Delegation, MaterialOrigin, SignedRrset, TrustAnchor, TrustAnchorError, TrustAnchorSource,
-    ZoneCutMaterial,
+    Delegation, SignedRrset, TrustAnchor, TrustAnchorError, TrustAnchorSource, ZoneCutMaterial,
 };
 use styx_proto::domain::rdata::{DnskeyRdata, DsRdata, RrsigRdata};
 use styx_proto::{
@@ -131,8 +130,9 @@ impl ZoneKey {
                 signature,
             )
         };
-        let signed_data =
-            build_canonical_signed_data(&unsigned(Vec::new()), rrset).expect("canonical form");
+        let rrset_refs: Vec<&ResourceRecord> = rrset.iter().collect();
+        let signed_data = build_canonical_signed_data(&unsigned(Vec::new()), &rrset_refs)
+            .expect("canonical form");
         let signature = self.pair.sign(&signed_data).as_ref().to_vec();
         record(
             &first.owner,
@@ -180,7 +180,6 @@ impl ZoneKey {
             Delegation::Apex {
                 dnskey: self.dnskey_rrset(),
             },
-            MaterialOrigin::PulledOnDemand,
         )
     }
 
@@ -194,7 +193,6 @@ impl ZoneKey {
                 ds: SignedRrset::new(ds, ds_signatures),
                 dnskey: self.dnskey_rrset(),
             },
-            MaterialOrigin::PulledOnDemand,
         )
     }
 }

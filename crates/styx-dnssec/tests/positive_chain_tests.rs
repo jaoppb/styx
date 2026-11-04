@@ -3,7 +3,7 @@
 mod support;
 
 use styx_dnssec::{
-    PinnedRootAnchor, PullChainSource, TrustAnchor, TrustAnchorSource, ValidationPolicy,
+    InMemoryChainSource, PinnedRootAnchor, TrustAnchor, TrustAnchorSource, ValidationPolicy,
     ValidationVerdict, Validator, VerdictReason,
 };
 use styx_proto::{Name, RecordType};
@@ -19,8 +19,8 @@ fn signed_root_answer(root_key: &ZoneKey) -> styx_proto::Message {
     message
 }
 
-fn root_source(root_key: &ZoneKey) -> PullChainSource {
-    let source = PullChainSource::new();
+fn root_source(root_key: &ZoneKey) -> InMemoryChainSource {
+    let source = InMemoryChainSource::new();
     source.insert_cut(root_key.apex_cut());
     source
 }

@@ -3,8 +3,8 @@
 mod support;
 
 use styx_dnssec::{
-    Delegation, MaterialOrigin, PullChainSource, SignedRrset, ValidationPolicy, ValidationVerdict,
-    Validator, VerdictReason, ZoneCutMaterial,
+    Delegation, InMemoryChainSource, SignedRrset, ValidationPolicy, ValidationVerdict, Validator,
+    VerdictReason, ZoneCutMaterial,
 };
 use styx_proto::{Name, RecordType};
 use support::{a_record, clock, query, StaticAnchorSource, ZoneKey};
@@ -17,13 +17,12 @@ fn test_multi_key_rollover_validates_with_any_valid_signature() {
 
     let dnskey_set = vec![active.dnskey_record(), incoming.dnskey_record()];
     let dnskey_signatures = vec![active.sign(&dnskey_set)];
-    let source = PullChainSource::new();
+    let source = InMemoryChainSource::new();
     source.insert_cut(ZoneCutMaterial::new(
         root.clone(),
         Delegation::Apex {
             dnskey: SignedRrset::new(dnskey_set, dnskey_signatures),
         },
-        MaterialOrigin::PulledOnDemand,
     ));
 
     let answer = a_record(&root, 1);

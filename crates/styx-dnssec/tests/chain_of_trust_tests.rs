@@ -5,8 +5,8 @@ mod support;
 
 use styx_dnssec::domain::denial::{DenialProof, NsecProof};
 use styx_dnssec::{
-    ChainRequest, ChainSource, ChainSourceError, Delegation, MaterialOrigin, PullChainSource,
-    SignedRrset, ValidationPolicy, ValidationVerdict, Validator, VerdictReason, ZoneCutMaterial,
+    ChainSource, ChainSourceError, Delegation, InMemoryChainSource, SignedRrset, ValidationPolicy,
+    ValidationVerdict, Validator, VerdictReason, ZoneCutMaterial,
 };
 use styx_proto::domain::rdata::{DsRdata, Nsec3Rdata, NsecRdata, RrsigRdata, TypeBitmap};
 use styx_proto::{Message, Name, RData, RecordType, ResourceRecord, ResponseCode};
@@ -20,14 +20,14 @@ const NS_ONLY: [u8; 3] = [0x00, 0x01, 0x20];
 struct Chain {
     root: ZoneKey,
     example: ZoneKey,
-    source: PullChainSource,
+    source: InMemoryChainSource,
 }
 
 impl Chain {
     fn new() -> Self {
         let root = ZoneKey::generate(&Name::root());
         let example = ZoneKey::generate(&name("example."));
-        let source = PullChainSource::new();
+        let source = InMemoryChainSource::new();
         source.insert_cut(root.apex_cut());
         Self {
             root,
@@ -60,7 +60,7 @@ impl Chain {
 }
 
 fn delegation_cut(zone: &Name, delegation: Delegation) -> ZoneCutMaterial {
-    ZoneCutMaterial::new(zone.clone(), delegation, MaterialOrigin::PulledOnDemand)
+    ZoneCutMaterial::new(zone.clone(), delegation)
 }
 
 fn ds_absence_proof(zone: &Name) -> (DenialProof, Vec<ResourceRecord>) {
@@ -157,21 +157,50 @@ fn a_parent_signed_proof_of_ds_absence_is_insecure() {
     );
 }
 
+#[test]
+fn a_parent_signed_invalid_proof_of_ds_absence_is_bogus() {
+    let chain = Chain::new();
+    let zone = name("example.");
+    // NSEC where type bitmap contains DS, so it fails to prove DS absence
+    let nsec = record(
+        &zone,
+        RecordType::NSEC,
+        RData::Nsec(NsecRdata::new(
+            name("f."),
+            TypeBitmap::new(vec![0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10]),
+        )),
+    );
+    let ds_denial = DenialProof::Nsec(NsecProof::new(vec![nsec.clone()]));
+    chain.source.insert_cut(delegation_cut(
+        &zone,
+        Delegation::Unsigned {
+            ds_denial,
+            signatures: vec![chain.root.sign(&[nsec])],
+        },
+    ));
+
+    let verdict = chain.validate(&chain.www_answer(), &chain.source);
+
+    assert_eq!(
+        verdict,
+        (
+            ValidationVerdict::Bogus,
+            VerdictReason::DenialProofIncomplete
+        )
+    );
+}
+
 struct FailingAt {
-    inner: PullChainSource,
+    inner: InMemoryChainSource,
     zone: Name,
 }
 
 impl ChainSource for FailingAt {
-    fn material_for(
-        &self,
-        zone: &Name,
-        context: &ChainRequest,
-    ) -> Result<ZoneCutMaterial, ChainSourceError> {
+    fn material_for(&self, zone: &Name) -> Result<ZoneCutMaterial, ChainSourceError> {
         if zone == &self.zone {
             return Err(ChainSourceError::Unavailable(zone.clone()));
         }
-        self.inner.material_for(zone, context)
+        self.inner.material_for(zone)
     }
 }
 
@@ -200,7 +229,7 @@ fn a_failed_fetch_is_indeterminate_rather_than_no_cut() {
 #[test]
 fn a_trust_anchor_below_the_root_starts_the_descent() {
     let chain = Chain::new();
-    let source = PullChainSource::new();
+    let source = InMemoryChainSource::new();
     source.insert_cut(chain.example.signed_cut(&chain.root));
     let anchors = StaticAnchorSource::new(vec![chain.example.anchor()]);
 

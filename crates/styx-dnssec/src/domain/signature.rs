@@ -1,7 +1,5 @@
 //! Cryptographic signature verification and DS-to-DNSKEY digest computation.
 
-use std::borrow::Borrow;
-
 use ring::signature::{self, RsaPublicKeyComponents};
 use styx_core::Clock;
 use styx_proto::domain::rdata::{DnskeyRdata, DsRdata, RrsigRdata};
@@ -121,18 +119,26 @@ fn check_validity_window<C: Clock>(rrsig: &RrsigRdata, clock: &C) -> Result<(), 
 ///
 /// # Errors
 /// Returns a [`VerdictReason`] if validation fails.
-pub fn verify_rrsig_record<C: Clock, R: Borrow<ResourceRecord>>(
+pub fn verify_rrsig_record<C: Clock>(
     rrsig: &RrsigRdata,
-    rrset: &[R],
+    rrset: &[&ResourceRecord],
     dnskey: &DnskeyRdata,
     dnskey_owner: &Name,
     clock: &C,
     algorithms: &AlgorithmSet,
 ) -> Result<(), VerdictReason> {
+    if rrset.is_empty() {
+        return Err(VerdictReason::NoValidRrsig);
+    }
     if rrsig.key_tag() != dnskey.key_tag()
         || rrsig.algorithm() != dnskey.algorithm()
         || rrsig.signer_name() != dnskey_owner
     {
+        return Err(VerdictReason::NoValidRrsig);
+    }
+    if rrset.iter().any(|record| {
+        record.rtype != rrsig.type_covered() || !record.owner.is_subdomain_of(rrsig.signer_name())
+    }) {
         return Err(VerdictReason::NoValidRrsig);
     }
     match algorithms.classify_sig(rrsig.algorithm()) {
@@ -270,5 +276,109 @@ mod tests {
             check_validity_window(&window, &clock_at(0x1_0000_0100)),
             Ok(())
         );
+    }
+
+    #[test]
+    fn verify_rrsig_record_rejects_type_covered_mismatch() {
+        let clock = clock_at(100);
+        let algorithms = AlgorithmSet::new();
+        let owner = Name::from_ascii("example.com.").unwrap();
+        let signer = owner.clone();
+        let dnskey = DnskeyRdata::new(256, 3, AlgorithmSet::ED25519, vec![0; 32]);
+        let rrsig = RrsigRdata::new(
+            RecordType::AAAA,
+            AlgorithmSet::ED25519,
+            2,
+            300,
+            1000,
+            10,
+            dnskey.key_tag(),
+            signer,
+            Vec::new(),
+        );
+        let a_record = ResourceRecord::new(
+            owner,
+            RecordType::A,
+            styx_proto::RecordClass::In,
+            styx_proto::Ttl::from_secs(300),
+            styx_proto::RData::A(std::net::Ipv4Addr::new(1, 2, 3, 4)),
+        );
+        let records = [&a_record];
+        let result = verify_rrsig_record(
+            &rrsig,
+            &records,
+            &dnskey,
+            &Name::from_ascii("example.com.").unwrap(),
+            &clock,
+            &algorithms,
+        );
+        assert_eq!(result, Err(VerdictReason::NoValidRrsig));
+    }
+
+    #[test]
+    fn verify_rrsig_record_rejects_owner_not_subdomain_of_signer() {
+        let clock = clock_at(100);
+        let algorithms = AlgorithmSet::new();
+        let signer = Name::from_ascii("example.com.").unwrap();
+        let other_owner = Name::from_ascii("other.org.").unwrap();
+        let dnskey = DnskeyRdata::new(256, 3, AlgorithmSet::ED25519, vec![0; 32]);
+        let rrsig = RrsigRdata::new(
+            RecordType::A,
+            AlgorithmSet::ED25519,
+            2,
+            300,
+            1000,
+            10,
+            dnskey.key_tag(),
+            signer.clone(),
+            Vec::new(),
+        );
+        let record = ResourceRecord::new(
+            other_owner,
+            RecordType::A,
+            styx_proto::RecordClass::In,
+            styx_proto::Ttl::from_secs(300),
+            styx_proto::RData::A(std::net::Ipv4Addr::new(1, 2, 3, 4)),
+        );
+        let records = [&record];
+        let result = verify_rrsig_record(&rrsig, &records, &dnskey, &signer, &clock, &algorithms);
+        assert_eq!(result, Err(VerdictReason::NoValidRrsig));
+    }
+
+    #[test]
+    fn verify_rrsig_record_rejects_signer_name_mismatch_with_dnskey_owner() {
+        let clock = clock_at(100);
+        let algorithms = AlgorithmSet::new();
+        let signer = Name::from_ascii("example.com.").unwrap();
+        let dnskey_owner = Name::from_ascii("other.com.").unwrap();
+        let dnskey = DnskeyRdata::new(256, 3, AlgorithmSet::ED25519, vec![0; 32]);
+        let rrsig = RrsigRdata::new(
+            RecordType::A,
+            AlgorithmSet::ED25519,
+            2,
+            300,
+            1000,
+            10,
+            dnskey.key_tag(),
+            signer.clone(),
+            Vec::new(),
+        );
+        let record = ResourceRecord::new(
+            signer,
+            RecordType::A,
+            styx_proto::RecordClass::In,
+            styx_proto::Ttl::from_secs(300),
+            styx_proto::RData::A(std::net::Ipv4Addr::new(1, 2, 3, 4)),
+        );
+        let records = [&record];
+        let result = verify_rrsig_record(
+            &rrsig,
+            &records,
+            &dnskey,
+            &dnskey_owner,
+            &clock,
+            &algorithms,
+        );
+        assert_eq!(result, Err(VerdictReason::NoValidRrsig));
     }
 }

@@ -3,20 +3,10 @@
 use std::cmp::Ordering;
 
 use styx_proto::application::canonical::canonical_name_cmp;
-use styx_proto::{Label, Name, RData, RecordType, ResourceRecord};
+use styx_proto::{Name, RData, RecordType, ResourceRecord, ResponseCode};
 
 use crate::domain::error::DenialError;
 use crate::domain::policy::Nsec3IterationsCap;
-
-/// Prepends a `*` wildcard label to `name`.
-pub fn prepend_wildcard(name: &Name) -> Result<Name, styx_proto::NameError> {
-    let mut labels = Vec::with_capacity(name.label_count().saturating_add(1));
-    labels.push(Label::new(b"*".to_vec())?);
-    for label in name.labels() {
-        labels.push(Label::new(label.as_bytes().to_vec())?);
-    }
-    Name::new(labels)
-}
 
 /// Wrapped NSEC3 flags octet (RFC 5155 §3.1.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -158,8 +148,9 @@ impl NsecProof {
     /// Returns [`DenialError::DenialProofIncomplete`] if wildcard coverage is missing.
     pub fn prove_no_wildcard(&self, qname: &Name) -> Result<(), DenialError> {
         let parent = qname.parent().ok_or(DenialError::DenialProofIncomplete)?;
-        let wildcard_name =
-            prepend_wildcard(&parent).map_err(|_| DenialError::DenialProofIncomplete)?;
+        let wildcard_name = parent
+            .with_wildcard()
+            .map_err(|_| DenialError::DenialProofIncomplete)?;
         self.prove_name_does_not_exist(&wildcard_name)
             .map_err(|_| DenialError::DenialProofIncomplete)
     }
@@ -217,12 +208,95 @@ pub enum DenialProof {
 }
 
 impl DenialProof {
+    /// Constructs a [`DenialProof`] from a collection of denial resource records.
+    ///
+    /// # Errors
+    /// Returns [`DenialError::DenialProofIncomplete`] if no NSEC or NSEC3 records are present.
+    pub fn from_records(records: &[&ResourceRecord]) -> Result<Self, DenialError> {
+        let nsec_records: Vec<ResourceRecord> = records
+            .iter()
+            .filter(|record| matches!(record.rdata, RData::Nsec(_)))
+            .map(|&record| record.clone())
+            .collect();
+        if !nsec_records.is_empty() {
+            return Ok(Self::Nsec(NsecProof::new(nsec_records)));
+        }
+
+        let nsec3_records: Vec<ResourceRecord> = records
+            .iter()
+            .filter(|record| matches!(record.rdata, RData::Nsec3(_)))
+            .map(|&record| record.clone())
+            .collect();
+        let Some(first) = nsec3_records.first() else {
+            return Err(DenialError::DenialProofIncomplete);
+        };
+        let RData::Nsec3(ref rdata) = first.rdata else {
+            return Err(DenialError::DenialProofIncomplete);
+        };
+        let params = Nsec3Params::new(
+            rdata.hash_algorithm(),
+            Nsec3Flags::new(rdata.flags()),
+            rdata.iterations(),
+            rdata.salt().to_vec(),
+        );
+        Ok(Self::Nsec3(Nsec3Proof::new(params, nsec3_records)))
+    }
+
     /// The NSEC or NSEC3 records the proof rests on.
     #[must_use]
     pub fn records(&self) -> &[ResourceRecord] {
         match self {
             Self::Nsec(proof) => &proof.records,
             Self::Nsec3(proof) => &proof.records,
+        }
+    }
+
+    /// Verifies the denial proof for a given question and response code.
+    ///
+    /// # Errors
+    /// Returns [`DenialError`] if the proof fails to cover the question or exceeds iteration caps.
+    pub fn verify(
+        &self,
+        qname: &Name,
+        qtype: RecordType,
+        rcode: ResponseCode,
+        cap: Nsec3IterationsCap,
+    ) -> Result<(), DenialError> {
+        match self {
+            Self::Nsec(proof) => {
+                if rcode == ResponseCode::NXDOMAIN {
+                    proof.prove_name_does_not_exist(qname)?;
+                    proof.prove_no_wildcard(qname)
+                } else if rcode == ResponseCode::NOERROR {
+                    proof.prove_type_does_not_exist(qname, qtype)
+                } else {
+                    Err(DenialError::DenialProofIncomplete)
+                }
+            }
+            Self::Nsec3(proof) => {
+                if rcode == ResponseCode::NXDOMAIN {
+                    proof.prove_name_does_not_exist(qname, cap)
+                } else if rcode == ResponseCode::NOERROR {
+                    proof.prove_type_does_not_exist(qname, qtype, cap)
+                } else {
+                    Err(DenialError::DenialProofIncomplete)
+                }
+            }
+        }
+    }
+
+    /// Verifies that DS is absent at `zone`.
+    ///
+    /// # Errors
+    /// Returns [`DenialError`] if the proof fails.
+    pub fn prove_ds_absence(
+        &self,
+        zone: &Name,
+        cap: Nsec3IterationsCap,
+    ) -> Result<(), DenialError> {
+        match self {
+            Self::Nsec(proof) => proof.prove_ds_absence(zone),
+            Self::Nsec3(proof) => proof.prove_ds_absence(zone, cap),
         }
     }
 }

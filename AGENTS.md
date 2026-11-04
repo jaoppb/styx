@@ -136,7 +136,7 @@ styx/
 │           ├── domain/         # Wire canonicalization, crypto signatures, NSEC/NSEC3,
 │           │                   # chain material (Delegation), policy, verdicts
 │           ├── application/    # Validator, authenticator, descent walker, denial verifier
-│           └── infrastructure/ # Pinned/file trust anchors, pushed/pull chain sources
+│           └── infrastructure/ # Pinned/file trust anchors, in-memory chain source
 ├── config/                     # named.root (IANA) and an example styx.toml
 └── xtask/                      # Gate tasks (deps, hickory, module-size) and the
     └── src/main.rs             # per-phase recursion differential run

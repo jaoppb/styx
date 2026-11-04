@@ -42,6 +42,8 @@ pub enum VerdictReason {
     Nsec3IterationsExceeded,
     /// Upstream source failed to supply required chain records.
     ChainMaterialUnavailable,
+    /// Trust anchor source failed to load configured anchors.
+    TrustAnchorUnavailable,
 }
 
 /// The complete outcome of validating a DNS message.
@@ -99,6 +101,8 @@ impl ValidationOutcome {
                 if mode == FailureMode::HardFail {
                     message.header.rcode = ResponseCode::SERVFAIL;
                     message.answers.clear();
+                    message.authorities.clear();
+                    message.additionals.clear();
                 }
             }
         }

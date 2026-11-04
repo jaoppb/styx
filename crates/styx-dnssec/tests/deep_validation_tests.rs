@@ -7,15 +7,15 @@ use styx_dnssec::domain::denial::{Nsec3Flags, Nsec3Params};
 use styx_dnssec::domain::nsec3::{base32hex_encode, hash_nsec3_name};
 use styx_dnssec::domain::signature::compute_dnskey_digest;
 use styx_dnssec::{
-    Nsec3IterationsCap, PullChainSource, ValidationPolicy, ValidationVerdict, Validator,
+    InMemoryChainSource, Nsec3IterationsCap, ValidationPolicy, ValidationVerdict, Validator,
     VerdictReason,
 };
 use styx_proto::domain::rdata::{DnskeyRdata, Nsec3Rdata, NsecRdata, TypeBitmap};
 use styx_proto::{Name, RData, RecordType, ResponseCode};
 use support::{a_record, clock, name, query, record, StaticAnchorSource, ZoneKey};
 
-fn root_only(root_key: &ZoneKey) -> PullChainSource {
-    let source = PullChainSource::new();
+fn root_only(root_key: &ZoneKey) -> InMemoryChainSource {
+    let source = InMemoryChainSource::new();
     source.insert_cut(root_key.apex_cut());
     source
 }

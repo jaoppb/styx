@@ -1,11 +1,11 @@
 //! DNSSEC validator walking chains of trust from anchors to responses.
 
 use styx_core::Clock;
-use styx_proto::{Message, Name, RData, RecordType, ResourceRecord};
+use styx_proto::{Message, RData, ResourceRecord};
 
 use crate::application::authenticator::Authenticator;
 use crate::application::denial_verifier::verify_denial_proofs;
-use crate::application::descent::walk_chain_descent;
+use crate::application::descent::{walk_chain_descent, Descent};
 use crate::domain::policy::ValidationPolicy;
 use crate::domain::ports::{ChainSource, TrustAnchorSource};
 use crate::domain::verdict::{ValidationOutcome, VerdictReason};
@@ -43,13 +43,41 @@ impl<C: Clock> Validator<C> {
         );
         let _guard = span.enter();
 
-        let outcome = self.execute_validation(
+        let anchors = match anchor_source.anchors() {
+            Ok(anchors) if !anchors.is_empty() => anchors,
+            Ok(_) => {
+                tracing::warn!("trust anchor set is empty");
+                return ValidationOutcome::indeterminate(VerdictReason::NoPathToAnchor);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "failed to load trust anchors");
+                return ValidationOutcome::indeterminate(VerdictReason::TrustAnchorUnavailable);
+            }
+        };
+
+        let outcome = match walk_chain_descent(
+            &self.authenticator,
             &question.qname,
-            question.qtype,
-            message,
             chain_source,
-            anchor_source,
-        );
+            &anchors,
+        ) {
+            Ok(Descent::Secure(active_keys)) => {
+                if message.answers.is_empty() {
+                    verify_denial_proofs(
+                        &self.authenticator,
+                        &question.qname,
+                        question.qtype,
+                        message,
+                        &active_keys,
+                    )
+                } else {
+                    self.verify_answer_rrsets(message, &active_keys)
+                }
+            }
+            Ok(Descent::Ended(terminal_outcome)) => terminal_outcome,
+            Err(descent_failure) => descent_failure,
+        };
+
         tracing::info!(
             verdict = ?outcome.verdict,
             reason = ?outcome.reason,
@@ -59,32 +87,12 @@ impl<C: Clock> Validator<C> {
         outcome
     }
 
-    fn execute_validation<S: ChainSource, A: TrustAnchorSource>(
-        &self,
-        qname: &Name,
-        qtype: RecordType,
-        message: &Message,
-        chain_source: &S,
-        anchor_source: &A,
-    ) -> ValidationOutcome {
-        let anchors = match anchor_source.anchors() {
-            Ok(anchors) if !anchors.is_empty() => anchors,
-            _ => return ValidationOutcome::indeterminate(VerdictReason::NoPathToAnchor),
-        };
-
-        let active_keys =
-            match walk_chain_descent(&self.authenticator, qname, chain_source, &anchors) {
-                Ok(keys) => keys,
-                Err(outcome) => return outcome,
-            };
-
-        if message.answers.is_empty() {
-            verify_denial_proofs(&self.authenticator, qname, qtype, message, &active_keys)
-        } else {
-            self.verify_answer_rrsets(message, &active_keys)
-        }
-    }
-
+    /// Verifies answer RRsets against the authenticated DNSKEYs.
+    ///
+    /// Note: this intentionally validates that every answer RRset is validly signed by
+    /// the authenticated keys, without evaluating whether the answer QNAME relates to
+    /// the initial question via CNAME redirection or wildcard synthesis. That QNAME
+    /// relationship validation is handled by the resolution pipeline (tracked in #133).
     fn verify_answer_rrsets(
         &self,
         message: &Message,

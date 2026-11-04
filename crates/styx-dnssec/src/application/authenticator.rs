@@ -1,6 +1,5 @@
 //! Key and signature authentication shared by the chain descent and the answer checks.
 
-use std::borrow::Borrow;
 use std::collections::HashMap;
 
 use styx_core::Clock;
@@ -42,23 +41,21 @@ impl<C: Clock> Authenticator<C> {
         let usable = self.usable_vouchers(vouchers)?;
         let key = find_vouched_key(zone, &dnskey.records, &usable)
             .ok_or_else(|| ValidationOutcome::bogus(VerdictReason::DsDnskeyMismatch))?;
-        if !self.rrset_signed_by(&dnskey.records, &dnskey.signatures, key, zone) {
+        let records: Vec<&ResourceRecord> = dnskey.records.iter().collect();
+        let signatures: Vec<&ResourceRecord> = dnskey.signatures.iter().collect();
+        if !self.rrset_signed_by(&records, &signatures, key, zone) {
             return Err(ValidationOutcome::bogus(VerdictReason::NoValidRrsig));
         }
         Ok(dnskey.records.clone())
     }
 
     /// Whether every RRset in `records` carries a valid RRSIG from one of `keys`.
-    pub(crate) fn records_signed_by_any<R, S>(
+    pub(crate) fn records_signed_by_any(
         &self,
-        records: &[R],
-        signatures: &[S],
+        records: &[&ResourceRecord],
+        signatures: &[&ResourceRecord],
         keys: &[ResourceRecord],
-    ) -> bool
-    where
-        R: Borrow<ResourceRecord>,
-        S: Borrow<ResourceRecord>,
-    {
+    ) -> bool {
         let rrsets = group_into_rrsets(records);
         !rrsets.is_empty()
             && rrsets.iter().all(|rrset| {
@@ -75,16 +72,22 @@ impl<C: Clock> Authenticator<C> {
         &self,
         vouchers: &'a [DsRdata],
     ) -> Result<Vec<&'a DsRdata>, ValidationOutcome> {
-        let usable: Vec<&DsRdata> = vouchers
-            .iter()
-            .filter(|ds| self.classify_voucher(ds) == AlgorithmSupport::Supported)
-            .collect();
+        let mut usable = Vec::new();
+        let mut any_unknown = false;
+        for ds in vouchers {
+            let support = AlgorithmSupport::combine(
+                self.policy.algorithms.classify_sig(ds.algorithm()),
+                self.policy.algorithms.classify_digest(ds.digest_type()),
+            );
+            match support {
+                AlgorithmSupport::Supported => usable.push(ds),
+                AlgorithmSupport::UnknownTreatAsInsecure => any_unknown = true,
+                AlgorithmSupport::Refused => {}
+            }
+        }
         if !usable.is_empty() {
             return Ok(usable);
         }
-        let any_unknown = vouchers
-            .iter()
-            .any(|ds| self.classify_voucher(ds) == AlgorithmSupport::UnknownTreatAsInsecure);
         if any_unknown {
             return Err(ValidationOutcome::insecure(
                 VerdictReason::UnsupportedAlgorithm,
@@ -93,47 +96,25 @@ impl<C: Clock> Authenticator<C> {
         Err(ValidationOutcome::bogus(VerdictReason::DsDnskeyMismatch))
     }
 
-    fn classify_voucher(&self, ds: &DsRdata) -> AlgorithmSupport {
-        let algorithms = &self.policy.algorithms;
-        match (
-            algorithms.classify_sig(ds.algorithm()),
-            algorithms.classify_digest(ds.digest_type()),
-        ) {
-            (AlgorithmSupport::Supported, AlgorithmSupport::Supported) => {
-                AlgorithmSupport::Supported
-            }
-            (AlgorithmSupport::Refused, _) | (_, AlgorithmSupport::Refused) => {
-                AlgorithmSupport::Refused
-            }
-            _ => AlgorithmSupport::UnknownTreatAsInsecure,
-        }
-    }
-
-    fn rrset_signed_by<R, S>(
+    fn rrset_signed_by(
         &self,
-        rrset: &[R],
-        signatures: &[S],
+        rrset: &[&ResourceRecord],
+        signatures: &[&ResourceRecord],
         dnskey: &DnskeyRdata,
         dnskey_owner: &Name,
-    ) -> bool
-    where
-        R: Borrow<ResourceRecord>,
-        S: Borrow<ResourceRecord>,
-    {
-        signatures
-            .iter()
-            .any(|signature| match signature.borrow().rdata {
-                RData::Rrsig(ref rrsig) => verify_rrsig_record(
-                    rrsig,
-                    rrset,
-                    dnskey,
-                    dnskey_owner,
-                    &self.clock,
-                    &self.policy.algorithms,
-                )
-                .is_ok(),
-                _ => false,
-            })
+    ) -> bool {
+        signatures.iter().any(|signature| match signature.rdata {
+            RData::Rrsig(ref rrsig) => verify_rrsig_record(
+                rrsig,
+                rrset,
+                dnskey,
+                dnskey_owner,
+                &self.clock,
+                &self.policy.algorithms,
+            )
+            .is_ok(),
+            _ => false,
+        })
     }
 }
 
@@ -151,10 +132,9 @@ fn find_vouched_key<'a>(
     })
 }
 
-fn group_into_rrsets<R: Borrow<ResourceRecord>>(records: &[R]) -> Vec<Vec<&ResourceRecord>> {
+fn group_into_rrsets<'a>(records: &[&'a ResourceRecord]) -> Vec<Vec<&'a ResourceRecord>> {
     let mut rrsets: HashMap<_, Vec<&ResourceRecord>> = HashMap::new();
-    for record in records {
-        let record = record.borrow();
+    for &record in records {
         rrsets
             .entry((&record.owner, record.rclass, record.rtype))
             .or_default()
