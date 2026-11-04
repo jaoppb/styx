@@ -29,3 +29,6 @@ oom-*
 
 # Local config copied from config/styx.example.toml
 /styx.toml
+
+# Git worktrees
+.worktrees/
