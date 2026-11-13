@@ -7,6 +7,7 @@
 //! This is where `tracing` instrumentation lives; `#[tracing::instrument]`
 //! goes on meaningful operations rather than on everything.
 
+pub(crate) mod accept;
 pub mod admission;
 pub mod cache;
 pub mod cert_fs;

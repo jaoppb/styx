@@ -1,6 +1,7 @@
 //! Binding the encrypted listeners next to the plaintext ones, on the same shared
 //! collaborators: one pipeline, one query budget, one task tracker, one shutdown.
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -19,7 +20,9 @@ use crate::domain::tls::TlsConfig;
 use crate::infrastructure::admission::ListenerShared;
 use crate::infrastructure::doh::{DohListener, DohSettings};
 use crate::infrastructure::dot::DotListener;
-use crate::infrastructure::supervisor::{spawn_listener_supervisor, SupervisorBackoffPolicy};
+use crate::infrastructure::supervisor::{
+    spawn_listener_supervisor, SupervisedListener, SupervisorBackoffPolicy,
+};
 use crate::infrastructure::tls::TlsServerSetup;
 
 use super::bind_error;
@@ -51,7 +54,6 @@ pub(super) struct BoundEncrypted {
 /// The collaborators every encrypted listener is bound with.
 pub(super) struct Binding<'a, L, F, O, C, T, S> {
     pub(super) shared: &'a ListenerShared<L, F, O, C, T, S>,
-    pub(super) clock: &'a Arc<C>,
     pub(super) concurrency: ConcurrencyLimits,
     pub(super) supervisor: SupervisorBackoffPolicy,
     pub(super) cancel: &'a CancellationToken,
@@ -73,46 +75,67 @@ where
     ) -> Result<BoundEncrypted, ServerError> {
         let mut bound = BoundEncrypted::default();
         let limits = encrypted.config.limits();
-        for &addr in encrypted.config.dot_listen_addrs() {
-            let dot = DotListener::bind(
-                addr,
-                encrypted.setup.dot(),
-                self.shared.clone(),
-                limits,
-                self.concurrency,
-            )
-            .await
-            .map_err(|e| bind_error(addr, e))?;
-            bound.dot_addrs.push(dot.bound_addr());
-            bound.handles.push(spawn_listener_supervisor(
-                dot,
-                Arc::clone(self.clock),
-                self.supervisor,
-                self.cancel.clone(),
-            ));
-        }
         let settings = DohSettings::new(
             encrypted.config.doh_path().clone(),
             encrypted.config.allow_http1(),
         );
-        for &addr in encrypted.config.doh_listen_addrs() {
-            let doh = DohListener::bind(
-                addr,
-                encrypted.setup.doh(),
-                self.shared.clone(),
-                limits,
-                settings.clone(),
-            )
-            .await
-            .map_err(|e| bind_error(addr, e))?;
-            bound.doh_addrs.push(doh.bound_addr());
-            bound.handles.push(spawn_listener_supervisor(
-                doh,
-                Arc::clone(self.clock),
+        self.bind_group(
+            encrypted.config.dot_listen_addrs(),
+            |addr| {
+                DotListener::bind(
+                    addr,
+                    encrypted.setup.dot(),
+                    self.shared.clone(),
+                    limits,
+                    self.concurrency,
+                )
+            },
+            DotListener::bound_addr,
+            &mut bound.dot_addrs,
+            &mut bound.handles,
+        )
+        .await?;
+        self.bind_group(
+            encrypted.config.doh_listen_addrs(),
+            |addr| {
+                DohListener::bind(
+                    addr,
+                    encrypted.setup.doh(),
+                    self.shared.clone(),
+                    limits,
+                    settings.clone(),
+                )
+            },
+            DohListener::bound_addr,
+            &mut bound.doh_addrs,
+            &mut bound.handles,
+        )
+        .await?;
+        Ok(bound)
+    }
+
+    async fn bind_group<Li, Fut>(
+        &self,
+        addrs: &[SocketAddr],
+        bind_one: impl Fn(SocketAddr) -> Fut,
+        addr_of: impl Fn(&Li) -> SocketAddr,
+        bound_addrs: &mut Vec<SocketAddr>,
+        handles: &mut Vec<JoinHandle<Result<(), ListenerError>>>,
+    ) -> Result<(), ServerError>
+    where
+        Li: SupervisedListener + 'static,
+        Fut: Future<Output = Result<Li, ListenerError>>,
+    {
+        for &addr in addrs {
+            let listener = bind_one(addr).await.map_err(|e| bind_error(addr, e))?;
+            bound_addrs.push(addr_of(&listener));
+            handles.push(spawn_listener_supervisor(
+                listener,
+                Arc::clone(&self.shared.clock),
                 self.supervisor,
                 self.cancel.clone(),
             ));
         }
-        Ok(bound)
+        Ok(())
     }
 }

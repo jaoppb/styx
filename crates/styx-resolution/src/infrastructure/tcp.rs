@@ -1,10 +1,11 @@
 //! TCP DNS transport listener.
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 
 use styx_core::{Clock, Sleeper, SystemSleeper};
@@ -16,7 +17,8 @@ use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::Transport;
-use crate::infrastructure::admission::{ConnectionBudget, ListenerShared, WarnLimiter};
+use crate::infrastructure::accept::{bind_malformed_warning, ServeStream, StreamListener};
+use crate::infrastructure::admission::{ConnectionBudget, ListenerShared};
 use crate::infrastructure::connection_bounds::QueryLimit;
 use crate::infrastructure::malformed_warning::{ListenerKind, MalformedWarning};
 use crate::infrastructure::tcp_connection::{Connection, ConnectionSettings};
@@ -24,24 +26,45 @@ use crate::infrastructure::tcp_connection::{Connection, ConnectionSettings};
 /// Default idle timeout for idle TCP client connections (5 seconds).
 pub const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Back-off before retrying `accept()` after the process ran out of descriptors.
-pub(crate) const DESCRIPTOR_EXHAUSTION_BACKOFF: Duration = Duration::from_millis(100);
+struct TcpServe<L, F, O, C, T, S> {
+    shared: ListenerShared<L, F, O, C, T, S>,
+    settings: ConnectionSettings,
+    malformed_warning: Arc<MalformedWarning<C, S>>,
+}
 
-/// `EMFILE`: the process has reached its descriptor limit (same value on Linux and BSDs).
-const EMFILE: i32 = 24;
+impl<L, F, O, C, T, S> ServeStream for TcpServe<L, F, O, C, T, S>
+where
+    L: LocalRecords + Send + Sync + 'static,
+    F: FilterPolicy + Send + Sync + 'static,
+    O: QueryObserver + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    T: TerminalHandler + Send + Sync + 'static,
+    S: Sleeper + Send + Sync + 'static,
+{
+    const LABEL: &'static str = "TCP";
 
-/// `ENFILE`: the system-wide descriptor table is full (same value on Linux and BSDs).
-const ENFILE: i32 = 23;
+    fn serve(
+        &self,
+        stream: TcpStream,
+        peer: SocketAddr,
+        closing: CancellationToken,
+    ) -> impl Future<Output = ()> + Send + 'static {
+        let connection = Connection::new(
+            self.shared.clone(),
+            self.settings,
+            Arc::clone(&self.malformed_warning),
+            closing,
+            peer,
+        );
+        async move {
+            connection.run(stream).await;
+        }
+    }
+}
 
 /// TCP DNS listener admitting connections up to a global cap.
 pub struct TcpListener<L, F, O, C, T = RefusedTerminal, S = SystemSleeper> {
-    listener: TokioTcpListener,
-    shared: ListenerShared<L, F, O, C, T, S>,
-    connections: ConnectionBudget,
-    settings: ConnectionSettings,
-    bound_addr: SocketAddr,
-    exhaustion_warning: WarnLimiter,
-    malformed_warning: Arc<MalformedWarning<C, S>>,
+    inner: StreamListener<TcpServe<L, F, O, C, T, S>, C>,
 }
 
 impl<L, F, O, C, T, S> TcpListener<L, F, O, C, T, S>
@@ -64,8 +87,6 @@ where
         limits: ConcurrencyLimits,
         idle_timeout: Option<Duration>,
     ) -> Result<Self, ListenerError> {
-        let listener = TokioTcpListener::bind(addr).await?;
-        let bound_addr = listener.local_addr()?;
         let settings = ConnectionSettings {
             idle_timeout: idle_timeout.unwrap_or(DEFAULT_TCP_IDLE_TIMEOUT),
             write_timeout: limits.tcp_write_timeout(),
@@ -73,30 +94,19 @@ where
             transport: Transport::Tcp,
             query_limit: QueryLimit::unlimited(),
         };
-        let malformed_warning = MalformedWarning::new(
-            ListenerKind::Tcp,
-            bound_addr,
-            Arc::clone(&shared.clock),
-            Arc::clone(&shared.sleeper),
-            shared.tasks.clone(),
-            shared.shutdown.clone(),
-            shared.abort.clone(),
-        );
-        Ok(Self {
-            listener,
-            shared,
-            connections,
+        let inner = StreamListener::bind(addr, connections, &shared, |bound_addr| TcpServe {
+            shared: shared.clone(),
             settings,
-            bound_addr,
-            exhaustion_warning: WarnLimiter::default(),
-            malformed_warning,
+            malformed_warning: bind_malformed_warning(ListenerKind::Tcp, bound_addr, &shared),
         })
+        .await?;
+        Ok(Self { inner })
     }
 
     /// Returns the OS-assigned local bound address (allowing port 0 binding).
     #[must_use]
     pub fn bound_addr(&self) -> SocketAddr {
-        self.bound_addr
+        self.inner.bound_addr()
     }
 
     /// Runs the TCP listener accept loop until cancellation is signaled.
@@ -105,99 +115,6 @@ where
     /// Returns [`ListenerError::Io`] on fatal accept failures. Running out of file
     /// descriptors is not fatal: it is logged and retried after a short back-off.
     pub async fn run(&self, cancel: CancellationToken) -> Result<(), ListenerError> {
-        while !cancel.is_cancelled() {
-            tokio::select! {
-                () = cancel.cancelled() => break,
-                accept_res = self.listener.accept() => {
-                    self.handle_accept_result(accept_res, &cancel).await?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_accept_result(
-        &self,
-        accept_res: Result<(TcpStream, SocketAddr), std::io::Error>,
-        cancel: &CancellationToken,
-    ) -> Result<(), ListenerError> {
-        let (stream, peer) = match accept_res {
-            Ok(pair) => pair,
-            Err(err) if is_descriptor_exhaustion(&err) => {
-                self.back_off_exhausted(&err).await;
-                return Ok(());
-            }
-            Err(err) => {
-                tracing::error!(%err, addr = %self.bound_addr, "TCP accept error");
-                return Err(ListenerError::Io(err));
-            }
-        };
-
-        let Some(permit) = self.connections.try_admit() else {
-            tracing::debug!(%peer, "TCP connection cap reached; closing connection");
-            drop(stream);
-            return Ok(());
-        };
-
-        let connection = Connection::new(
-            self.shared.clone(),
-            self.settings,
-            Arc::clone(&self.malformed_warning),
-            cancel.child_token(),
-            peer,
-        );
-        let abort = self.shared.abort.clone();
-        self.shared.tasks.spawn(async move {
-            let _permit = permit;
-            tokio::select! {
-                () = abort.cancelled() => {}
-                () = connection.run(stream) => {}
-            }
-        });
-        Ok(())
-    }
-
-    async fn back_off_exhausted(&self, err: &std::io::Error) {
-        if self
-            .exhaustion_warning
-            .allow(self.shared.clock.now_monotonic())
-        {
-            tracing::warn!(
-                %err,
-                addr = %self.bound_addr,
-                "out of file descriptors accepting TCP; retrying"
-            );
-        }
-        tokio::time::sleep(DESCRIPTOR_EXHAUSTION_BACKOFF).await;
-    }
-}
-
-/// Returns `true` for accept errors caused by running out of file descriptors.
-pub(crate) fn is_descriptor_exhaustion(err: &std::io::Error) -> bool {
-    matches!(err.raw_os_error(), Some(EMFILE | ENFILE))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn descriptor_exhaustion_is_retried_not_fatal() {
-        assert!(is_descriptor_exhaustion(
-            &std::io::Error::from_raw_os_error(EMFILE)
-        ));
-        assert!(is_descriptor_exhaustion(
-            &std::io::Error::from_raw_os_error(ENFILE)
-        ));
-    }
-
-    #[test]
-    fn other_accept_errors_stay_fatal() {
-        let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
-        assert!(!is_descriptor_exhaustion(&refused));
-        assert!(!is_descriptor_exhaustion(
-            &std::io::Error::from_raw_os_error(13)
-        ));
+        self.inner.run(cancel).await
     }
 }

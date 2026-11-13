@@ -279,7 +279,6 @@ where
             bind_plaintext(&config, &shared, &clock, &cancel).await?;
         let binding = encrypted::Binding {
             shared: &shared,
-            clock: &clock,
             concurrency: config.limits,
             supervisor: config.supervisor,
             cancel: &cancel,
