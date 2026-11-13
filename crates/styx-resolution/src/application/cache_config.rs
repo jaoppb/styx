@@ -9,6 +9,7 @@ use styx_proto::Ttl;
 
 use crate::domain::cache::bytes::HeapBytes;
 use crate::domain::cache::capacity::{CacheCapacity, DEFAULT_SHARDS};
+use crate::domain::cache::error::CacheError;
 use crate::domain::cache::ttl::TtlPolicy;
 use crate::domain::error::ConfigError;
 
@@ -89,12 +90,11 @@ fn ttl_policy(raw: &RawCache, defaults: &TtlPolicy) -> Result<TtlPolicy, ConfigE
     let negative_ceiling = raw
         .negative_ttl_ceiling_secs
         .map_or(defaults.negative_ceiling(), Ttl::from_secs);
-    TtlPolicy::new(floor, ceiling, negative_ceiling).map_err(|_| {
-        ConfigError::Invalid(format!(
-            "[cache]: ttl_floor_secs ({}) exceeds ttl_ceiling_secs ({})",
-            floor.seconds(),
-            ceiling.seconds()
-        ))
+    TtlPolicy::new(floor, ceiling, negative_ceiling).map_err(|error| match error {
+        CacheError::InvalidTtlBounds { floor, ceiling } => ConfigError::Invalid(format!(
+            "[cache]: ttl_floor_secs ({floor}) exceeds ttl_ceiling_secs ({ceiling})"
+        )),
+        other => ConfigError::Invalid(format!("[cache]: {other}")),
     })
 }
 
