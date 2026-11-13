@@ -5,7 +5,7 @@
 //! question matching and its TCP fallback, not the codec, and the codec is held to
 //! the `hickory-proto` oracle by its own suite.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,8 +14,9 @@ use styx_core::Clock;
 use styx_net::{Do53Client, ExchangeError};
 use styx_proto::application::{Decoder, Encoder};
 use styx_proto::{Header, Message, MessageKind, Name, Opcode, Question, RecordClass, RecordType};
+use styx_testkit::bind_udp_tcp_pair;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::net::UdpSocket;
 
 fn question(name: &str) -> Question {
     let name = Name::from_ascii(name).unwrap_or_else(|_| Name::root());
@@ -137,23 +138,14 @@ async fn the_query_id_is_overwritten_and_varies_across_exchanges() {
     assert!(ports.len() > 1, "every exchange reused one source port");
 }
 
-async fn bind_dual_stack_ephemeral() -> (UdpSocket, TcpListener, SocketAddr) {
-    loop {
-        let Ok(tcp) = TcpListener::bind("127.0.0.1:0").await else {
-            continue;
-        };
-        let Ok(addr) = tcp.local_addr() else {
-            continue;
-        };
-        if let Ok(udp) = UdpSocket::bind(addr).await {
-            return (udp, tcp, addr);
-        }
-    }
-}
-
 #[tokio::test]
 async fn truncation_retries_over_tcp_with_the_identical_message() {
-    let (udp, tcp, server_addr) = bind_dual_stack_ephemeral().await;
+    let pair = bind_udp_tcp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .await
+        .expect("bind udp/tcp pair");
+    let server_addr = pair.tcp.local_addr().expect("addr");
+    let udp = pair.udp;
+    let tcp = pair.tcp;
     let (client, clock) = client();
     let deadline = clock.now_monotonic() + Duration::from_secs(1);
 
@@ -190,7 +182,12 @@ async fn truncation_retries_over_tcp_with_the_identical_message() {
 
 #[tokio::test]
 async fn a_mismatched_tcp_reply_is_an_error() {
-    let (udp, tcp, server_addr) = bind_dual_stack_ephemeral().await;
+    let pair = bind_udp_tcp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .await
+        .expect("bind udp/tcp pair");
+    let server_addr = pair.tcp.local_addr().expect("addr");
+    let udp = pair.udp;
+    let tcp = pair.tcp;
     let (client, clock) = client();
     let deadline = clock.now_monotonic() + Duration::from_secs(1);
 
