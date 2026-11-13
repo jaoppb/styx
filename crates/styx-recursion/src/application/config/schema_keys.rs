@@ -1,35 +1,47 @@
-//! The `[recursion]` keys, tracked against the raw struct that parses them.
+//! The `[recursion]` and `[recursion.members.<name>]` keys, tracked against the raw
+//! structs that parse them.
 //!
-//! `recursion_fields` destructures `RawSettings` with no `..`, so a field added to the
-//! struct stops this module compiling until it is listed here too. The `SCHEMA` manifest
-//! is then checked against `config/styx.example.toml`, which must mention every key, and
-//! the example's commented values must equal the defaults.
+//! `recursion_section_fields` and `recursion_fields` destructure `RawRecursion` and
+//! `RawSettings` with no `..`, so a field added to either stops this module compiling until
+//! it is listed here too. The `SCHEMA` manifest is then checked against
+//! `config/styx.example.toml`, which must mention every key under `[recursion]`, every
+//! key in a `[recursion.members.<name>]` override must belong to `SETTINGS_KEYS`, and the
+//! example's commented `[recursion]` values must equal the defaults.
 
 use styx_testkit::{ExampleDocument, SchemaTable};
 
 use super::raw::RawSettings;
-use super::{InfraCapacity, RecursionSection};
+use super::{InfraCapacity, RawRecursion, RecursionSection};
 
 const EXAMPLE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../config/styx.example.toml"
 ));
 
+const SETTINGS_KEYS: &[&str] = &[
+    "root_hints",
+    "max_depth",
+    "max_outbound_queries",
+    "max_cname_chain",
+    "wall_clock_ms",
+    "udp_timeout_ms",
+    "tcp_timeout_ms",
+    "use_ipv6",
+    "max_delegations",
+    "max_servers",
+];
+
 const SCHEMA: &[SchemaTable] = &[SchemaTable {
     header: "[recursion]",
-    keys: &[
-        "root_hints",
-        "max_depth",
-        "max_outbound_queries",
-        "max_cname_chain",
-        "wall_clock_ms",
-        "udp_timeout_ms",
-        "tcp_timeout_ms",
-        "use_ipv6",
-        "max_delegations",
-        "max_servers",
-    ],
+    keys: SETTINGS_KEYS,
 }];
+
+fn recursion_section_fields(raw: &RawRecursion) {
+    let RawRecursion {
+        members: _,
+        defaults: _,
+    } = raw;
+}
 
 fn recursion_fields(raw: &RawSettings) {
     let RawSettings {
@@ -46,16 +58,35 @@ fn recursion_fields(raw: &RawSettings) {
     } = raw;
 }
 
+const _: fn(&RawRecursion) = recursion_section_fields;
 const _: fn(&RawSettings) = recursion_fields;
 
 #[test]
 fn recursion_schema_keys_match_the_example() {
-    let mismatches: Vec<String> = ExampleDocument::parse(EXAMPLE)
+    let document = ExampleDocument::parse(EXAMPLE);
+    let mismatches: Vec<String> = document
         .check(SCHEMA)
         .iter()
         .map(ToString::to_string)
         .collect();
     assert!(mismatches.is_empty(), "{mismatches:#?}");
+
+    let member_entries: Vec<_> = document
+        .entries()
+        .filter(|entry| entry.table.starts_with("[recursion.members."))
+        .collect();
+    assert!(
+        !member_entries.is_empty(),
+        "example must document a [recursion.members.<name>] override"
+    );
+    for entry in member_entries {
+        assert!(
+            SETTINGS_KEYS.contains(&entry.key.as_str()),
+            "example line {}: {} is not a key of [recursion.members.<name>]",
+            entry.line,
+            entry.key
+        );
+    }
 }
 
 #[test]

@@ -38,10 +38,18 @@ impl DiagnosticsStore {
     /// The latest snapshot `upstream` published, if it has published one.
     #[must_use]
     pub fn snapshot(&self, upstream: &UpstreamId) -> Option<Arc<RecursionDiagnostics>> {
-        match self.latest.lock() {
-            Ok(guard) => guard.get(upstream).cloned(),
-            Err(poisoned) => poisoned.into_inner().get(upstream).cloned(),
-        }
+        self.with_map(|map| map.get(upstream).cloned())
+    }
+
+    fn with_map<R>(
+        &self,
+        f: impl FnOnce(&mut HashMap<UpstreamId, Arc<RecursionDiagnostics>>) -> R,
+    ) -> R {
+        let mut guard = match self.latest.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        f(&mut guard)
     }
 }
 
@@ -49,10 +57,9 @@ impl DiagnosticsSink for DiagnosticsStore {
     fn publish(&self, snapshot: RecursionDiagnostics) {
         let upstream = snapshot.upstream.clone();
         let snapshot = Arc::new(snapshot);
-        match self.latest.lock() {
-            Ok(mut guard) => guard.insert(upstream, snapshot),
-            Err(poisoned) => poisoned.into_inner().insert(upstream, snapshot),
-        };
+        self.with_map(|map| {
+            let _previous = map.insert(upstream, snapshot);
+        });
     }
 }
 
