@@ -5,7 +5,7 @@
 //! Parsing never opens a certificate file; the binary loads them once, at startup.
 
 use std::net::SocketAddr;
-use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -13,7 +13,8 @@ use serde::Deserialize;
 
 use crate::domain::error::ConfigError;
 use crate::domain::tls::{
-    DohResourcePath, EncryptedLimits, StreamMessageLimit, TlsConfig, TlsConfigParts,
+    DohResourcePath, EncryptedLimits, StreamConcurrencyLimit, StreamMessageLimit, TlsConfig,
+    TlsConfigParts,
 };
 
 /// Where generated self-signed material is kept when `self_signed_dir` is unset.
@@ -50,7 +51,7 @@ struct RawTls {
     handshake_timeout_secs: Option<u64>,
     idle_timeout_secs: Option<u64>,
     max_connections: Option<NonZeroUsize>,
-    max_streams_per_connection: Option<NonZeroU32>,
+    max_streams_per_connection: Option<u32>,
     max_queries_per_connection: Option<NonZeroU64>,
     max_request_body_bytes: Option<usize>,
 }
@@ -91,9 +92,10 @@ fn parts_from(raw: RawTls) -> Result<TlsConfigParts, ConfigError> {
             .idle_timeout_secs
             .map_or(defaults.idle_timeout, Duration::from_secs),
         max_connections: raw.max_connections.unwrap_or(defaults.max_connections),
-        max_streams_per_connection: raw
-            .max_streams_per_connection
-            .unwrap_or(defaults.max_streams_per_connection),
+        max_streams_per_connection: match raw.max_streams_per_connection {
+            Some(streams) => StreamConcurrencyLimit::from_configured(streams)?,
+            None => defaults.max_streams_per_connection,
+        },
         max_queries_per_connection: raw
             .max_queries_per_connection
             .unwrap_or(defaults.max_queries_per_connection),
@@ -184,6 +186,7 @@ mod tests {
             "[tls]\nenabled = true\ndoh_path = \"dns-query\"",
             "[tls]\nenabled = true\nmax_request_body_bytes = 70000",
             "[tls]\nenabled = true\nmax_connections = 0",
+            "[tls]\nenabled = true\nmax_streams_per_connection = 0",
             "[tls]\nenabled = true\nhandshake_timeout_secs = 0",
             "[tls]\nenabled = true\ndot_listen_addrs = []\ndoh_listen_addrs = []",
             "[tls]\nenabled = true\ncert_pth = \"c.pem\"",

@@ -10,6 +10,7 @@
 pub mod admission;
 pub mod cache;
 pub mod cert_fs;
+pub(crate) mod connection_bounds;
 pub mod do53;
 pub mod doh;
 pub mod dot;

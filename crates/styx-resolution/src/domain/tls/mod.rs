@@ -12,6 +12,6 @@ pub use certificate::{
     ValidityState, ValidityWindow,
 };
 pub use config::{
-    CertificateSource, DohResourcePath, EncryptedLimits, StreamMessageLimit, TlsConfig,
-    TlsConfigParts,
+    CertificateSource, DohResourcePath, EncryptedLimits, StreamConcurrencyLimit,
+    StreamMessageLimit, TlsConfig, TlsConfigParts,
 };

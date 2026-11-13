@@ -121,6 +121,58 @@ pub enum CertificateSource {
     },
 }
 
+/// Concurrent HTTP/2 stream ceiling per DoH connection.
+///
+/// Carried as both `u32` (for HTTP/2 `SETTINGS_MAX_CONCURRENT_STREAMS`) and
+/// `NonZeroUsize` (for the in-flight semaphore), validated once at configuration time so
+/// the runtime never falls back to a smaller limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamConcurrencyLimit {
+    count: NonZeroU32,
+    slots: NonZeroUsize,
+}
+
+impl StreamConcurrencyLimit {
+    /// Default HTTP/2 stream ceiling, the floor RFC 9113 §6.5.2 recommends.
+    pub const DEFAULT: Self = Self {
+        count: NonZeroU32::MIN.saturating_add(99),
+        slots: NonZeroUsize::MIN.saturating_add(99),
+    };
+
+    /// Validates a configured stream ceiling.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::Invalid`] when `raw` is zero or cannot fit in `usize`.
+    pub fn from_configured(raw: u32) -> Result<Self, ConfigError> {
+        let count = NonZeroU32::new(raw).ok_or_else(|| {
+            invalid(&format!(
+                "max_streams_per_connection must be at least 1, got {raw}"
+            ))
+        })?;
+        let slots = usize::try_from(raw)
+            .ok()
+            .and_then(NonZeroUsize::new)
+            .ok_or_else(|| {
+                invalid(&format!(
+                    "max_streams_per_connection ({raw}) exceeds platform address space"
+                ))
+            })?;
+        Ok(Self { count, slots })
+    }
+
+    /// The ceiling as a 32-bit count for HTTP/2 `SETTINGS`.
+    #[must_use]
+    pub const fn as_u32(self) -> u32 {
+        self.count.get()
+    }
+
+    /// The ceiling as a non-zero slot count for the in-flight tracker.
+    #[must_use]
+    pub const fn as_usize(self) -> NonZeroUsize {
+        self.slots
+    }
+}
+
 /// Bounds on the stateful encrypted transports, one value per exhaustion path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncryptedLimits {
@@ -131,7 +183,7 @@ pub struct EncryptedLimits {
     /// Open connections per listener; each listener has its own ceiling.
     pub max_connections: NonZeroUsize,
     /// Concurrent HTTP/2 streams per DoH connection.
-    pub max_streams_per_connection: NonZeroU32,
+    pub max_streams_per_connection: StreamConcurrencyLimit,
     /// Queries one connection may carry before it is closed.
     pub max_queries_per_connection: NonZeroU64,
     /// Cap on a DoH request's DNS message.
@@ -146,7 +198,7 @@ impl EncryptedLimits {
     /// Default connection ceiling per listener.
     pub const DEFAULT_MAX_CONNECTIONS: NonZeroUsize = NonZeroUsize::MIN.saturating_add(127);
     /// Default HTTP/2 stream ceiling, the floor RFC 9113 §6.5.2 recommends.
-    pub const DEFAULT_MAX_STREAMS: NonZeroU32 = NonZeroU32::MIN.saturating_add(99);
+    pub const DEFAULT_MAX_STREAMS: StreamConcurrencyLimit = StreamConcurrencyLimit::DEFAULT;
     /// Default per-connection query ceiling.
     pub const DEFAULT_MAX_QUERIES: NonZeroU64 = NonZeroU64::MIN.saturating_add(9_999);
 }

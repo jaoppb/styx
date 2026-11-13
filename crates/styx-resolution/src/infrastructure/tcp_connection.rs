@@ -2,14 +2,14 @@
 //! pipelined queries, one task per query, and a single writer that owns the write half.
 
 use std::net::SocketAddr;
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use styx_proto::application::Decoder;
 use styx_proto::{DecodeError, Message, MessageKind};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
-use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use styx_core::{Clock, Sleeper};
@@ -21,77 +21,13 @@ use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 use crate::infrastructure::admission::{ListenerShared, QueryPermit};
+pub use crate::infrastructure::connection_bounds::{ConnectionInFlight, InFlightSlot};
+use crate::infrastructure::connection_bounds::{ConnectionLimiter, QueryLimit, Spend};
 use crate::infrastructure::early_reply::{badvers_reply, formerr_reply};
 use crate::infrastructure::framing::read_frame;
 use crate::infrastructure::malformed_warning::MalformedWarning;
 use crate::infrastructure::response::ResponseWriter;
 use styx_net::write_framed;
-
-/// The outstanding queries of one connection, counted by semaphore slots.
-///
-/// A query holds its slot from admission until its response is written, so the
-/// connection is idle exactly when every slot is free.
-#[derive(Debug)]
-pub struct ConnectionInFlight {
-    slots: Arc<Semaphore>,
-    capacity: NonZeroUsize,
-    released: Arc<Notify>,
-}
-
-impl ConnectionInFlight {
-    /// Creates a tracker allowing `capacity` outstanding queries.
-    #[must_use]
-    pub fn new(capacity: NonZeroUsize) -> Self {
-        Self {
-            slots: Arc::new(Semaphore::new(capacity.get())),
-            capacity,
-            released: Arc::new(Notify::new()),
-        }
-    }
-
-    /// Waits for a free slot; `None` only if the tracker has been closed.
-    pub async fn track(&self) -> Option<InFlightSlot> {
-        let permit = Arc::clone(&self.slots).acquire_owned().await.ok()?;
-        Some(InFlightSlot {
-            permit: Some(permit),
-            released: Arc::clone(&self.released),
-        })
-    }
-
-    /// Returns `true` when no query is outstanding.
-    #[must_use]
-    pub fn is_idle(&self) -> bool {
-        self.slots.available_permits() == self.capacity.get()
-    }
-
-    /// Resolves once no query is outstanding.
-    pub async fn idle(&self) {
-        loop {
-            let notified = self.released.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if self.is_idle() {
-                return;
-            }
-            notified.await;
-        }
-    }
-}
-
-/// One outstanding query on a connection; frees its slot when dropped.
-#[derive(Debug)]
-pub struct InFlightSlot {
-    permit: Option<OwnedSemaphorePermit>,
-    released: Arc<Notify>,
-}
-
-impl Drop for InFlightSlot {
-    fn drop(&mut self) {
-        // Release before notifying, so a woken `idle()` sees the freed slot.
-        drop(self.permit.take());
-        self.released.notify_waiters();
-    }
-}
 
 /// An encoded response on its way to the writer, carrying its in-flight slot.
 #[derive(Debug)]
@@ -107,8 +43,7 @@ pub(crate) struct ConnectionSettings {
     pub(crate) write_timeout: Duration,
     pub(crate) max_in_flight: NonZeroUsize,
     pub(crate) transport: Transport,
-    /// Queries one connection may carry before the reader stops; `None` is unbounded.
-    pub(crate) max_queries: Option<NonZeroU64>,
+    pub(crate) query_limit: QueryLimit,
 }
 
 /// One accepted connection.
@@ -155,10 +90,14 @@ where
         St: AsyncRead + AsyncWrite + Send + 'static,
     {
         let (read_half, write_half) = tokio::io::split(stream);
-        let in_flight = ConnectionInFlight::new(self.settings.max_in_flight);
+        let limiter = ConnectionLimiter::new(
+            self.settings.max_in_flight,
+            self.settings.query_limit.ceiling(),
+            self.settings.idle_timeout,
+        );
         let (frames, outbound) = mpsc::channel(self.settings.max_in_flight.get());
         tokio::join!(
-            self.read_loop(read_half, frames, &in_flight),
+            self.read_loop(read_half, frames, &limiter),
             self.write_loop(write_half, outbound),
         );
     }
@@ -167,27 +106,26 @@ where
         &self,
         mut read_half: ReadHalf<R>,
         frames: mpsc::Sender<OutboundFrame>,
-        in_flight: &ConnectionInFlight,
+        limiter: &ConnectionLimiter,
     ) {
-        let mut admitted: u64 = 0;
         loop {
             let frame = tokio::select! {
                 () = self.closing.cancelled() => return,
-                frame = self.next_frame(&mut read_half, in_flight) => frame,
+                frame = self.next_frame(&mut read_half, limiter) => frame,
             };
             let Some(frame) = frame else {
                 return;
             };
-            if !self.admit(frame, &frames, in_flight).await {
+            if !self.admit(frame, &frames, limiter).await {
                 return;
             }
-            admitted = admitted.saturating_add(1);
-            if self
-                .settings
-                .max_queries
-                .is_some_and(|max| admitted >= max.get())
-            {
-                tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, admitted, "per-connection query ceiling reached; closing after the answers");
+            if limiter.spend() != Spend::Within {
+                tracing::debug!(
+                    peer = %self.peer,
+                    transport = ?self.settings.transport,
+                    admitted = limiter.seen(),
+                    "per-connection query ceiling reached; closing after the answers"
+                );
                 return;
             }
         }
@@ -197,19 +135,14 @@ where
     async fn next_frame<R: AsyncRead>(
         &self,
         read_half: &mut ReadHalf<R>,
-        in_flight: &ConnectionInFlight,
+        limiter: &ConnectionLimiter,
     ) -> Option<Vec<u8>> {
-        let idle_timeout = self.settings.idle_timeout;
-        let idle_timer = async {
-            in_flight.idle().await;
-            tokio::time::sleep(idle_timeout).await;
-        };
         tokio::select! {
-            () = idle_timer => {
+            () = limiter.idle_expired() => {
                 tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, "stream connection idle; closing");
                 None
             }
-            frame = read_frame(read_half, idle_timeout) => match frame {
+            frame = read_frame(read_half, self.settings.idle_timeout) => match frame {
                 Ok(frame) => frame,
                 Err(err) => {
                     tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, %err, "stream closed or timed out");
@@ -224,12 +157,12 @@ where
         &self,
         frame: Vec<u8>,
         frames: &mpsc::Sender<OutboundFrame>,
-        in_flight: &ConnectionInFlight,
+        limiter: &ConnectionLimiter,
     ) -> bool {
         let received_at = self.shared.clock.now_monotonic();
         let slot = tokio::select! {
             () = self.closing.cancelled() => None,
-            slot = in_flight.track() => slot,
+            slot = limiter.track() => slot,
         };
         let Some(slot) = slot else {
             return false;
@@ -429,38 +362,5 @@ where
                 None
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn idle_tracks_outstanding_slots() {
-        let in_flight = ConnectionInFlight::new(NonZeroUsize::new(2).unwrap());
-        assert!(in_flight.is_idle());
-        let slot = in_flight.track().await.unwrap();
-        assert!(!in_flight.is_idle());
-
-        let waiter = async { in_flight.idle().await };
-        let release = async {
-            tokio::task::yield_now().await;
-            drop(slot);
-        };
-        tokio::time::timeout(Duration::from_secs(1), async {
-            tokio::join!(waiter, release);
-        })
-        .await
-        .unwrap();
-        assert!(in_flight.is_idle());
-    }
-
-    #[tokio::test]
-    async fn track_blocks_at_capacity() {
-        let in_flight = ConnectionInFlight::new(NonZeroUsize::MIN);
-        let _held = in_flight.track().await.unwrap();
-        let blocked = tokio::time::timeout(Duration::from_millis(50), in_flight.track()).await;
-        assert!(blocked.is_err());
     }
 }

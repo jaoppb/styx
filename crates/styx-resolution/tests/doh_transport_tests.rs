@@ -5,7 +5,7 @@
 
 mod harness;
 
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ use harness::encrypted::{
 };
 use hickory_proto::op::{Message, MessageType, OpCode, Query};
 use hickory_proto::rr::{Name, RecordType};
-use styx_resolution::StreamMessageLimit;
+use styx_resolution::{StreamConcurrencyLimit, StreamMessageLimit};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
@@ -166,7 +166,7 @@ async fn an_enormous_declared_length_is_refused_without_reading_the_body() {
 #[tokio::test]
 async fn the_stream_ceiling_is_advertised_in_the_http2_settings() {
     let mut options = EncryptedOptions::default();
-    options.limits.max_streams_per_connection = NonZeroU32::MIN.saturating_add(2);
+    options.limits.max_streams_per_connection = StreamConcurrencyLimit::from_configured(3).unwrap();
     let mut server = boot(options).await;
     let tls = tls_connect(server.doh(), &server.certificate, &[b"h2"])
         .await

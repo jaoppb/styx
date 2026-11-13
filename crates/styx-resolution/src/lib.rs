@@ -45,7 +45,8 @@ pub use domain::refused::RefusedReplies;
 pub use domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 pub use domain::selection::{MemberView, Selection, SelectionStrategy, StrategyName};
 pub use domain::tls::{
-    CertificateSource, DohResourcePath, EncryptedLimits, StreamMessageLimit, TlsConfig,
+    CertificateSource, DohResourcePath, EncryptedLimits, StreamConcurrencyLimit,
+    StreamMessageLimit, TlsConfig,
 };
 pub use domain::weight::Weight;
 pub use infrastructure::cache::{

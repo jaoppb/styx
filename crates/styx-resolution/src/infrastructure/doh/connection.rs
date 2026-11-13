@@ -9,8 +9,6 @@
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,7 +21,6 @@ use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto::Builder;
 use tokio::net::TcpStream;
-use tokio::sync::Notify;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -38,10 +35,11 @@ use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::Transport;
 use crate::domain::tls::{DohResourcePath, EncryptedLimits};
 use crate::infrastructure::admission::ListenerShared;
+use crate::infrastructure::connection_bounds::{ConnectionLimiter, QueryLimit, Spend};
 use crate::infrastructure::doh::request::{accept_body, extract_head, DohHead, DohRequestForm};
 use crate::infrastructure::doh::response::DohResponse;
 use crate::infrastructure::malformed_warning::MalformedWarning;
-use crate::infrastructure::tcp_connection::{ConnectionInFlight, QueryTask};
+use crate::infrastructure::tcp_connection::QueryTask;
 use crate::infrastructure::tls::accept_tls;
 
 /// Cap on the decoded request header block per stream.
@@ -85,9 +83,7 @@ pub(crate) struct StreamHandler<L, F, O, C, T, S> {
     malformed_warning: Arc<MalformedWarning<C, S>>,
     settings: DohSettings,
     peer: SocketAddr,
-    requests: AtomicU64,
-    budget_spent: Notify,
-    in_flight: ConnectionInFlight,
+    limiter: ConnectionLimiter,
 }
 
 impl<L, F, O, C, T, S> StreamHandler<L, F, O, C, T, S>
@@ -105,18 +101,15 @@ where
         settings: DohSettings,
         peer: SocketAddr,
     ) -> Self {
-        let streams = usize::try_from(settings.limits.max_streams_per_connection.get())
-            .ok()
-            .and_then(NonZeroUsize::new)
-            .unwrap_or(NonZeroUsize::MIN);
+        let streams = settings.limits.max_streams_per_connection.as_usize();
+        let ceiling = QueryLimit::limited(settings.limits.max_queries_per_connection).ceiling();
+        let limiter = ConnectionLimiter::new(streams, ceiling, settings.limits.idle_timeout);
         Self {
             shared,
             malformed_warning,
             settings,
             peer,
-            requests: AtomicU64::new(0),
-            budget_spent: Notify::new(),
-            in_flight: ConnectionInFlight::new(streams),
+            limiter,
         }
     }
 
@@ -138,8 +131,10 @@ where
         request: Request<Incoming>,
         received_at: std::time::Instant,
     ) -> Result<Vec<u8>, DohError> {
-        self.count_request()?;
-        let _slot = self.in_flight.track().await;
+        if self.limiter.spend() == Spend::Over {
+            return Err(DohError::StreamBudgetExceeded);
+        }
+        let _slot = self.limiter.track().await;
         let (parts, body) = request.into_parts();
         let header = |name| parts.headers.get(name).and_then(|v| v.to_str().ok());
         let head = DohHead {
@@ -165,34 +160,6 @@ where
             received_at,
         );
         task.respond(&wire).await.ok_or(DohError::Unanswerable)
-    }
-
-    /// Counts the stream against the connection's query ceiling; the stream that spends
-    /// it is still answered, and asks the connection to close after it.
-    fn count_request(&self) -> Result<(), DohError> {
-        let max = self.settings.limits.max_queries_per_connection.get();
-        let seen = self.requests.fetch_add(1, Ordering::Relaxed);
-        let this = seen.saturating_add(1);
-        if this > max {
-            return Err(DohError::StreamBudgetExceeded);
-        }
-        if this == max {
-            self.budget_spent.notify_one();
-        }
-        Ok(())
-    }
-
-    /// Resolves once the connection has had nothing in flight and no new stream for a
-    /// whole idle timeout.
-    async fn idle_expired(&self) {
-        loop {
-            self.in_flight.idle().await;
-            let seen = self.requests.load(Ordering::Relaxed);
-            tokio::time::sleep(self.settings.limits.idle_timeout).await;
-            if self.in_flight.is_idle() && self.requests.load(Ordering::Relaxed) == seen {
-                return;
-            }
-        }
     }
 }
 
@@ -242,8 +209,8 @@ pub(crate) async fn serve<L, F, O, C, T, S>(
     tokio::select! {
         served = connection.as_mut() => return log_end(peer, served.err()),
         () = closing.cancelled() => {}
-        () = handler.idle_expired() => tracing::debug!(%peer, "DoH connection idle; closing"),
-        () = handler.budget_spent.notified() => tracing::debug!(%peer, "DoH query ceiling reached; closing"),
+        () = handler.limiter.idle_expired() => tracing::debug!(%peer, "DoH connection idle; closing"),
+        () = handler.limiter.budget_spent() => tracing::debug!(%peer, "DoH query ceiling reached; closing"),
     }
     connection.as_mut().graceful_shutdown();
     let drained = tokio::time::timeout(drain_bound(&handler), connection).await;
@@ -265,7 +232,7 @@ fn http_builder<L, F, O, C, T, S>(
     }
     builder
         .http2()
-        .max_concurrent_streams(handler.settings.limits.max_streams_per_connection.get())
+        .max_concurrent_streams(handler.settings.limits.max_streams_per_connection.as_u32())
         .max_header_list_size(MAX_HEADER_LIST_BYTES);
     builder
 }

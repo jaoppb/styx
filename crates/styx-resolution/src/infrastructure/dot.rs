@@ -26,6 +26,7 @@ use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::Transport;
 use crate::domain::tls::EncryptedLimits;
 use crate::infrastructure::admission::{ConnectionBudget, ListenerShared, WarnLimiter};
+use crate::infrastructure::connection_bounds::QueryLimit;
 use crate::infrastructure::malformed_warning::{ListenerKind, MalformedWarning};
 use crate::infrastructure::tcp::{is_descriptor_exhaustion, DESCRIPTOR_EXHAUSTION_BACKOFF};
 use crate::infrastructure::tcp_connection::{Connection, ConnectionSettings};
@@ -71,7 +72,7 @@ where
             write_timeout: concurrency.tcp_write_timeout(),
             max_in_flight: concurrency.max_in_flight_per_connection(),
             transport: Transport::Dot,
-            max_queries: Some(limits.max_queries_per_connection),
+            query_limit: QueryLimit::limited(limits.max_queries_per_connection),
         };
         let malformed_warning = MalformedWarning::new(
             ListenerKind::Dot,
