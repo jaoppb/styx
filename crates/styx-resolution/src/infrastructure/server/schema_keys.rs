@@ -8,7 +8,7 @@
 
 use styx_testkit::{ExampleDocument, SchemaTable};
 
-use super::{RawConfig, RawSupervisorConfig};
+use super::config::{RawConfig, RawSupervisorConfig};
 
 const EXAMPLE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
