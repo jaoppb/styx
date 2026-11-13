@@ -60,10 +60,24 @@ impl Upstream for FixedTtlUpstream {
     }
 }
 
-fn cache_from(content: &str) -> ShardedAnswerCache<TestClock> {
+struct CacheFixture {
+    config: CacheConfig,
+    cache: Arc<ShardedAnswerCache<TestClock>>,
+    clock: Arc<TestClock>,
+}
+
+fn cache_fixture(content: &str) -> CacheFixture {
     let config = CacheConfig::from_toml_str(content).expect("valid [cache]");
-    ShardedAnswerCache::new(Arc::new(TestClock::new()), config.capacity, config.shards)
-        .expect("sized cache")
+    let clock = Arc::new(TestClock::new());
+    let cache = Arc::new(
+        ShardedAnswerCache::new(Arc::clone(&clock), config.capacity, config.shards)
+            .expect("sized cache"),
+    );
+    CacheFixture {
+        config,
+        cache,
+        clock,
+    }
 }
 
 type ConfigStage =
@@ -76,12 +90,11 @@ struct StageFixture {
 }
 
 fn stage_from(content: &str, upstream_ttl: Ttl) -> StageFixture {
-    let config = CacheConfig::from_toml_str(content).expect("valid [cache]");
-    let clock = Arc::new(TestClock::new());
-    let cache = Arc::new(
-        ShardedAnswerCache::new(Arc::clone(&clock), config.capacity, config.shards)
-            .expect("sized cache"),
-    );
+    let CacheFixture {
+        config,
+        cache,
+        clock,
+    } = cache_fixture(content);
     let canary = Name::from_ascii("canary.check.").expect("canary name");
     let member = PoolMember::new(
         UpstreamId::new("fixed-ttl"),
@@ -137,8 +150,8 @@ fn query_context(qname: &str, clock: &TestClock) -> RequestContext {
 
 #[test]
 fn max_entries_from_the_file_bounds_the_built_cache() {
-    let cache = cache_from("[cache]\nmax_entries = 500\n");
-    assert_eq!(cache.capacity().max_entries(), 500);
+    let fixture = cache_fixture("[cache]\nmax_entries = 500\n");
+    assert_eq!(fixture.cache.capacity().max_entries(), 500);
 }
 
 #[tokio::test]
@@ -150,16 +163,16 @@ async fn ttl_bounds_from_the_file_clamp_admitted_answers() {
     ceiling.stage.handle_terminal(&ctx).await.expect("miss");
     let cached = ceiling.stage.handle_terminal(&ctx).await.expect("hit");
     assert_eq!(ceiling.cache.stats().hits, 1);
-    assert_eq!(ceiling_stage_answer_ttl(&cached), Ttl::from_secs(600));
+    assert_eq!(first_answer_ttl(&cached), Ttl::from_secs(600));
 
     let floor = stage_from(config, Ttl::from_secs(5));
     let ctx = query_context("below-floor.example.", &floor.clock);
     floor.stage.handle_terminal(&ctx).await.expect("miss");
     let cached = floor.stage.handle_terminal(&ctx).await.expect("hit");
     assert_eq!(floor.cache.stats().hits, 1);
-    assert_eq!(ceiling_stage_answer_ttl(&cached), Ttl::from_secs(30));
+    assert_eq!(first_answer_ttl(&cached), Ttl::from_secs(30));
 }
 
-fn ceiling_stage_answer_ttl(response: &styx_resolution::ResolutionResponse) -> Ttl {
+fn first_answer_ttl(response: &styx_resolution::ResolutionResponse) -> Ttl {
     response.message().answers.first().expect("answer").ttl
 }
