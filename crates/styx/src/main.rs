@@ -86,11 +86,11 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let sleeper = Arc::new(SystemSleeper::new());
-    let bg_cancel = CancellationToken::new();
+    let background_shutdown = CancellationToken::new();
     let scheduler = ProbeScheduler::new(pool, clock.clone(), pool_config.probe.tick);
-    tokio::spawn(scheduler.run(bg_cancel.clone()));
+    tokio::spawn(scheduler.run(background_shutdown.clone()));
     let stats_logger = CacheStatsLogger::new(answer_cache, sleeper.clone(), CACHE_STATS_INTERVAL);
-    let stats_handle = tokio::spawn(stats_logger.run(bg_cancel.clone()));
+    let stats_handle = tokio::spawn(stats_logger.run(background_shutdown.clone()));
 
     let mut server = Server::bind(config, pipeline, clock, sleeper)
         .await
@@ -105,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to listen for shutdown signal")?;
 
     tracing::info!("shutdown signal received; closing listeners");
-    bg_cancel.cancel();
+    background_shutdown.cancel();
     server
         .shutdown()
         .await
