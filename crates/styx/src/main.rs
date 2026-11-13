@@ -228,7 +228,7 @@ fn build_pipeline(
             Arc::new(DiscardObserver::new()),
             clock,
         )
-        .with_aaaa_policy(config.aaaa_policy)
+        .with_filter_aaaa(config.filter_aaaa)
         .with_terminal(cache_stage),
     ))
 }

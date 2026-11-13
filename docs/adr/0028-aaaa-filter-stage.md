@@ -21,13 +21,13 @@ transport, and the planned `IpNoDataAaaa` blocking mode applies only to blocked 
 
 ## Decision
 
-**A top-level `filter_aaaa` key, `false` by default, sets an `AaaaPolicy` on the
+**A top-level `filter_aaaa` boolean switch, `false` by default, enables the stage on the
 pipeline.** It is infrastructure, like the listeners, so it lives in `styx.toml` and is
 parsed by `ServerConfig`, not stored in the database. It is global; a per-client or
 per-group version belongs with query-type filtering rules (#107).
 
 **The stage order becomes `validation -> local_records -> filter -> aaaa_filter -> cache
--> upstream -> terminal`.** With the policy set to `Filter`, an AAAA question that got
+-> upstream -> terminal`.** With `filter_aaaa` enabled, an AAAA question that got
 past local records and the block filter is answered by `ForgedAnswer::build_with_source`
 with NOERROR and an empty answer section, under the new `ForgedSource::AaaaFiltered`.
 It short-circuits like the stages before it, so the question never reaches the cache or
@@ -50,16 +50,16 @@ as a forged answer, like `LocalRecord` and `Blocked`.
 
 ## Consequences
 
-- With the switch off, the pipeline behaves exactly as before: `AaaaPolicy::Resolve` is
-  the default for `Pipeline::new` and for a file that omits the key.
+- With the switch off, the pipeline behaves exactly as before: `filter_aaaa` is `false`
+  by default in `Pipeline::new` and when a file omits the key.
 - HTTPS and SVCB answers can still carry `ipv6hint`, so a client that uses them may still
   learn an IPv6 address. Stripping it needs SVCB parsing in `styx-proto`, where type 65
   is still opaque, and is left for a follow-up.
 - `ANY` questions are not filtered; the switch names one query type.
-- Public surface: `AaaaPolicy` is added, `ServerConfig` gains the public field
-  `aaaa_policy`, `Pipeline` gains `with_aaaa_policy`, and `AnswerSource` and
-  `ForgedSource` gain the `AaaaFiltered` variant, so an exhaustive external `match` on
-  either fails to compile until it handles it.
+- Public surface: `ServerConfig` gains the public field `filter_aaaa: bool`, `Pipeline`
+  gains `with_filter_aaaa(bool)`, and `AnswerSource` and `ForgedSource` gain the
+  `AaaaFiltered` variant, so an exhaustive external `match` on either fails to compile
+  until it handles it.
 
 ## Alternatives rejected
 

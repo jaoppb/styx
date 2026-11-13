@@ -15,7 +15,6 @@ use styx_core::{Clock, Sleeper};
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::application::Pipeline;
-use crate::domain::aaaa_policy::AaaaPolicy;
 use crate::domain::config::PoolConfig;
 use crate::domain::error::{ConfigError, ListenerError, ServerError};
 use crate::domain::limits::{
@@ -105,8 +104,8 @@ pub struct ServerConfig {
     pub query_timeout: Duration,
     /// Caps on concurrent listener work.
     pub limits: ConcurrencyLimits,
-    /// How AAAA questions are treated, from the `filter_aaaa` switch.
-    pub aaaa_policy: AaaaPolicy,
+    /// Whether `AAAA` questions are answered NODATA without asking upstream.
+    pub filter_aaaa: bool,
     /// Policy controlling supervisor retry backoff and healthy run reset.
     pub supervisor: SupervisorBackoffPolicy,
     /// Upstream pool configuration, if present in TOML.
@@ -162,7 +161,7 @@ impl ServerConfig {
                 default_socket_count(),
                 TCP_WRITE_TIMEOUT,
             ),
-            aaaa_policy: AaaaPolicy::from_switch(raw.filter_aaaa),
+            filter_aaaa: raw.filter_aaaa,
             supervisor,
             upstream,
         };

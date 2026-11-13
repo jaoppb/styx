@@ -5,10 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use styx_core::Clock;
-use styx_proto::{Message, MessageKind, Opcode, Question, RecordClass, ResponseCode, Ttl};
+use styx_proto::{
+    Message, MessageKind, Opcode, Question, RecordClass, RecordType, ResponseCode, Ttl,
+};
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
-use crate::domain::aaaa_policy::AaaaPolicy;
 use crate::domain::answer::{
     ForgedAnswer, ForgedSource, ResolutionOutcome, ResolutionResponse, ResolutionResponseParts,
 };
@@ -31,7 +32,7 @@ const LOCAL_RECORD_TTL: Ttl = Ttl::from_secs(60);
 pub struct Pipeline<L, F, O, C, T = RefusedTerminal> {
     local_records: Arc<L>,
     filter: Arc<F>,
-    aaaa: AaaaPolicy,
+    filter_aaaa: bool,
     observer: Arc<O>,
     clock: Arc<C>,
     terminal: Arc<T>,
@@ -50,7 +51,7 @@ where
         Self {
             local_records,
             filter,
-            aaaa: AaaaPolicy::default(),
+            filter_aaaa: false,
             observer,
             clock,
             terminal: Arc::new(RefusedTerminal::new()),
@@ -66,10 +67,10 @@ where
     C: Clock,
     T: TerminalHandler,
 {
-    /// Sets how AAAA questions are treated; the default resolves them.
+    /// Sets whether `AAAA` questions are answered NODATA without asking upstream.
     #[must_use]
-    pub const fn with_aaaa_policy(mut self, aaaa: AaaaPolicy) -> Self {
-        self.aaaa = aaaa;
+    pub const fn with_filter_aaaa(mut self, filter_aaaa: bool) -> Self {
+        self.filter_aaaa = filter_aaaa;
         self
     }
 
@@ -79,7 +80,7 @@ where
         Pipeline {
             local_records: self.local_records,
             filter: self.filter,
-            aaaa: self.aaaa,
+            filter_aaaa: self.filter_aaaa,
             observer: self.observer,
             clock: self.clock,
             terminal,
@@ -204,7 +205,7 @@ where
 
     /// NODATA with no SOA: styx asks no one, so it knows no zone apex to cite.
     fn try_aaaa_filter(&self, ctx: &RequestContext, question: &Question) -> Option<ForgedAnswer> {
-        if !self.aaaa.filters(question) {
+        if !(self.filter_aaaa && question.qtype == RecordType::AAAA) {
             return None;
         }
         Some(ForgedAnswer::build_with_source(

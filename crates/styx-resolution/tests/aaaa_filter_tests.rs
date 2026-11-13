@@ -10,10 +10,10 @@ use harness::{CommandableUpstream, DnsClient};
 use styx_core::{SystemClock, SystemSleeper, UpstreamId};
 use styx_proto::{Header, Message, Name, Opcode, Question, RecordClass, RecordType, ResponseCode};
 use styx_resolution::{
-    AaaaPolicy, AllowAllFilter, AnswerCache, AnswerSource, CacheKey, CacheStage, CanaryConfig,
-    ClientId, ConfiguredStrategy, Do53Forwarder, Lookup, NoLocalRecords, Pipeline, PoolMember,
-    ProbePolicy, QueryDetail, QueryObserver, ResolutionOutcome, Server, ServerConfig,
-    ShardedAnswerCache, UpstreamPool,
+    AllowAllFilter, AnswerCache, AnswerSource, CacheKey, CacheStage, CanaryConfig, ClientId,
+    ConfiguredStrategy, Do53Forwarder, Lookup, NoLocalRecords, Pipeline, PoolMember, ProbePolicy,
+    QueryDetail, QueryObserver, ResolutionOutcome, Server, ServerConfig, ShardedAnswerCache,
+    UpstreamPool,
 };
 
 #[derive(Default)]
@@ -111,7 +111,7 @@ impl Fixture {
             observer.clone(),
             clock.clone(),
         )
-        .with_aaaa_policy(config.aaaa_policy)
+        .with_filter_aaaa(config.filter_aaaa)
         .with_terminal(Arc::new(stage));
         let sleeper = Arc::new(SystemSleeper::new());
         let server = Server::bind(config, Arc::new(pipeline), clock, sleeper)
@@ -195,10 +195,10 @@ async fn test_aaaa_reaches_the_upstream_when_the_key_is_absent() {
 }
 
 #[test]
-fn test_filter_aaaa_parses_to_the_policy_and_defaults_to_resolve() {
-    let parse = |line: &str| ServerConfig::from_toml_str(line).map(|config| config.aaaa_policy);
-    assert_eq!(parse("filter_aaaa = true").ok(), Some(AaaaPolicy::Filter));
-    assert_eq!(parse("filter_aaaa = false").ok(), Some(AaaaPolicy::Resolve));
-    assert_eq!(parse("").ok(), Some(AaaaPolicy::Resolve));
+fn test_filter_aaaa_parses_to_bool_and_defaults_to_false() {
+    let parse = |line: &str| ServerConfig::from_toml_str(line).map(|config| config.filter_aaaa);
+    assert_eq!(parse("filter_aaaa = true").ok(), Some(true));
+    assert_eq!(parse("filter_aaaa = false").ok(), Some(false));
+    assert_eq!(parse("").ok(), Some(false));
     assert!(parse("filter_aaaa = \"yes\"").is_err());
 }
