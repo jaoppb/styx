@@ -29,6 +29,7 @@ use crate::infrastructure::admission::{ConnectionBudget, ListenerShared, WarnLim
 use crate::infrastructure::malformed_warning::{ListenerKind, MalformedWarning};
 use crate::infrastructure::tcp::{is_descriptor_exhaustion, DESCRIPTOR_EXHAUSTION_BACKOFF};
 use crate::infrastructure::tcp_connection::{Connection, ConnectionSettings};
+use crate::infrastructure::tls::accept_tls;
 
 /// DNS-over-TLS listener with its own connection ceiling.
 pub struct DotListener<L, F, O, C, T = RefusedTerminal, S = SystemSleeper> {
@@ -137,11 +138,8 @@ where
             self.warn_limited("DoT connection ceiling reached; refusing connections");
             return Ok(());
         };
-        let handshake = Handshake {
-            acceptor: self.acceptor.clone(),
-            timeout: self.handshake_timeout,
-            peer,
-        };
+        let acceptor = self.acceptor.clone();
+        let timeout = self.handshake_timeout;
         let connection = Connection::new(
             self.shared.clone(),
             self.settings,
@@ -154,7 +152,11 @@ where
             let _permit = permit;
             tokio::select! {
                 () = abort.cancelled() => {}
-                () = serve(handshake, connection, stream) => {}
+                () = async {
+                    if let Some(tls) = accept_tls(&acceptor, stream, timeout, peer, "DoT").await {
+                        connection.run(tls).await;
+                    }
+                } => {}
             }
         });
         Ok(())
@@ -167,33 +169,5 @@ where
         {
             tracing::warn!(addr = %self.bound_addr, "{message}");
         }
-    }
-}
-
-/// The TLS handshake a connection must complete before any DNS is read.
-struct Handshake {
-    acceptor: TlsAcceptor,
-    timeout: Duration,
-    peer: SocketAddr,
-}
-
-async fn serve<L, F, O, C, T, S>(
-    handshake: Handshake,
-    connection: Connection<L, F, O, C, T, S>,
-    stream: TcpStream,
-) where
-    L: LocalRecords + Send + Sync + 'static,
-    F: FilterPolicy + Send + Sync + 'static,
-    O: QueryObserver + Send + Sync + 'static,
-    C: Clock + Send + Sync + 'static,
-    T: TerminalHandler + Send + Sync + 'static,
-    S: Sleeper + Send + Sync + 'static,
-{
-    let peer = handshake.peer;
-    let accepted = tokio::time::timeout(handshake.timeout, handshake.acceptor.accept(stream)).await;
-    match accepted {
-        Ok(Ok(tls)) => connection.run(tls).await,
-        Ok(Err(err)) => tracing::debug!(%peer, %err, "DoT handshake failed"),
-        Err(_) => tracing::debug!(%peer, "DoT handshake timed out"),
     }
 }

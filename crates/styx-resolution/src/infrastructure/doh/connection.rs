@@ -42,6 +42,7 @@ use crate::infrastructure::doh::request::{accept_body, extract_head, DohHead, Do
 use crate::infrastructure::doh::response::DohResponse;
 use crate::infrastructure::malformed_warning::MalformedWarning;
 use crate::infrastructure::tcp_connection::{ConnectionInFlight, QueryTask};
+use crate::infrastructure::tls::accept_tls;
 
 /// Cap on the decoded request header block per stream.
 const MAX_HEADER_LIST_BYTES: u32 = 16 * 1024;
@@ -225,10 +226,8 @@ pub(crate) async fn serve<L, F, O, C, T, S>(
 {
     let peer = handler.peer;
     let handshake_timeout = handler.settings.limits.handshake_timeout;
-    let tls = match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
-        Ok(Ok(tls)) => tls,
-        Ok(Err(err)) => return tracing::debug!(%peer, %err, "DoH handshake failed"),
-        Err(_) => return tracing::debug!(%peer, "DoH handshake timed out"),
+    let Some(tls) = accept_tls(&acceptor, stream, handshake_timeout, peer, "DoH").await else {
+        return;
     };
     let builder = http_builder(&handler);
     let service = {

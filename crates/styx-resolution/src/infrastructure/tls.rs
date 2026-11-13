@@ -15,13 +15,17 @@
 //! cleanly instead of hanging. No client certificate is requested: there is no per-user
 //! identity to bind a session to.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rustls::crypto::ring::default_provider;
 use rustls::pki_types::{
     CertificateDer, PrivateKeyDer, PrivatePkcs1KeyDer, PrivatePkcs8KeyDer, PrivateSec1KeyDer,
 };
 use rustls::ServerConfig;
+use tokio::net::TcpStream;
+use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
 
 use crate::domain::error::TlsError;
@@ -93,5 +97,26 @@ fn private_key(identity: &ServingIdentity) -> PrivateKeyDer<'static> {
         PrivateKeyEncoding::Pkcs1 => PrivateKeyDer::Pkcs1(PrivatePkcs1KeyDer::from(der)),
         PrivateKeyEncoding::Sec1 => PrivateKeyDer::Sec1(PrivateSec1KeyDer::from(der)),
         PrivateKeyEncoding::Pkcs8 => PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(der)),
+    }
+}
+
+/// Completes a TLS handshake under `timeout`, logging failures and timeouts at debug.
+pub(crate) async fn accept_tls(
+    acceptor: &TlsAcceptor,
+    stream: TcpStream,
+    timeout: Duration,
+    peer: SocketAddr,
+    label: &'static str,
+) -> Option<TlsStream<TcpStream>> {
+    match tokio::time::timeout(timeout, acceptor.accept(stream)).await {
+        Ok(Ok(tls)) => Some(tls),
+        Ok(Err(err)) => {
+            tracing::debug!(%peer, %err, "{label} handshake failed");
+            None
+        }
+        Err(_) => {
+            tracing::debug!(%peer, "{label} handshake timed out");
+            None
+        }
     }
 }
