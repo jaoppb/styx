@@ -71,9 +71,11 @@ impl FakeNameServer {
         let received = Arc::new(Mutex::new(Vec::new()));
         let script = Arc::new(script);
 
-        let pair = bind_udp_tcp_pair_on(address).await?;
-        let udp_socket = Arc::new(pair.udp);
-        let tcp_listener = pair.tcp;
+        let UdpTcpPair {
+            udp,
+            tcp: tcp_listener,
+        } = bind_udp_tcp_pair_on(address).await?;
+        let udp_socket = Arc::new(udp);
         let udp_addr = udp_socket.local_addr()?;
         let tcp_addr = tcp_listener.local_addr()?;
 

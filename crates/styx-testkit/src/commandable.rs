@@ -25,7 +25,7 @@ use tokio::net::{TcpListener, UdpSocket};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::HarnessError;
-use crate::fake::bind_udp_tcp_pair;
+use crate::fake::{bind_udp_tcp_pair, UdpTcpPair};
 
 /// Scripted response behavior for a [`CommandableUpstream`].
 #[derive(Debug, Clone)]
@@ -104,10 +104,12 @@ impl CommandableUpstream {
         let query_count = Arc::new(AtomicUsize::new(0));
         let behavior = Arc::new(RwLock::new(UpstreamBehavior::Normal));
 
-        let pair = bind_udp_tcp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST)).await?;
-        let shared_addr = pair.tcp.local_addr()?;
-        let udp_socket = Arc::new(pair.udp);
-        let tcp_listener = pair.tcp;
+        let UdpTcpPair {
+            udp,
+            tcp: tcp_listener,
+        } = bind_udp_tcp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST)).await?;
+        let shared_addr = tcp_listener.local_addr()?;
+        let udp_socket = Arc::new(udp);
         let udp_addr = shared_addr;
         let tcp_addr = shared_addr;
 

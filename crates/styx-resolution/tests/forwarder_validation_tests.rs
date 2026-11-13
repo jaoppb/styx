@@ -11,7 +11,7 @@ use styx_core::{Clock, Upstream, UpstreamError, UpstreamId};
 use styx_proto::application::Encoder;
 use styx_proto::{Header, Message, MessageKind, Name, Opcode, Question, RecordClass, RecordType};
 use styx_resolution::{Do53Forwarder, EdnsBufferSize};
-use styx_testkit::bind_udp_tcp_pair;
+use styx_testkit::{bind_udp_tcp_pair, UdpTcpPair};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn make_test_question(qname: &str) -> Question {
@@ -208,12 +208,10 @@ fn encode_response(id: u16, question: &Question, truncated: bool) -> Option<Vec<
 
 #[tokio::test]
 async fn tcp_fallback_reuses_udp_transaction_id() {
-    let pair = bind_udp_tcp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST))
+    let UdpTcpPair { udp, tcp } = bind_udp_tcp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .await
         .expect("bind udp/tcp pair");
-    let addr = pair.tcp.local_addr().expect("tcp addr");
-    let udp = pair.udp;
-    let tcp = pair.tcp;
+    let addr = tcp.local_addr().expect("tcp addr");
 
     let udp_task = tokio::spawn(async move {
         let mut buf = [0u8; 4096];

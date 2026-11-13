@@ -14,7 +14,7 @@ use styx_core::Clock;
 use styx_net::{Do53Client, ExchangeError};
 use styx_proto::application::{Decoder, Encoder};
 use styx_proto::{Header, Message, MessageKind, Name, Opcode, Question, RecordClass, RecordType};
-use styx_testkit::bind_udp_tcp_pair;
+use styx_testkit::{bind_udp_tcp_pair, UdpTcpPair};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 
@@ -140,12 +140,10 @@ async fn the_query_id_is_overwritten_and_varies_across_exchanges() {
 
 #[tokio::test]
 async fn truncation_retries_over_tcp_with_the_identical_message() {
-    let pair = bind_udp_tcp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST))
+    let UdpTcpPair { udp, tcp } = bind_udp_tcp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .await
         .expect("bind udp/tcp pair");
-    let server_addr = pair.tcp.local_addr().expect("addr");
-    let udp = pair.udp;
-    let tcp = pair.tcp;
+    let server_addr = tcp.local_addr().expect("addr");
     let (client, clock) = client();
     let deadline = clock.now_monotonic() + Duration::from_secs(1);
 
@@ -182,12 +180,10 @@ async fn truncation_retries_over_tcp_with_the_identical_message() {
 
 #[tokio::test]
 async fn a_mismatched_tcp_reply_is_an_error() {
-    let pair = bind_udp_tcp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST))
+    let UdpTcpPair { udp, tcp } = bind_udp_tcp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .await
         .expect("bind udp/tcp pair");
-    let server_addr = pair.tcp.local_addr().expect("addr");
-    let udp = pair.udp;
-    let tcp = pair.tcp;
+    let server_addr = tcp.local_addr().expect("addr");
     let (client, clock) = client();
     let deadline = clock.now_monotonic() + Duration::from_secs(1);
 
