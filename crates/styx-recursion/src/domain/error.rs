@@ -89,10 +89,6 @@ pub enum ConfigError {
     /// The `[recursion]` TOML section did not parse.
     #[error("invalid [recursion] configuration: {0}")]
     Toml(String),
-    /// Neither the member's overrides nor the shared `[recursion]` section name a
-    /// root-hints file.
-    #[error("no root_hints in [recursion] or in the member's overrides")]
-    MissingRootHints,
     /// A `[recursion.members.<name>]` table names no recursor member of the pool.
     #[error("[recursion.members.{0}] names no recursor member of the pool")]
     UnknownMember(String),
@@ -102,17 +98,32 @@ pub enum ConfigError {
         /// The pool member's name.
         member: String,
         /// What is wrong with its settings.
-        reason: Box<ConfigError>,
+        reason: MemberConfigError,
     },
+}
+
+/// What can go wrong when parsing or resolving one recursor member's settings.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum MemberConfigError {
+    /// An override table did not parse or named an unknown key.
+    #[error("invalid configuration: {0}")]
+    Toml(String),
+    /// A descent limit was zero after merging.
+    #[error("descent limit `{0}` must be greater than zero")]
+    ZeroLimit(&'static str),
+    /// Neither the member's overrides nor the shared `[recursion]` section name a
+    /// root-hints file.
+    #[error("no root_hints in [recursion] or in the member's overrides")]
+    MissingRootHints,
 }
 
 impl ConfigError {
     /// Attributes `reason` to the recursor member named `member`.
     #[must_use]
-    pub fn member(member: &str, reason: Self) -> Self {
+    pub fn member(member: &str, reason: MemberConfigError) -> Self {
         Self::Member {
             member: member.to_owned(),
-            reason: Box::new(reason),
+            reason,
         }
     }
 }

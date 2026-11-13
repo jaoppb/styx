@@ -13,11 +13,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
-use toml::{Table, Value};
+use toml::Table;
 
 use crate::application::recursor::RecursorSettings;
 use crate::domain::budget::DescentLimits;
-use crate::domain::error::ConfigError;
+use crate::domain::error::{ConfigError, MemberConfigError};
 use raw::RawSettings;
 
 mod raw;
@@ -74,18 +74,26 @@ pub struct RecursionConfig {
     pub capacity: InfraCapacity,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct RawRecursion {
+    #[serde(default)]
+    members: BTreeMap<String, Table>,
+    #[serde(flatten)]
+    defaults: Table,
+}
+
 #[derive(Debug, Deserialize)]
 struct RawFile {
-    recursion: Option<Table>,
+    recursion: Option<RawRecursion>,
 }
 
 /// The `[recursion]` section as written: shared defaults and, per recursor member, the
 /// keys its `[recursion.members.<name>]` table overrides. Nothing is merged until
 /// [`Self::for_member`] asks for one member.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RecursionSection {
-    defaults: RawSettings,
-    overrides: BTreeMap<String, RawSettings>,
+    defaults: Table,
+    overrides: BTreeMap<String, Table>,
 }
 
 impl RecursionSection {
@@ -99,32 +107,19 @@ impl RecursionSection {
     /// [`ConfigError::Member`] for an unknown key in a member's overrides.
     pub fn from_toml_str(content: &str) -> Result<Self, ConfigError> {
         let file: RawFile = toml::from_str(content).map_err(toml_error)?;
-        let Some(mut table) = file.recursion else {
+        let Some(raw) = file.recursion else {
             return Ok(Self::default());
         };
-        let members = match table.remove("members") {
-            None => Table::new(),
-            Some(Value::Table(members)) => members,
-            Some(_) => {
-                return Err(ConfigError::Toml(
-                    "`members` must be a table of per-member overrides".to_owned(),
-                ))
-            }
-        };
-        let defaults: RawSettings = table.try_into().map_err(toml_error)?;
+        let defaults: RawSettings = raw.defaults.clone().try_into().map_err(toml_error)?;
         defaults.limits()?;
-        let overrides = members
-            .into_iter()
-            .map(|(member, value)| {
-                let raw = value
-                    .try_into()
-                    .map_err(|error| ConfigError::member(&member, toml_error(error)))?;
-                Ok((member, raw))
-            })
-            .collect::<Result<_, ConfigError>>()?;
+        for (member, table) in &raw.members {
+            let _: RawSettings = table.clone().try_into().map_err(|error| {
+                ConfigError::member(member, MemberConfigError::Toml(error.to_string()))
+            })?;
+        }
         Ok(Self {
-            defaults,
-            overrides,
+            defaults: raw.defaults,
+            overrides: raw.members,
         })
     }
 
@@ -136,10 +131,13 @@ impl RecursionSection {
     /// Returns [`ConfigError::Member`] naming `member` when the merged settings name no
     /// root hints or hold a zero limit.
     pub fn for_member(&self, member: &str) -> Result<RecursionConfig, ConfigError> {
-        let raw = self
-            .overrides
-            .get(member)
-            .map_or_else(|| self.defaults.clone(), |own| own.over(&self.defaults));
+        let mut merged = self.defaults.clone();
+        if let Some(own) = self.overrides.get(member) {
+            merged.extend(own.clone());
+        }
+        let raw: RawSettings = merged.try_into().map_err(|error| {
+            ConfigError::member(member, MemberConfigError::Toml(error.to_string()))
+        })?;
         raw.resolve()
             .map_err(|reason| ConfigError::member(member, reason))
     }

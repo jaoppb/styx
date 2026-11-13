@@ -1,6 +1,7 @@
 use crate::domain::budget::{
     DEFAULT_MAX_CNAME_CHAIN, DEFAULT_MAX_DEPTH, DEFAULT_MAX_OUTBOUND_QUERIES,
 };
+use crate::domain::error::MemberConfigError;
 
 use super::*;
 
@@ -83,7 +84,10 @@ fn a_member_naming_its_own_root_hints_needs_no_shared_section() {
     assert!(section.for_member("solo").is_ok());
     assert_eq!(
         section.for_member("other"),
-        Err(ConfigError::member("other", ConfigError::MissingRootHints))
+        Err(ConfigError::member(
+            "other",
+            MemberConfigError::MissingRootHints
+        ))
     );
 }
 
@@ -95,7 +99,7 @@ fn without_any_recursion_section_a_recursor_has_no_root_hints() {
         section.for_member("recursor"),
         Err(ConfigError::member(
             "recursor",
-            ConfigError::MissingRootHints
+            MemberConfigError::MissingRootHints
         ))
     );
 }
@@ -107,7 +111,7 @@ fn an_unknown_key_in_a_member_override_names_the_member() {
     let error = RecursionSection::from_toml_str(typo).unwrap_err();
     assert!(
         matches!(&error, ConfigError::Member { member, reason }
-            if member == "recursor-v4" && matches!(**reason, ConfigError::Toml(_))),
+            if member == "recursor-v4" && matches!(reason, MemberConfigError::Toml(_))),
         "{error:?}"
     );
     let message = error.to_string();
@@ -124,7 +128,7 @@ fn a_zero_limit_in_a_member_override_names_the_member() {
         section(zero).for_member("recursor-v4"),
         Err(ConfigError::member(
             "recursor-v4",
-            ConfigError::ZeroLimit("max_depth")
+            MemberConfigError::ZeroLimit("max_depth")
         ))
     );
 }
@@ -139,6 +143,11 @@ fn zero_limits_and_unknown_keys_in_the_shared_section_are_rejected() {
     let typo = "[recursion]\nroot_hints = \"x\"\nmax_dept = 3\n";
     assert!(matches!(
         RecursionSection::from_toml_str(typo),
+        Err(ConfigError::Toml(_))
+    ));
+    let bad_members = "[recursion]\nroot_hints = \"x\"\nmembers = \"recursor\"\n";
+    assert!(matches!(
+        RecursionSection::from_toml_str(bad_members),
         Err(ConfigError::Toml(_))
     ));
 }

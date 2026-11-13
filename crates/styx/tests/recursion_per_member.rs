@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use styx_core::UpstreamKind;
 use styx_recursion::application::config::{RecursionConfig, RecursionSection};
-use styx_recursion::domain::error::ConfigError;
+use styx_recursion::domain::error::{ConfigError, MemberConfigError};
 use styx_resolution::ServerConfig;
 
 const POOL: &str = r#"
@@ -109,7 +109,10 @@ fn a_zero_limit_in_an_override_fails_naming_the_member() {
     .expect_err("a zero limit is rejected");
     assert_eq!(
         error,
-        ConfigError::member("recursor-v4", ConfigError::ZeroLimit("max_cname_chain"))
+        ConfigError::member(
+            "recursor-v4",
+            MemberConfigError::ZeroLimit("max_cname_chain")
+        )
     );
 }
 
@@ -130,6 +133,6 @@ fn without_a_shared_section_every_recursor_must_name_its_own_root_hints() {
         .expect_err("recursor-tight has no root hints");
     assert_eq!(
         error,
-        ConfigError::member("recursor-tight", ConfigError::MissingRootHints)
+        ConfigError::member("recursor-tight", MemberConfigError::MissingRootHints)
     );
 }
