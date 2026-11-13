@@ -1,16 +1,16 @@
 //! Integration tests for NSEC and NSEC3 denial-of-existence proofs (Sub-phases 6b and 6c).
 
+mod support;
+
 use styx_dnssec::domain::denial::{
     nsec_covers_name, Nsec3Flags, Nsec3Params, Nsec3Proof, NsecProof,
 };
 use styx_dnssec::domain::error::DenialError;
-use styx_dnssec::domain::nsec3::{
-    base32hex_decode, base32hex_encode, hash_nsec3_name, verify_nsec3_ds_absence,
-    verify_nsec3_nxdomain,
-};
-use styx_dnssec::Nsec3IterationsCap;
+use styx_dnssec::domain::nsec3::{base32hex_decode, hash_nsec3_name};
+use styx_dnssec::{Nsec3HashAlgorithm, Nsec3IterationsCap};
 use styx_proto::domain::rdata::{Nsec3Rdata, NsecRdata, TypeBitmap};
 use styx_proto::{Name, RData, RecordClass, RecordType, ResourceRecord, Ttl};
+use support::base32hex_encode;
 
 #[test]
 fn test_nsec_coverage_normal_span_and_apex_wrap() {
@@ -65,7 +65,7 @@ fn test_nsec_nodata_and_name_error() {
 #[test]
 fn test_nsec3_iterations_cap_enforced() {
     let params = Nsec3Params::new(
-        1, // SHA-1
+        Nsec3HashAlgorithm::SHA1,
         Nsec3Flags::new(0),
         150, // exceeds cap of 100
         vec![0xAA, 0xBB],
@@ -80,7 +80,12 @@ fn test_nsec3_iterations_cap_enforced() {
 
 #[test]
 fn test_nsec3_hash_and_base32hex_roundtrip() {
-    let params = Nsec3Params::new(1, Nsec3Flags::new(0), 1, vec![0x12, 0x34]);
+    let params = Nsec3Params::new(
+        Nsec3HashAlgorithm::SHA1,
+        Nsec3Flags::new(0),
+        1,
+        vec![0x12, 0x34],
+    );
     let cap = Nsec3IterationsCap::DEFAULT;
     let name = Name::from_ascii("example.com.").unwrap();
 
@@ -96,7 +101,12 @@ fn test_nsec3_hash_and_base32hex_roundtrip() {
 fn test_nsec3_nxdomain_three_part_proof() {
     let cap = Nsec3IterationsCap::DEFAULT;
     let salt = vec![0xAB, 0xCD];
-    let params = Nsec3Params::new(1, Nsec3Flags::new(0), 1, salt.clone());
+    let params = Nsec3Params::new(
+        Nsec3HashAlgorithm::SHA1,
+        Nsec3Flags::new(0),
+        1,
+        salt.clone(),
+    );
 
     let zone = Name::from_ascii("example.com.").unwrap();
     let qname = Name::from_ascii("missing.example.com.").unwrap();
@@ -117,8 +127,8 @@ fn test_nsec3_nxdomain_three_part_proof() {
         RData::Nsec3(nsec3_cover),
     );
 
-    let proof = Nsec3Proof::new(params, vec![rr1]);
-    let result = verify_nsec3_nxdomain(&proof, &qname, cap);
+    let proof = Nsec3Proof::from_records(&[&rr1]).unwrap();
+    let result = proof.prove_name_does_not_exist(&zone, &qname, cap);
 
     assert!(result.is_ok());
 }
@@ -127,9 +137,7 @@ fn test_nsec3_nxdomain_three_part_proof() {
 fn test_nsec3_opt_out_unsigned_delegation() {
     let cap = Nsec3IterationsCap::DEFAULT;
     let salt = vec![0x11, 0x22];
-    // Opt-out flag = 1
-    let params = Nsec3Params::new(1, Nsec3Flags::new(1), 1, salt.clone());
-
+    let zone = Name::from_ascii("example.com.").unwrap();
     let child = Name::from_ascii("unsigned.example.com.").unwrap();
 
     let opt_out_hash = vec![0x00; 20];
@@ -152,13 +160,11 @@ fn test_nsec3_opt_out_unsigned_delegation() {
         RData::Nsec3(opt_out_rdata),
     );
 
-    let proof = Nsec3Proof::new(params, vec![rr]);
+    let proof = Nsec3Proof::from_records(&[&rr]).unwrap();
     assert!(proof.opt_out_applies());
 
     // DS absence is verified under opt-out span
-    let res = verify_nsec3_ds_absence(&proof, &child, cap);
-    assert!(res.is_ok());
-    assert!(proof.prove_ds_absence(&child, cap).is_ok());
+    assert!(proof.prove_ds_absence(&zone, &child, cap).is_ok());
 }
 
 #[test]
@@ -166,6 +172,7 @@ fn test_denial_proof_from_records_and_verify() {
     use styx_dnssec::domain::denial::DenialProof;
     use styx_proto::ResponseCode;
 
+    let zone = Name::from_ascii("example.com.").unwrap();
     let owner = Name::from_ascii("host.example.com.").unwrap();
     let next = Name::from_ascii("other.example.com.").unwrap();
     let qname = Name::from_ascii("missing.example.com.").unwrap();
@@ -185,6 +192,7 @@ fn test_denial_proof_from_records_and_verify() {
     // NODATA for AAAA at host.example.com.
     let host = Name::from_ascii("host.example.com.").unwrap();
     let result = proof.verify(
+        &zone,
         &host,
         RecordType::AAAA,
         ResponseCode::NOERROR,
@@ -194,6 +202,7 @@ fn test_denial_proof_from_records_and_verify() {
 
     // NXDOMAIN requires wildcard coverage, which single nsec doesn't have
     let nx_result = proof.verify(
+        &zone,
         &qname,
         RecordType::A,
         ResponseCode::NXDOMAIN,
@@ -347,7 +356,13 @@ fn test_nsec_prove_ds_absence_requires_ns_and_forbids_ds_and_soa() {
 fn test_nsec3_exact_prove_ds_absence_accepts_delegation() {
     let cap = Nsec3IterationsCap::DEFAULT;
     let salt = vec![0x33, 0x44];
-    let params = Nsec3Params::new(1, Nsec3Flags::new(0), 1, salt.clone());
+    let params = Nsec3Params::new(
+        Nsec3HashAlgorithm::SHA1,
+        Nsec3Flags::new(0),
+        1,
+        salt.clone(),
+    );
+    let parent = Name::from_ascii("example.com.").unwrap();
     let zone = Name::from_ascii("delegated.example.com.").unwrap();
     let zone_hash = hash_nsec3_name(&zone, &params, cap).unwrap();
     let owner =
@@ -368,15 +383,21 @@ fn test_nsec3_exact_prove_ds_absence_accepts_delegation() {
         Ttl::from_secs(300),
         RData::Nsec3(ns_only_rdata),
     );
-    let proof = Nsec3Proof::new(params, vec![ns_rr]);
-    assert!(proof.prove_ds_absence(&zone, cap).is_ok());
+    let proof = Nsec3Proof::from_records(&[&ns_rr]).unwrap();
+    assert!(proof.prove_ds_absence(&parent, &zone, cap).is_ok());
 }
 
 #[test]
 fn test_nsec3_exact_prove_ds_absence_rejects_missing_ns_or_apex_soa() {
     let cap = Nsec3IterationsCap::DEFAULT;
     let salt = vec![0x33, 0x44];
-    let params = Nsec3Params::new(1, Nsec3Flags::new(0), 1, salt.clone());
+    let params = Nsec3Params::new(
+        Nsec3HashAlgorithm::SHA1,
+        Nsec3Flags::new(0),
+        1,
+        salt.clone(),
+    );
+    let parent = Name::from_ascii("example.com.").unwrap();
     let zone = Name::from_ascii("delegated.example.com.").unwrap();
     let zone_hash = hash_nsec3_name(&zone, &params, cap).unwrap();
     let owner =
@@ -398,9 +419,9 @@ fn test_nsec3_exact_prove_ds_absence_rejects_missing_ns_or_apex_soa() {
         Ttl::from_secs(300),
         RData::Nsec3(a_only_rdata),
     );
-    let proof_a = Nsec3Proof::new(params.clone(), vec![a_rr]);
+    let proof_a = Nsec3Proof::from_records(&[&a_rr]).unwrap();
     assert_eq!(
-        proof_a.prove_ds_absence(&zone, cap),
+        proof_a.prove_ds_absence(&parent, &zone, cap),
         Err(DenialError::NotCovered)
     );
 
@@ -420,9 +441,9 @@ fn test_nsec3_exact_prove_ds_absence_rejects_missing_ns_or_apex_soa() {
         Ttl::from_secs(300),
         RData::Nsec3(soa_rdata),
     );
-    let proof_soa = Nsec3Proof::new(params, vec![soa_rr]);
+    let proof_soa = Nsec3Proof::from_records(&[&soa_rr]).unwrap();
     assert_eq!(
-        proof_soa.prove_ds_absence(&zone, cap),
+        proof_soa.prove_ds_absence(&parent, &zone, cap),
         Err(DenialError::NotCovered)
     );
 }

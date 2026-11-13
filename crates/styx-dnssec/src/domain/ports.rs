@@ -1,5 +1,7 @@
 //! Port traits for DNSSEC validation dependencies.
 
+use std::future::Future;
+
 use styx_proto::Name;
 
 use crate::domain::chain::ZoneCutMaterial;
@@ -15,7 +17,10 @@ pub trait ChainSource: Send + Sync {
     /// a claim that `zone` is not a cut: report that as [`Delegation::NotACut`].
     ///
     /// [`Delegation::NotACut`]: crate::domain::chain::Delegation::NotACut
-    fn material_for(&self, zone: &Name) -> Result<ZoneCutMaterial, ChainSourceError>;
+    fn material_for(
+        &self,
+        zone: &Name,
+    ) -> impl Future<Output = Result<ZoneCutMaterial, ChainSourceError>> + Send;
 }
 
 /// Port supplying the configured cryptographic trust anchors.

@@ -1,6 +1,104 @@
 //! Validation policy: failure mode, accepted algorithms and resource caps.
 
 use std::collections::BTreeSet;
+use std::fmt;
+
+/// DNSSEC signature algorithm identifier (RFC 4034, RFC 8624).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DnssecAlgorithm(u8);
+
+impl DnssecAlgorithm {
+    /// RSA/MD5 (RFC 3110, deprecated/refused per RFC 8624).
+    pub const RSAMD5: Self = Self(1);
+    /// DSA/SHA-1 (RFC 3755, deprecated/refused per RFC 8624).
+    pub const DSA: Self = Self(3);
+    /// DSA-NSEC3-SHA1 (RFC 5155, deprecated/refused per RFC 8624).
+    pub const DSA_NSEC3_SHA1: Self = Self(6);
+    /// RSA/SHA-1-NSEC3-SHA1 (RFC 5155, deprecated/refused per RFC 8624).
+    pub const RSASHA1_NSEC3_SHA1: Self = Self(7);
+    /// RSA/SHA-256 (RFC 5702).
+    pub const RSASHA256: Self = Self(8);
+    /// ECDSA P-256 with SHA-256 (RFC 6605).
+    pub const ECDSAP256SHA256: Self = Self(13);
+    /// Ed25519 (RFC 8080).
+    pub const ED25519: Self = Self(15);
+
+    /// Wraps a raw wire DNSSEC algorithm number.
+    #[must_use]
+    pub const fn new(value: u8) -> Self {
+        Self(value)
+    }
+
+    /// Returns the raw wire algorithm number.
+    #[must_use]
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for DnssecAlgorithm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// DNSSEC Delegation Signer (DS) digest algorithm identifier (RFC 4034, RFC 8624).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DigestType(u8);
+
+impl DigestType {
+    /// SHA-1 (RFC 4034, deprecated/refused per RFC 8624).
+    pub const SHA1: Self = Self(1);
+    /// SHA-256 (RFC 4509).
+    pub const SHA256: Self = Self(2);
+    /// SHA-384 (RFC 6605).
+    pub const SHA384: Self = Self(4);
+
+    /// Wraps a raw wire DS digest type number.
+    #[must_use]
+    pub const fn new(value: u8) -> Self {
+        Self(value)
+    }
+
+    /// Returns the raw wire digest type number.
+    #[must_use]
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for DigestType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// NSEC3 cryptographic hash algorithm identifier (RFC 5155).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Nsec3HashAlgorithm(u8);
+
+impl Nsec3HashAlgorithm {
+    /// SHA-1 (RFC 5155 §5).
+    pub const SHA1: Self = Self(1);
+
+    /// Wraps a raw wire NSEC3 hash algorithm number.
+    #[must_use]
+    pub const fn new(value: u8) -> Self {
+        Self(value)
+    }
+
+    /// Returns the raw wire NSEC3 hash algorithm number.
+    #[must_use]
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for Nsec3HashAlgorithm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 /// Failure enforcement mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -73,59 +171,53 @@ impl AlgorithmSupport {
 /// Explicit set of cryptographic algorithms recognised by the validator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlgorithmSet {
-    supported_sig: BTreeSet<u8>,
-    supported_digest: BTreeSet<u8>,
+    supported_sig: BTreeSet<DnssecAlgorithm>,
+    supported_digest: BTreeSet<DigestType>,
 }
 
 impl AlgorithmSet {
-    /// RSA/SHA-256 (RFC 5702).
-    pub const RSASHA256: u8 = 8;
-    /// ECDSA P-256 with SHA-256 (RFC 6605).
-    pub const ECDSAP256SHA256: u8 = 13;
-    /// Ed25519 (RFC 8080).
-    pub const ED25519: u8 = 15;
-    /// DS digest type SHA-1 (RFC 4034).
-    pub const DIGEST_SHA1: u8 = 1;
-    /// DS digest type SHA-256 (RFC 4509).
-    pub const DIGEST_SHA256: u8 = 2;
-    /// DS digest type SHA-384 (RFC 6605).
-    pub const DIGEST_SHA384: u8 = 4;
-
     /// Creates a new [`AlgorithmSet`] with default supported algorithms.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            supported_sig: [Self::RSASHA256, Self::ECDSAP256SHA256, Self::ED25519]
-                .into_iter()
-                .collect(),
-            supported_digest: [Self::DIGEST_SHA256, Self::DIGEST_SHA384]
+            supported_sig: [
+                DnssecAlgorithm::RSASHA256,
+                DnssecAlgorithm::ECDSAP256SHA256,
+                DnssecAlgorithm::ED25519,
+            ]
+            .into_iter()
+            .collect(),
+            supported_digest: [DigestType::SHA256, DigestType::SHA384]
                 .into_iter()
                 .collect(),
         }
     }
 
-    /// Classifies a DNSSEC signature algorithm number.
+    /// Classifies a DNSSEC signature algorithm.
     #[must_use]
-    pub fn classify_sig(&self, algorithm: u8) -> AlgorithmSupport {
+    pub fn classify_sig(&self, algorithm: DnssecAlgorithm) -> AlgorithmSupport {
         if self.supported_sig.contains(&algorithm) {
             return AlgorithmSupport::Supported;
         }
         match algorithm {
-            // Deprecated algorithms (RFC 8624): RSAMD5 (1), DSA (3), DSA-NSEC3-SHA1 (6), RSASHA1-NSEC3-SHA1 (7)
-            1 | 3 | 6 | 7 => AlgorithmSupport::Refused,
+            // Deprecated algorithms (RFC 8624)
+            DnssecAlgorithm::RSAMD5
+            | DnssecAlgorithm::DSA
+            | DnssecAlgorithm::DSA_NSEC3_SHA1
+            | DnssecAlgorithm::RSASHA1_NSEC3_SHA1 => AlgorithmSupport::Refused,
             _ => AlgorithmSupport::UnknownTreatAsInsecure,
         }
     }
 
-    /// Classifies a DS digest algorithm number.
+    /// Classifies a DS digest algorithm.
     #[must_use]
-    pub fn classify_digest(&self, digest_type: u8) -> AlgorithmSupport {
+    pub fn classify_digest(&self, digest_type: DigestType) -> AlgorithmSupport {
         if self.supported_digest.contains(&digest_type) {
             return AlgorithmSupport::Supported;
         }
         match digest_type {
             // SHA-1 (RFC 4034) is deprecated for DNSSEC DS records (RFC 8624)
-            Self::DIGEST_SHA1 => AlgorithmSupport::Refused,
+            DigestType::SHA1 => AlgorithmSupport::Refused,
             _ => AlgorithmSupport::UnknownTreatAsInsecure,
         }
     }

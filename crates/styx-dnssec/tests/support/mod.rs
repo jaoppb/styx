@@ -13,7 +13,8 @@ use styx_core::test_util::TestClock;
 use styx_dnssec::domain::canonical::build_canonical_signed_data;
 use styx_dnssec::domain::signature::compute_dnskey_digest;
 use styx_dnssec::{
-    Delegation, SignedRrset, TrustAnchor, TrustAnchorError, TrustAnchorSource, ZoneCutMaterial,
+    Delegation, DigestType, SignedRrset, TrustAnchor, TrustAnchorError, TrustAnchorSource,
+    ZoneCutMaterial,
 };
 use styx_proto::domain::rdata::{DnskeyRdata, DsRdata, RrsigRdata};
 use styx_proto::{
@@ -30,6 +31,10 @@ pub const DIGEST_SHA256: u8 = 2;
 
 pub fn name(text: &str) -> Name {
     Name::from_ascii(text).expect("fixture name")
+}
+
+pub fn base32hex_encode(input: &[u8]) -> String {
+    data_encoding::BASE32_DNSSEC.encode(input)
 }
 
 pub fn clock_at(seconds: u64) -> TestClock {
@@ -141,6 +146,32 @@ impl ZoneKey {
         )
     }
 
+    pub fn sign_wildcard(&self, rrset: &[ResourceRecord], sig_labels: u8) -> ResourceRecord {
+        let first = rrset.first().expect("non-empty rrset");
+        let unsigned = |signature: Vec<u8>| {
+            RrsigRdata::new(
+                first.rtype,
+                ED25519,
+                sig_labels,
+                300,
+                EXPIRATION,
+                INCEPTION,
+                self.key_tag(),
+                self.zone.clone(),
+                signature,
+            )
+        };
+        let rrset_refs: Vec<&ResourceRecord> = rrset.iter().collect();
+        let signed_data = build_canonical_signed_data(&unsigned(Vec::new()), &rrset_refs)
+            .expect("canonical form");
+        let signature = self.pair.sign(&signed_data).as_ref().to_vec();
+        record(
+            &first.owner,
+            RecordType::RRSIG,
+            RData::Rrsig(unsigned(signature)),
+        )
+    }
+
     /// This zone's DNSKEY RRset, self-signed.
     pub fn dnskey_rrset(&self) -> SignedRrset {
         let records = vec![self.dnskey_record()];
@@ -149,8 +180,8 @@ impl ZoneKey {
     }
 
     pub fn ds(&self, digest_type: u8) -> DsRdata {
-        let digest =
-            compute_dnskey_digest(&self.zone, &self.dnskey, digest_type).expect("digest type");
+        let digest = compute_dnskey_digest(&self.zone, &self.dnskey, DigestType::new(digest_type))
+            .expect("digest type");
         DsRdata::new(self.key_tag(), ED25519, digest_type, digest)
     }
 
@@ -163,14 +194,7 @@ impl ZoneKey {
     }
 
     pub fn anchor(&self) -> TrustAnchor {
-        let ds = self.ds(DIGEST_SHA256);
-        TrustAnchor::new(
-            self.zone.clone(),
-            ds.key_tag(),
-            ds.algorithm(),
-            ds.digest_type(),
-            ds.digest().to_vec(),
-        )
+        TrustAnchor::new(self.zone.clone(), self.ds(DIGEST_SHA256))
     }
 
     /// Material for this zone as a trust-anchored apex.

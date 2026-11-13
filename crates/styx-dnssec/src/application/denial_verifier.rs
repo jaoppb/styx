@@ -5,12 +5,12 @@ use styx_proto::{Message, Name, RData, RecordType, ResourceRecord};
 
 use crate::application::authenticator::Authenticator;
 use crate::domain::denial::DenialProof;
-use crate::domain::error::DenialError;
 use crate::domain::verdict::{ValidationOutcome, VerdictReason};
 
 /// Verifies the denial-of-existence proof in `message`'s authority section.
 pub(crate) fn verify_denial_proofs<C: Clock>(
     authenticator: &Authenticator<C>,
+    signer_zone: &Name,
     qname: &Name,
     qtype: RecordType,
     message: &Message,
@@ -29,7 +29,11 @@ pub(crate) fn verify_denial_proofs<C: Clock>(
     if denial_records.is_empty() {
         return ValidationOutcome::bogus(VerdictReason::DenialProofIncomplete);
     }
-    if !authenticator.records_signed_by_any(&denial_records, &signatures, active_keys) {
+    if !authenticator.records_signed_by_any(
+        denial_records.iter().copied(),
+        signatures.iter().copied(),
+        active_keys,
+    ) {
         return ValidationOutcome::bogus(VerdictReason::NoValidRrsig);
     }
 
@@ -37,33 +41,17 @@ pub(crate) fn verify_denial_proofs<C: Clock>(
         Ok(proof) => proof,
         Err(error) => {
             tracing::warn!(%error, "failed to construct denial proof from records");
-            return match error {
-                DenialError::Nsec3IterationsExceeded => {
-                    ValidationOutcome::bogus(VerdictReason::Nsec3IterationsExceeded)
-                }
-                DenialError::UnsupportedHashAlgorithm(_) => {
-                    ValidationOutcome::insecure(VerdictReason::UnsupportedAlgorithm)
-                }
-                _ => ValidationOutcome::bogus(VerdictReason::DenialProofIncomplete),
-            };
+            return ValidationOutcome::from(error);
         }
     };
 
     let rcode = message.header.rcode;
     let cap = authenticator.policy().nsec3_max_iterations;
-    match proof.verify(qname, qtype, rcode, cap) {
-        Ok(()) => ValidationOutcome::secure(VerdictReason::AnchorMatched),
+    match proof.verify(signer_zone, qname, qtype, rcode, cap) {
+        Ok(()) => ValidationOutcome::secure(VerdictReason::ProvenDenialOfExistence),
         Err(error) => {
             tracing::warn!(%error, %qname, ?qtype, ?rcode, "denial of existence verification failed");
-            match error {
-                DenialError::Nsec3IterationsExceeded => {
-                    ValidationOutcome::bogus(VerdictReason::Nsec3IterationsExceeded)
-                }
-                DenialError::UnsupportedHashAlgorithm(_) => {
-                    ValidationOutcome::insecure(VerdictReason::UnsupportedAlgorithm)
-                }
-                _ => ValidationOutcome::bogus(VerdictReason::DenialProofIncomplete),
-            }
+            ValidationOutcome::from(error)
         }
     }
 }

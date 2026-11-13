@@ -47,14 +47,15 @@ impl Chain {
         message
     }
 
-    fn validate<S: ChainSource>(
+    async fn validate<S: ChainSource>(
         &self,
         message: &Message,
         source: &S,
     ) -> (ValidationVerdict, VerdictReason) {
         let anchors = StaticAnchorSource::new(vec![self.root.anchor()]);
         let outcome = Validator::new(clock(), ValidationPolicy::default())
-            .validate(message, source, &anchors);
+            .validate(message, source, &anchors)
+            .await;
         (outcome.verdict, outcome.reason)
     }
 }
@@ -78,13 +79,13 @@ fn ds_absence_proof(zone: &Name) -> (DenialProof, Vec<ResourceRecord>) {
     )
 }
 
-#[test]
-fn a_ds_rrset_signed_by_a_key_outside_the_parent_is_bogus() {
+#[tokio::test]
+async fn a_ds_rrset_signed_by_a_key_outside_the_parent_is_bogus() {
     let chain = Chain::new();
     let impostor = ZoneKey::generate(&Name::root());
     chain.source.insert_cut(chain.example.signed_cut(&impostor));
 
-    let verdict = chain.validate(&chain.www_answer(), &chain.source);
+    let verdict = chain.validate(&chain.www_answer(), &chain.source).await;
 
     assert_eq!(
         verdict,
@@ -92,8 +93,8 @@ fn a_ds_rrset_signed_by_a_key_outside_the_parent_is_bogus() {
     );
 }
 
-#[test]
-fn an_unsigned_ds_rrset_is_bogus() {
+#[tokio::test]
+async fn an_unsigned_ds_rrset_is_bogus() {
     let chain = Chain::new();
     let zone = name("example.");
     chain.source.insert_cut(delegation_cut(
@@ -104,7 +105,7 @@ fn an_unsigned_ds_rrset_is_bogus() {
         },
     ));
 
-    let verdict = chain.validate(&chain.www_answer(), &chain.source);
+    let verdict = chain.validate(&chain.www_answer(), &chain.source).await;
 
     assert_eq!(
         verdict,
@@ -112,8 +113,8 @@ fn an_unsigned_ds_rrset_is_bogus() {
     );
 }
 
-#[test]
-fn an_unsigned_proof_of_ds_absence_cannot_downgrade_to_insecure() {
+#[tokio::test]
+async fn an_unsigned_proof_of_ds_absence_cannot_downgrade_to_insecure() {
     let chain = Chain::new();
     let zone = name("example.");
     let (ds_denial, _) = ds_absence_proof(&zone);
@@ -125,7 +126,7 @@ fn an_unsigned_proof_of_ds_absence_cannot_downgrade_to_insecure() {
         },
     ));
 
-    let verdict = chain.validate(&chain.www_answer(), &chain.source);
+    let verdict = chain.validate(&chain.www_answer(), &chain.source).await;
 
     assert_eq!(
         verdict,
@@ -133,8 +134,8 @@ fn an_unsigned_proof_of_ds_absence_cannot_downgrade_to_insecure() {
     );
 }
 
-#[test]
-fn a_parent_signed_proof_of_ds_absence_is_insecure() {
+#[tokio::test]
+async fn a_parent_signed_proof_of_ds_absence_is_insecure() {
     let chain = Chain::new();
     let zone = name("example.");
     let (ds_denial, records) = ds_absence_proof(&zone);
@@ -146,7 +147,7 @@ fn a_parent_signed_proof_of_ds_absence_is_insecure() {
         },
     ));
 
-    let verdict = chain.validate(&chain.www_answer(), &chain.source);
+    let verdict = chain.validate(&chain.www_answer(), &chain.source).await;
 
     assert_eq!(
         verdict,
@@ -157,8 +158,8 @@ fn a_parent_signed_proof_of_ds_absence_is_insecure() {
     );
 }
 
-#[test]
-fn a_parent_signed_invalid_proof_of_ds_absence_is_bogus() {
+#[tokio::test]
+async fn a_parent_signed_invalid_proof_of_ds_absence_is_bogus() {
     let chain = Chain::new();
     let zone = name("example.");
     // NSEC where type bitmap contains DS, so it fails to prove DS absence
@@ -179,7 +180,7 @@ fn a_parent_signed_invalid_proof_of_ds_absence_is_bogus() {
         },
     ));
 
-    let verdict = chain.validate(&chain.www_answer(), &chain.source);
+    let verdict = chain.validate(&chain.www_answer(), &chain.source).await;
 
     assert_eq!(
         verdict,
@@ -196,16 +197,16 @@ struct FailingAt {
 }
 
 impl ChainSource for FailingAt {
-    fn material_for(&self, zone: &Name) -> Result<ZoneCutMaterial, ChainSourceError> {
+    async fn material_for(&self, zone: &Name) -> Result<ZoneCutMaterial, ChainSourceError> {
         if zone == &self.zone {
             return Err(ChainSourceError::Unavailable(zone.clone()));
         }
-        self.inner.material_for(zone)
+        self.inner.material_for(zone).await
     }
 }
 
-#[test]
-fn a_failed_fetch_is_indeterminate_rather_than_no_cut() {
+#[tokio::test]
+async fn a_failed_fetch_is_indeterminate_rather_than_no_cut() {
     let mut chain = Chain::new();
     chain
         .source
@@ -215,7 +216,7 @@ fn a_failed_fetch_is_indeterminate_rather_than_no_cut() {
         zone: name("example."),
     };
 
-    let verdict = chain.validate(&chain.www_answer(), &failing);
+    let verdict = chain.validate(&chain.www_answer(), &failing).await;
 
     assert_eq!(
         verdict,
@@ -226,25 +227,23 @@ fn a_failed_fetch_is_indeterminate_rather_than_no_cut() {
     );
 }
 
-#[test]
-fn a_trust_anchor_below_the_root_starts_the_descent() {
+#[tokio::test]
+async fn a_trust_anchor_below_the_root_starts_the_descent() {
     let chain = Chain::new();
     let source = InMemoryChainSource::new();
     source.insert_cut(chain.example.signed_cut(&chain.root));
     let anchors = StaticAnchorSource::new(vec![chain.example.anchor()]);
 
-    let outcome = Validator::new(clock(), ValidationPolicy::default()).validate(
-        &chain.www_answer(),
-        &source,
-        &anchors,
-    );
+    let outcome = Validator::new(clock(), ValidationPolicy::default())
+        .validate(&chain.www_answer(), &source, &anchors)
+        .await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
     assert_eq!(outcome.reason, VerdictReason::AnchorMatched);
 }
 
-#[test]
-fn unsigned_nsec3_records_beside_a_signed_nsec_proof_are_bogus() {
+#[tokio::test]
+async fn unsigned_nsec3_records_beside_a_signed_nsec_proof_are_bogus() {
     let chain = Chain::new();
     let root = Name::root();
     let nsec = record(
@@ -275,7 +274,7 @@ fn unsigned_nsec3_records_beside_a_signed_nsec_proof_are_bogus() {
     message.authorities.push(nsec);
     message.authorities.push(nsec3);
 
-    let verdict = chain.validate(&message, &chain.source);
+    let verdict = chain.validate(&message, &chain.source).await;
 
     assert_eq!(
         verdict,
@@ -296,8 +295,8 @@ fn cut_with_ds(chain: &Chain, ds: DsRdata) -> ZoneCutMaterial {
     )
 }
 
-#[test]
-fn a_ds_rrset_using_only_unknown_algorithms_is_insecure() {
+#[tokio::test]
+async fn a_ds_rrset_using_only_unknown_algorithms_is_insecure() {
     let chain = Chain::new();
     let real = chain.example.ds(support::DIGEST_SHA256);
     let unknown = DsRdata::new(
@@ -308,7 +307,7 @@ fn a_ds_rrset_using_only_unknown_algorithms_is_insecure() {
     );
     chain.source.insert_cut(cut_with_ds(&chain, unknown));
 
-    let verdict = chain.validate(&chain.www_answer(), &chain.source);
+    let verdict = chain.validate(&chain.www_answer(), &chain.source).await;
 
     assert_eq!(
         verdict,
@@ -319,14 +318,14 @@ fn a_ds_rrset_using_only_unknown_algorithms_is_insecure() {
     );
 }
 
-#[test]
-fn a_ds_rrset_using_only_the_refused_sha1_digest_is_bogus() {
+#[tokio::test]
+async fn a_ds_rrset_using_only_the_refused_sha1_digest_is_bogus() {
     let chain = Chain::new();
     chain
         .source
         .insert_cut(cut_with_ds(&chain, chain.example.ds(DIGEST_SHA1)));
 
-    let verdict = chain.validate(&chain.www_answer(), &chain.source);
+    let verdict = chain.validate(&chain.www_answer(), &chain.source).await;
 
     assert_eq!(
         verdict,
@@ -334,8 +333,8 @@ fn a_ds_rrset_using_only_the_refused_sha1_digest_is_bogus() {
     );
 }
 
-#[test]
-fn an_answer_signature_with_an_unknown_algorithm_cannot_downgrade_to_insecure() {
+#[tokio::test]
+async fn an_answer_signature_with_an_unknown_algorithm_cannot_downgrade_to_insecure() {
     let chain = Chain::new();
     chain
         .source
@@ -360,10 +359,45 @@ fn an_answer_signature_with_an_unknown_algorithm_cannot_downgrade_to_insecure() 
         RData::Rrsig(unknown_signature),
     ));
 
-    let verdict = chain.validate(&message, &chain.source);
+    let verdict = chain.validate(&message, &chain.source).await;
 
     assert_eq!(
         verdict,
         (ValidationVerdict::Bogus, VerdictReason::NoValidRrsig)
+    );
+}
+
+#[tokio::test]
+async fn exceeding_max_zone_cuts_reports_distinct_verdict_reason() {
+    let chain = Chain::new();
+    chain
+        .source
+        .insert_cut(chain.example.signed_cut(&chain.root));
+    let policy = ValidationPolicy {
+        max_zone_cuts: 0,
+        ..ValidationPolicy::default()
+    };
+    let anchors = StaticAnchorSource::new(vec![chain.root.anchor()]);
+    let outcome = Validator::new(clock(), policy)
+        .validate(&chain.www_answer(), &chain.source, &anchors)
+        .await;
+
+    assert_eq!(outcome.verdict, ValidationVerdict::Indeterminate);
+    assert_eq!(outcome.reason, VerdictReason::MaxZoneCutsExceeded);
+}
+
+#[tokio::test]
+async fn mid_descent_apex_reports_unexpected_zone_apex() {
+    let chain = Chain::new();
+    chain.source.insert_cut(chain.example.apex_cut());
+
+    let verdict = chain.validate(&chain.www_answer(), &chain.source).await;
+
+    assert_eq!(
+        verdict,
+        (
+            ValidationVerdict::Indeterminate,
+            VerdictReason::UnexpectedZoneApex
+        )
     );
 }

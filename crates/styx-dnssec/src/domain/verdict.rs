@@ -2,6 +2,7 @@
 
 use styx_proto::{Message, ResponseCode};
 
+use crate::domain::error::DenialError;
 use crate::domain::policy::FailureMode;
 
 /// Primary validation verdict for a DNS resolution outcome.
@@ -24,8 +25,14 @@ pub enum VerdictReason {
     AnchorMatched,
     /// Non-existence of DS at zone cut was proven via NSEC or NSEC3.
     ProvenUnsignedDelegation,
+    /// Non-existence of the queried name or type was cryptographically proven via NSEC or NSEC3.
+    ProvenDenialOfExistence,
     /// No trust anchor path or missing intermediate zone cut material.
     NoPathToAnchor,
+    /// Chain descent exceeded the configured maximum number of zone cuts.
+    MaxZoneCutsExceeded,
+    /// Chain source reported a zone apex mid-descent without parent delegation material.
+    UnexpectedZoneApex,
     /// RRSIG validity period has passed according to the Clock.
     SignatureExpired,
     /// RRSIG validity period is in the future according to the Clock.
@@ -105,6 +112,20 @@ impl ValidationOutcome {
                     message.additionals.clear();
                 }
             }
+        }
+    }
+}
+
+impl From<DenialError> for ValidationOutcome {
+    fn from(error: DenialError) -> Self {
+        match error {
+            DenialError::Nsec3IterationsExceeded => {
+                Self::bogus(VerdictReason::Nsec3IterationsExceeded)
+            }
+            DenialError::UnsupportedHashAlgorithm(_) => {
+                Self::insecure(VerdictReason::UnsupportedAlgorithm)
+            }
+            _ => Self::bogus(VerdictReason::DenialProofIncomplete),
         }
     }
 }

@@ -1,28 +1,22 @@
 //! Trust anchor domain representation.
 
+use styx_proto::domain::rdata::DsRdata;
 use styx_proto::Name;
+
+use crate::domain::policy::{DigestType, DnssecAlgorithm};
 
 /// A cryptographic trust anchor establishing the root of a DNSSEC chain of trust.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustAnchor {
     owner: Name,
-    key_tag: u16,
-    algorithm: u8,
-    digest_type: u8,
-    digest: Vec<u8>,
+    ds: DsRdata,
 }
 
 impl TrustAnchor {
-    /// Constructs a new [`TrustAnchor`].
+    /// Constructs a new [`TrustAnchor`] from an owner zone name and its [`DsRdata`].
     #[must_use]
-    pub fn new(owner: Name, key_tag: u16, algorithm: u8, digest_type: u8, digest: Vec<u8>) -> Self {
-        Self {
-            owner,
-            key_tag,
-            algorithm,
-            digest_type,
-            digest,
-        }
+    pub fn new(owner: Name, ds: DsRdata) -> Self {
+        Self { owner, ds }
     }
 
     /// Owner name of the anchor (normally the root name `.`).
@@ -31,27 +25,33 @@ impl TrustAnchor {
         &self.owner
     }
 
+    /// Underlying DS record representation of this trust anchor.
+    #[must_use]
+    pub fn ds(&self) -> &DsRdata {
+        &self.ds
+    }
+
     /// Key tag of the DNSKEY referred to by this anchor.
     #[must_use]
     pub fn key_tag(&self) -> u16 {
-        self.key_tag
+        self.ds.key_tag()
     }
 
-    /// Cryptographic algorithm number.
+    /// Cryptographic signature algorithm.
     #[must_use]
-    pub fn algorithm(&self) -> u8 {
-        self.algorithm
+    pub fn algorithm(&self) -> DnssecAlgorithm {
+        DnssecAlgorithm::new(self.ds.algorithm())
     }
 
-    /// Digest algorithm type (e.g. SHA-256 = 2).
+    /// Digest algorithm type (e.g. SHA-256).
     #[must_use]
-    pub fn digest_type(&self) -> u8 {
-        self.digest_type
+    pub fn digest_type(&self) -> DigestType {
+        DigestType::new(self.ds.digest_type())
     }
 
     /// Cryptographic digest octets.
     #[must_use]
     pub fn digest(&self) -> &[u8] {
-        &self.digest
+        self.ds.digest()
     }
 }

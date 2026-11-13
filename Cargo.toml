@@ -47,6 +47,7 @@ criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 stats_alloc = "0.1"
 rand = "0.10"
 ring = "0.17"
+data-encoding = "2.11"
 
 # ---------------------------------------------------------------------------
 # The denied lint set, declared once. Every member opts in with

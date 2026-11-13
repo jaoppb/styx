@@ -9,8 +9,8 @@ use styx_proto::{
     Ttl,
 };
 
-#[test]
-fn test_in_memory_chain_source_referral_and_cut_insertion() {
+#[tokio::test]
+async fn test_in_memory_chain_source_referral_and_cut_insertion() {
     let source = InMemoryChainSource::new();
     let zone = Name::from_ascii("example.com.").unwrap();
     let other_zone = Name::from_ascii("other.com.").unwrap();
@@ -22,15 +22,15 @@ fn test_in_memory_chain_source_referral_and_cut_insertion() {
         Delegation::NotACut,
     ));
 
-    let cut = source.material_for(&zone).unwrap();
+    let cut = source.material_for(&zone).await.unwrap();
     assert_eq!(cut.zone, zone);
     assert_eq!(cut.delegation, Delegation::NotACut);
 
-    let other_cut = source.material_for(&other_zone).unwrap();
+    let other_cut = source.material_for(&other_zone).await.unwrap();
     assert_eq!(other_cut.zone, other_zone);
     assert_eq!(other_cut.delegation, Delegation::NotACut);
 
-    let unknown = source.material_for(&unknown_zone).unwrap();
+    let unknown = source.material_for(&unknown_zone).await.unwrap();
     assert_eq!(unknown.zone, unknown_zone);
     assert_eq!(unknown.delegation, Delegation::NotACut);
 }

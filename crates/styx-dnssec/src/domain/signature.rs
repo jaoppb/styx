@@ -6,7 +6,7 @@ use styx_proto::domain::rdata::{DnskeyRdata, DsRdata, RrsigRdata};
 use styx_proto::{Name, ResourceRecord};
 
 use crate::domain::canonical::build_canonical_signed_data;
-use crate::domain::policy::{AlgorithmSet, AlgorithmSupport};
+use crate::domain::policy::{AlgorithmSet, AlgorithmSupport, DigestType, DnssecAlgorithm};
 use crate::domain::verdict::VerdictReason;
 
 /// Splits an RFC 3110 RSA public key into its exponent and modulus.
@@ -72,17 +72,17 @@ fn verify_ed25519_signature(public_key: &[u8], signed_data: &[u8], signature: &[
 /// Dispatches to the primitive for `algorithm`. Only reached for an algorithm the
 /// policy classified as supported, so an algorithm without a primitive here fails.
 fn verify_crypto_signature(
-    algorithm: u8,
+    algorithm: DnssecAlgorithm,
     public_key: &[u8],
     signed_data: &[u8],
     signature: &[u8],
 ) -> bool {
     match algorithm {
-        AlgorithmSet::RSASHA256 => verify_rsa_signature(public_key, signed_data, signature),
-        AlgorithmSet::ECDSAP256SHA256 => {
+        DnssecAlgorithm::RSASHA256 => verify_rsa_signature(public_key, signed_data, signature),
+        DnssecAlgorithm::ECDSAP256SHA256 => {
             verify_ecdsa_p256_signature(public_key, signed_data, signature)
         }
-        AlgorithmSet::ED25519 => verify_ed25519_signature(public_key, signed_data, signature),
+        DnssecAlgorithm::ED25519 => verify_ed25519_signature(public_key, signed_data, signature),
         _ => false,
     }
 }
@@ -141,7 +141,8 @@ pub fn verify_rrsig_record<C: Clock>(
     }) {
         return Err(VerdictReason::NoValidRrsig);
     }
-    match algorithms.classify_sig(rrsig.algorithm()) {
+    let sig_algorithm = DnssecAlgorithm::new(rrsig.algorithm());
+    match algorithms.classify_sig(sig_algorithm) {
         AlgorithmSupport::Supported => {}
         AlgorithmSupport::UnknownTreatAsInsecure => {
             return Err(VerdictReason::UnsupportedAlgorithm)
@@ -153,7 +154,7 @@ pub fn verify_rrsig_record<C: Clock>(
     let signed_data =
         build_canonical_signed_data(rrsig, rrset).map_err(|_| VerdictReason::NoValidRrsig)?;
     if verify_crypto_signature(
-        rrsig.algorithm(),
+        sig_algorithm,
         dnskey.public_key(),
         &signed_data,
         rrsig.signature(),
@@ -169,7 +170,7 @@ pub fn verify_rrsig_record<C: Clock>(
 pub fn compute_dnskey_digest(
     zone_name: &Name,
     dnskey: &DnskeyRdata,
-    digest_type: u8,
+    digest_type: DigestType,
 ) -> Option<Vec<u8>> {
     let canonical_name = zone_name.to_canonical();
     let wire_name = canonical_name.as_wire_bytes();
@@ -185,15 +186,15 @@ pub fn compute_dnskey_digest(
     input.extend_from_slice(&rdata_bytes);
 
     match digest_type {
-        AlgorithmSet::DIGEST_SHA1 => {
+        DigestType::SHA1 => {
             let digest = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &input);
             Some(digest.as_ref().to_vec())
         }
-        AlgorithmSet::DIGEST_SHA256 => {
+        DigestType::SHA256 => {
             let digest = ring::digest::digest(&ring::digest::SHA256, &input);
             Some(digest.as_ref().to_vec())
         }
-        AlgorithmSet::DIGEST_SHA384 => {
+        DigestType::SHA384 => {
             let digest = ring::digest::digest(&ring::digest::SHA384, &input);
             Some(digest.as_ref().to_vec())
         }
@@ -207,7 +208,7 @@ pub fn check_single_ds_linkage(zone_name: &Name, ds: &DsRdata, dnskey: &DnskeyRd
     if ds.key_tag() != dnskey.key_tag() || ds.algorithm() != dnskey.algorithm() {
         return false;
     }
-    match compute_dnskey_digest(zone_name, dnskey, ds.digest_type()) {
+    match compute_dnskey_digest(zone_name, dnskey, DigestType::new(ds.digest_type())) {
         Some(computed) => computed.as_slice() == ds.digest(),
         None => false,
     }
@@ -225,7 +226,7 @@ mod tests {
     fn rrsig(inception: u32, expiration: u32) -> RrsigRdata {
         RrsigRdata::new(
             RecordType::A,
-            AlgorithmSet::ED25519,
+            DnssecAlgorithm::ED25519.value(),
             0,
             300,
             expiration,
@@ -284,10 +285,10 @@ mod tests {
         let algorithms = AlgorithmSet::new();
         let owner = Name::from_ascii("example.com.").unwrap();
         let signer = owner.clone();
-        let dnskey = DnskeyRdata::new(256, 3, AlgorithmSet::ED25519, vec![0; 32]);
+        let dnskey = DnskeyRdata::new(256, 3, DnssecAlgorithm::ED25519.value(), vec![0; 32]);
         let rrsig = RrsigRdata::new(
             RecordType::AAAA,
-            AlgorithmSet::ED25519,
+            DnssecAlgorithm::ED25519.value(),
             2,
             300,
             1000,
@@ -321,10 +322,10 @@ mod tests {
         let algorithms = AlgorithmSet::new();
         let signer = Name::from_ascii("example.com.").unwrap();
         let other_owner = Name::from_ascii("other.org.").unwrap();
-        let dnskey = DnskeyRdata::new(256, 3, AlgorithmSet::ED25519, vec![0; 32]);
+        let dnskey = DnskeyRdata::new(256, 3, DnssecAlgorithm::ED25519.value(), vec![0; 32]);
         let rrsig = RrsigRdata::new(
             RecordType::A,
-            AlgorithmSet::ED25519,
+            DnssecAlgorithm::ED25519.value(),
             2,
             300,
             1000,
@@ -351,10 +352,10 @@ mod tests {
         let algorithms = AlgorithmSet::new();
         let signer = Name::from_ascii("example.com.").unwrap();
         let dnskey_owner = Name::from_ascii("other.com.").unwrap();
-        let dnskey = DnskeyRdata::new(256, 3, AlgorithmSet::ED25519, vec![0; 32]);
+        let dnskey = DnskeyRdata::new(256, 3, DnssecAlgorithm::ED25519.value(), vec![0; 32]);
         let rrsig = RrsigRdata::new(
             RecordType::A,
-            AlgorithmSet::ED25519,
+            DnssecAlgorithm::ED25519.value(),
             2,
             300,
             1000,

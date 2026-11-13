@@ -2,13 +2,15 @@
 
 use std::path::{Path, PathBuf};
 
+use styx_proto::domain::rdata::DsRdata;
 use styx_proto::Name;
 
 use crate::domain::error::TrustAnchorError;
+use crate::domain::policy::{DigestType, DnssecAlgorithm};
 use crate::domain::ports::TrustAnchorSource;
 use crate::domain::trust_anchor::TrustAnchor;
 
-/// Built-in IANA root trust anchor (KSK-2017, Key Tag 20326).
+/// Built-in IANA root trust anchors (KSK-2017 tag 20326 and KSK-2024 tag 38696).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PinnedRootAnchor;
 
@@ -26,21 +28,41 @@ const ROOT_KSK_2017_DIGEST: [u8; 32] = [
     0x58, 0xE8, 0x80, 0x40, 0x9B, 0xBC, 0x68, 0x34, 0x57, 0x10, 0x42, 0x37, 0xC7, 0xF8, 0xEC, 0x8D,
 ];
 
+// 38696 (KSK-2024, active root KSK since Oct 2026) SHA-256 digest:
+// 683D2D0ACB8C9B712A1948B27F741219298D0A450D612C483AF444A4C0FB2B16
+const ROOT_KSK_2024_DIGEST: [u8; 32] = [
+    0x68, 0x3D, 0x2D, 0x0A, 0xCB, 0x8C, 0x9B, 0x71, 0x2A, 0x19, 0x48, 0xB2, 0x7F, 0x74, 0x12, 0x19,
+    0x29, 0x8D, 0x0A, 0x45, 0x0D, 0x61, 0x2C, 0x48, 0x3A, 0xF4, 0x44, 0xA4, 0xC0, 0xFB, 0x2B, 0x16,
+];
+
 impl TrustAnchorSource for PinnedRootAnchor {
     fn anchors(&self) -> Result<Vec<TrustAnchor>, TrustAnchorError> {
         tracing::info!(
-            key_tag = 20326,
-            algorithm = 8,
-            "using pinned IANA root anchor"
+            key_tags = ?[20326_u16, 38696_u16],
+            algorithm = DnssecAlgorithm::RSASHA256.value(),
+            "using pinned IANA root anchors"
         );
         let root = Name::root();
-        Ok(vec![TrustAnchor::new(
-            root,
-            20326,
-            8,
-            2,
-            ROOT_KSK_2017_DIGEST.to_vec(),
-        )])
+        Ok(vec![
+            TrustAnchor::new(
+                root.clone(),
+                DsRdata::new(
+                    20326,
+                    DnssecAlgorithm::RSASHA256.value(),
+                    DigestType::SHA256.value(),
+                    ROOT_KSK_2017_DIGEST.to_vec(),
+                ),
+            ),
+            TrustAnchor::new(
+                root,
+                DsRdata::new(
+                    38696,
+                    DnssecAlgorithm::RSASHA256.value(),
+                    DigestType::SHA256.value(),
+                    ROOT_KSK_2024_DIGEST.to_vec(),
+                ),
+            ),
+        ])
     }
 }
 
@@ -67,9 +89,7 @@ impl FileTrustAnchor {
     /// Returns [`TrustAnchorError`] if reading fails or no valid anchors are found.
     pub async fn load_from_path(path: impl AsRef<Path>) -> Result<Self, TrustAnchorError> {
         let path_buf = path.as_ref().to_path_buf();
-        let content = tokio::fs::read_to_string(&path_buf)
-            .await
-            .map_err(|error| TrustAnchorError::Io(error.to_string()))?;
+        let content = tokio::fs::read_to_string(&path_buf).await?;
         Self::from_str_and_path(&content, path_buf)
     }
 
@@ -168,10 +188,7 @@ fn parse_anchor_line(line: &str) -> Option<TrustAnchor> {
 
     Some(TrustAnchor::new(
         owner,
-        key_tag,
-        algorithm,
-        digest_type,
-        digest,
+        DsRdata::new(key_tag, algorithm, digest_type, digest),
     ))
 }
 

@@ -2,29 +2,7 @@
 
 use thiserror::Error;
 
-/// Top-level error enum for the validator crate.
-#[derive(Debug, Error)]
-pub enum ValidationError {
-    /// Failure in chain source.
-    #[error("chain source error: {0}")]
-    ChainSource(#[from] ChainSourceError),
-
-    /// Failure in trust anchor source.
-    #[error("trust anchor error: {0}")]
-    TrustAnchor(#[from] TrustAnchorError),
-
-    /// Failure evaluating denial-of-existence proof.
-    #[error("denial error: {0}")]
-    Denial(#[from] DenialError),
-
-    /// Encoding error during wire serialization.
-    #[error("encode error: {0}")]
-    Encode(#[from] styx_proto::EncodeError),
-
-    /// Domain name syntax or length error.
-    #[error("name error: {0}")]
-    Name(#[from] styx_proto::NameError),
-}
+use crate::domain::policy::Nsec3HashAlgorithm;
 
 /// Errors occurring while retrieving chain material.
 #[derive(Debug, Error)]
@@ -33,21 +11,17 @@ pub enum ChainSourceError {
     #[error("chain material unavailable for zone {0}")]
     Unavailable(styx_proto::Name),
 
-    /// Forwarder failed to supply DNSSEC material.
+    /// Upstream resolver failed to supply DNSSEC chain material.
     #[error("upstream cannot serve DNSSEC chain material: {0}")]
-    UpstreamFailed(String),
+    UpstreamFailed(#[from] styx_core::UpstreamError),
 }
 
 /// Errors occurring while retrieving trust anchors.
 #[derive(Debug, Error)]
 pub enum TrustAnchorError {
     /// IO error reading trust anchor file.
-    #[error("IO error: {0}")]
-    Io(String),
-
-    /// Parsing error in trust anchor configuration.
-    #[error("malformed trust anchor: {0}")]
-    Malformed(String),
+    #[error("IO error reading trust anchor file: {0}")]
+    Io(#[from] std::io::Error),
 
     /// Empty trust anchor set.
     #[error("no trust anchors configured")]
@@ -67,7 +41,7 @@ pub enum DenialError {
 
     /// Unsupported NSEC3 hash algorithm.
     #[error("unsupported NSEC3 hash algorithm: {0}")]
-    UnsupportedHashAlgorithm(u8),
+    UnsupportedHashAlgorithm(Nsec3HashAlgorithm),
 
     /// Name not covered by denial proof.
     #[error("name not covered by denial proof")]

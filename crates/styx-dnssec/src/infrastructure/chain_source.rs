@@ -41,7 +41,7 @@ impl InMemoryChainSource {
 }
 
 impl ChainSource for InMemoryChainSource {
-    fn material_for(&self, zone: &Name) -> Result<ZoneCutMaterial, ChainSourceError> {
+    async fn material_for(&self, zone: &Name) -> Result<ZoneCutMaterial, ChainSourceError> {
         let map = match self.cuts.read() {
             Ok(guard) => guard,
             Err(poison) => poison.into_inner(),

@@ -2,72 +2,19 @@
 
 use std::cmp::Ordering;
 
+use data_encoding::BASE32_DNSSEC;
+use styx_proto::domain::rdata::Nsec3Rdata;
 use styx_proto::{Name, RData, RecordType, ResourceRecord};
 
-use crate::domain::denial::{Nsec3Params, Nsec3Proof};
+use crate::domain::denial::{ClosestEncloserProof, Nsec3Flags, Nsec3Params};
 use crate::domain::error::DenialError;
-use crate::domain::policy::Nsec3IterationsCap;
+use crate::domain::policy::{Nsec3HashAlgorithm, Nsec3IterationsCap};
 
-const BASE32HEX_CHARS: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
-
-/// Converts an ASCII character to its 5-bit base32hex value.
-fn base32hex_val(character: u8) -> Option<u8> {
-    match character {
-        b'0'..=b'9' => Some(character.saturating_sub(b'0')),
-        b'a'..=b'v' => Some(character.saturating_sub(b'a').saturating_add(10)),
-        b'A'..=b'V' => Some(character.saturating_sub(b'A').saturating_add(10)),
-        _ => None,
-    }
-}
-
-/// Decodes base32hex bytes into a binary digest.
+/// Decodes base32hex (RFC 5155) bytes into a binary digest, rejecting invalid
+/// lengths, non-alphabet characters, and non-zero trailing padding bits.
 #[must_use]
 pub fn base32hex_decode(input: &[u8]) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(20);
-    let mut bit_buf: u64 = 0;
-    let mut bit_count: usize = 0;
-
-    for &symbol in input {
-        let value = base32hex_val(symbol)?;
-        bit_buf = (bit_buf << 5) | u64::from(value);
-        bit_count = bit_count.saturating_add(5);
-        if bit_count >= 8 {
-            bit_count = bit_count.saturating_sub(8);
-            let byte = (bit_buf >> bit_count) & 0xFF;
-            if let Ok(decoded) = u8::try_from(byte) {
-                out.push(decoded);
-            }
-        }
-    }
-    Some(out)
-}
-
-/// Encodes binary digest bytes to a lowercase base32hex string.
-#[must_use]
-pub fn base32hex_encode(input: &[u8]) -> String {
-    let mut out = String::with_capacity(32);
-    let mut bit_buf: u64 = 0;
-    let mut bit_count: usize = 0;
-
-    for &byte in input {
-        bit_buf = (bit_buf << 8) | u64::from(byte);
-        bit_count = bit_count.saturating_add(8);
-        while bit_count >= 5 {
-            bit_count = bit_count.saturating_sub(5);
-            let index = (bit_buf >> bit_count) & 0x1F;
-            if let Some(&symbol) = BASE32HEX_CHARS.get(index as usize) {
-                out.push(symbol as char);
-            }
-        }
-    }
-    if bit_count > 0 {
-        let shift = 5usize.saturating_sub(bit_count);
-        let index = (bit_buf << shift) & 0x1F;
-        if let Some(&symbol) = BASE32HEX_CHARS.get(index as usize) {
-            out.push(symbol as char);
-        }
-    }
-    out
+    BASE32_DNSSEC.decode(input).ok()
 }
 
 /// Computes the iterated salted NSEC3 hash over a domain name (RFC 5155 §5).
@@ -79,7 +26,7 @@ pub fn hash_nsec3_name(
     params: &Nsec3Params,
     cap: Nsec3IterationsCap,
 ) -> Result<Vec<u8>, DenialError> {
-    if params.hash_algorithm != 1 {
+    if params.hash_algorithm != Nsec3HashAlgorithm::SHA1 {
         return Err(DenialError::UnsupportedHashAlgorithm(params.hash_algorithm));
     }
     params.check_iterations(cap)?;
@@ -131,37 +78,31 @@ fn extract_owner_hash(record: &ResourceRecord) -> Option<Vec<u8>> {
     base32hex_decode(first_label.as_bytes())
 }
 
-/// Derives the Closest Encloser (CE) for `qname` matching an NSEC3 record in `proof`.
-///
-/// # Errors
-/// Returns [`DenialError`] if no ancestor is covered or cap is exceeded.
-pub fn find_closest_encloser(
-    proof: &Nsec3Proof,
-    qname: &Name,
-    cap: Nsec3IterationsCap,
-) -> Result<Name, DenialError> {
-    for label_count in (0..=qname.label_count()).rev() {
-        let Some(candidate) = qname.ancestor(label_count) else {
-            continue;
-        };
-        let hash = hash_nsec3_name(&candidate, &proof.params, cap)?;
-        let found = proof
-            .records
-            .iter()
-            .any(|record| extract_owner_hash(record).is_some_and(|owner_hash| owner_hash == hash));
-        if found {
-            return Ok(candidate);
-        }
-    }
-    Err(DenialError::NotCovered)
+fn is_nsec3_in_zone(record: &ResourceRecord, signer_zone: &Name) -> bool {
+    record.owner.label_count() == signer_zone.label_count().saturating_add(1)
+        && record
+            .owner
+            .parent()
+            .is_some_and(|parent| parent.eq_ignore_case(signer_zone))
 }
 
-/// Finds the next closer name with one more label than `ce` under `qname`.
-fn get_next_closer_name(qname: &Name, closest_encloser: &Name) -> Option<Name> {
-    if qname.label_count() <= closest_encloser.label_count() {
-        return None;
-    }
-    qname.ancestor(closest_encloser.label_count().saturating_add(1))
+fn is_delegation_or_dname(nsec3: &Nsec3Rdata) -> bool {
+    let is_delegation =
+        nsec3.types().contains(RecordType::NS) && !nsec3.types().contains(RecordType::SOA);
+    is_delegation || nsec3.types().contains(RecordType::DNAME)
+}
+
+fn find_matching_nsec3<'a>(
+    records: &'a [ResourceRecord],
+    target_hash: &[u8],
+) -> Option<&'a Nsec3Rdata> {
+    records.iter().find_map(|record| {
+        let RData::Nsec3(ref nsec3) = record.rdata else {
+            return None;
+        };
+        let owner_hash = extract_owner_hash(record)?;
+        (owner_hash.as_slice() == target_hash).then_some(nsec3)
+    })
 }
 
 /// Verifies whether `target_hash` is covered by any NSEC3 in `records`.
@@ -177,51 +118,150 @@ fn is_hash_covered(records: &[ResourceRecord], target_hash: &[u8]) -> bool {
     })
 }
 
+fn nsec3_matches_nodata(
+    records: &[ResourceRecord],
+    target_hash: &[u8],
+    qtype: RecordType,
+) -> Result<bool, DenialError> {
+    let Some(nsec3) = find_matching_nsec3(records, target_hash) else {
+        return Ok(false);
+    };
+    let is_delegation = qtype != RecordType::DS
+        && nsec3.types().contains(RecordType::NS)
+        && !nsec3.types().contains(RecordType::SOA);
+    if nsec3.types().contains(qtype) || nsec3.types().contains(RecordType::CNAME) || is_delegation {
+        return Err(DenialError::NotCovered);
+    }
+    Ok(true)
+}
+
+/// NSEC3-based hashed proof of non-existence (RFC 5155).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Nsec3Proof {
+    params: Nsec3Params,
+    records: Vec<ResourceRecord>,
+}
+
 impl Nsec3Proof {
-    /// Evaluates a full three-part NSEC3 proof of non-existence (RFC 5155 §7.2.1).
+    /// Constructs a validated [`Nsec3Proof`] from NSEC3 records with uniform parameters.
     ///
     /// # Errors
-    /// Returns [`DenialError`] if any leg is incomplete or fails to cover.
+    /// Returns [`DenialError::DenialProofIncomplete`] if `records` is empty, contains
+    /// non-NSEC3 records, or has mismatched hash parameters.
+    pub fn from_records(records: &[&ResourceRecord]) -> Result<Self, DenialError> {
+        let Some(&first) = records.first() else {
+            return Err(DenialError::DenialProofIncomplete);
+        };
+        let RData::Nsec3(ref rdata) = first.rdata else {
+            return Err(DenialError::DenialProofIncomplete);
+        };
+        let params = Nsec3Params::new(
+            Nsec3HashAlgorithm::new(rdata.hash_algorithm()),
+            Nsec3Flags::new(rdata.flags()),
+            rdata.iterations(),
+            rdata.salt().to_vec(),
+        );
+        let mut owned_records = Vec::with_capacity(records.len());
+        for &record in records {
+            let RData::Nsec3(ref other) = record.rdata else {
+                return Err(DenialError::DenialProofIncomplete);
+            };
+            if Nsec3HashAlgorithm::new(other.hash_algorithm()) != params.hash_algorithm
+                || other.iterations() != params.iterations
+                || other.salt() != params.salt.as_slice()
+            {
+                return Err(DenialError::DenialProofIncomplete);
+            }
+            owned_records.push(record.clone());
+        }
+        Ok(Self {
+            params,
+            records: owned_records,
+        })
+    }
+
+    /// Returns the validated NSEC3 parameters shared by every record in this proof.
+    #[must_use]
+    pub fn params(&self) -> &Nsec3Params {
+        &self.params
+    }
+
+    /// Returns the NSEC3 records constituting this proof.
+    #[must_use]
+    pub fn records(&self) -> &[ResourceRecord] {
+        &self.records
+    }
+
+    /// Returns whether Opt-Out applies to this proof.
+    #[must_use]
+    pub fn opt_out_applies(&self) -> bool {
+        self.params.flags.is_opt_out()
+    }
+
+    /// Derives the closest encloser within `signer_zone` and verifies its NSEC3 record is
+    /// neither a delegation point (RFC 5155 §8.3) nor a DNAME.
+    ///
+    /// # Errors
+    /// Returns [`DenialError`] if no ancestor matches, the closest encloser is invalid,
+    /// or hashing fails.
+    pub fn find_closest_encloser(
+        &self,
+        signer_zone: &Name,
+        qname: &Name,
+        cap: Nsec3IterationsCap,
+    ) -> Result<Name, DenialError> {
+        self.validate_zone_records(signer_zone)?;
+        if !qname.is_subdomain_of(signer_zone) {
+            return Err(DenialError::NotCovered);
+        }
+        for label_count in (signer_zone.label_count()..=qname.label_count()).rev() {
+            let Some(candidate) = qname.ancestor(label_count) else {
+                continue;
+            };
+            let hash = hash_nsec3_name(&candidate, &self.params, cap)?;
+            let Some(nsec3) = find_matching_nsec3(&self.records, &hash) else {
+                continue;
+            };
+            if is_delegation_or_dname(nsec3) {
+                return Err(DenialError::DenialProofIncomplete);
+            }
+            return Ok(candidate);
+        }
+        Err(DenialError::NotCovered)
+    }
+
+    /// Evaluates a full three-part NSEC3 proof of non-existence (RFC 5155 §7.2.1, §8.3).
+    ///
+    /// # Errors
+    /// Returns [`DenialError`] if any leg is incomplete, out-of-zone, or fails to cover.
     pub fn prove_name_does_not_exist(
         &self,
+        signer_zone: &Name,
         qname: &Name,
         cap: Nsec3IterationsCap,
     ) -> Result<(), DenialError> {
-        // 1. Closest encloser exists
-        let closest_encloser = find_closest_encloser(self, qname, cap)?;
-
-        // 2. Next closer is covered
-        let next_closer = match get_next_closer_name(qname, &closest_encloser) {
-            Some(next_closer) => next_closer,
-            None => return Err(DenialError::DenialProofIncomplete),
-        };
-        let next_closer_hash = hash_nsec3_name(&next_closer, &self.params, cap)?;
-        if !is_hash_covered(&self.records, &next_closer_hash) {
-            return Err(DenialError::DenialProofIncomplete);
-        }
-
-        // 3. Wildcard at closest encloser is covered or proven absent
-        let wildcard = match closest_encloser.with_wildcard() {
-            Ok(wildcard) => wildcard,
-            Err(_) => return Err(DenialError::DenialProofIncomplete),
-        };
-        let wildcard_hash = hash_nsec3_name(&wildcard, &self.params, cap)?;
+        let legs = self.closest_encloser_legs(signer_zone, qname, cap)?;
+        let wildcard_hash = hash_nsec3_name(legs.wildcard(), &self.params, cap)?;
         if !is_hash_covered(&self.records, &wildcard_hash) {
             return Err(DenialError::DenialProofIncomplete);
         }
-
         Ok(())
     }
 
     /// Verifies an NSEC3 proof of absent DS record at delegation (RFC 5155 §7.2.7).
     ///
     /// # Errors
-    /// Returns [`DenialError`] if proof fails.
+    /// Returns [`DenialError`] if proof fails or records fall outside `signer_zone`.
     pub fn prove_ds_absence(
         &self,
+        signer_zone: &Name,
         zone: &Name,
         cap: Nsec3IterationsCap,
     ) -> Result<(), DenialError> {
+        self.validate_zone_records(signer_zone)?;
+        if !zone.is_subdomain_of(signer_zone) {
+            return Err(DenialError::NotCovered);
+        }
         let zone_hash = hash_nsec3_name(zone, &self.params, cap)?;
         for record in &self.records {
             let RData::Nsec3(ref nsec3) = record.rdata else {
@@ -243,99 +283,94 @@ impl Nsec3Proof {
         Err(DenialError::NotCovered)
     }
 
-    /// Verifies an NSEC3 NODATA proof (RFC 5155 §7.2.3 and §7.2.4).
+    /// Verifies an NSEC3 NODATA proof (RFC 5155 §7.2.3, §7.2.4, §8.4).
     ///
     /// # Errors
-    /// Returns [`DenialError`] if proof fails.
+    /// Returns [`DenialError`] if proof fails or records fall outside `signer_zone`.
     pub fn prove_type_does_not_exist(
         &self,
+        signer_zone: &Name,
         qname: &Name,
         qtype: RecordType,
         cap: Nsec3IterationsCap,
     ) -> Result<(), DenialError> {
+        self.validate_zone_records(signer_zone)?;
+        if !qname.is_subdomain_of(signer_zone) {
+            return Err(DenialError::NotCovered);
+        }
         let qname_hash = hash_nsec3_name(qname, &self.params, cap)?;
         if nsec3_matches_nodata(&self.records, &qname_hash, qtype)? {
             return Ok(());
         }
 
-        let closest_encloser = find_closest_encloser(self, qname, cap)?;
-        let next_closer = match get_next_closer_name(qname, &closest_encloser) {
-            Some(next_closer) => next_closer,
-            None => return Err(DenialError::DenialProofIncomplete),
-        };
-        let next_closer_hash = hash_nsec3_name(&next_closer, &self.params, cap)?;
-        if !is_hash_covered(&self.records, &next_closer_hash) {
-            return Err(DenialError::DenialProofIncomplete);
-        }
-
-        let wildcard = match closest_encloser.with_wildcard() {
-            Ok(wildcard) => wildcard,
-            Err(_) => return Err(DenialError::DenialProofIncomplete),
-        };
-        let wildcard_hash = hash_nsec3_name(&wildcard, &self.params, cap)?;
+        let legs = self.closest_encloser_legs(signer_zone, qname, cap)?;
+        let wildcard_hash = hash_nsec3_name(legs.wildcard(), &self.params, cap)?;
         if nsec3_matches_nodata(&self.records, &wildcard_hash, qtype)? {
             return Ok(());
         }
 
         Err(DenialError::NotCovered)
     }
-}
 
-/// Evaluates a full three-part NSEC3 proof of non-existence (RFC 5155 §7.2.1).
-///
-/// # Errors
-/// Returns [`DenialError`] if any leg is incomplete or fails to cover.
-pub fn verify_nsec3_nxdomain(
-    proof: &Nsec3Proof,
-    qname: &Name,
-    cap: Nsec3IterationsCap,
-) -> Result<(), DenialError> {
-    proof.prove_name_does_not_exist(qname, cap)
-}
-
-/// Verifies an NSEC3 proof of absent DS record at delegation (RFC 5155 §7.2.7).
-///
-/// # Errors
-/// Returns [`DenialError`] if proof fails.
-pub fn verify_nsec3_ds_absence(
-    proof: &Nsec3Proof,
-    zone: &Name,
-    cap: Nsec3IterationsCap,
-) -> Result<(), DenialError> {
-    proof.prove_ds_absence(zone, cap)
-}
-
-fn nsec3_matches_nodata(
-    records: &[ResourceRecord],
-    target_hash: &[u8],
-    qtype: RecordType,
-) -> Result<bool, DenialError> {
-    for record in records {
-        let RData::Nsec3(ref nsec3) = record.rdata else {
-            continue;
-        };
-        let Some(owner_hash) = extract_owner_hash(record) else {
-            continue;
-        };
-        if owner_hash.as_slice() == target_hash {
-            if nsec3.types().contains(qtype) || nsec3.types().contains(RecordType::CNAME) {
-                return Err(DenialError::NotCovered);
+    /// Verifies that no closer name exists for a wildcard-synthesized positive answer (RFC 5155 §7.2.6).
+    ///
+    /// # Errors
+    /// Returns [`DenialError`] if the next-closer name is uncovered or out-of-zone.
+    pub fn prove_wildcard_expansion(
+        &self,
+        signer_zone: &Name,
+        owner: &Name,
+        signature_labels: u8,
+        cap: Nsec3IterationsCap,
+    ) -> Result<(), DenialError> {
+        self.validate_zone_records(signer_zone)?;
+        if !owner.is_subdomain_of(signer_zone) {
+            return Err(DenialError::NotCovered);
+        }
+        let closest_encloser = owner
+            .ancestor(usize::from(signature_labels))
+            .ok_or(DenialError::DenialProofIncomplete)?;
+        if !closest_encloser.is_subdomain_of(signer_zone) {
+            return Err(DenialError::NotCovered);
+        }
+        let ce_hash = hash_nsec3_name(&closest_encloser, &self.params, cap)?;
+        if let Some(ce_nsec3) = find_matching_nsec3(&self.records, &ce_hash) {
+            if is_delegation_or_dname(ce_nsec3) {
+                return Err(DenialError::DenialProofIncomplete);
             }
-            return Ok(true);
+        }
+        let legs = ClosestEncloserProof::new(owner, closest_encloser)?;
+        let next_closer_hash = hash_nsec3_name(legs.next_closer(), &self.params, cap)?;
+        if !is_hash_covered(&self.records, &next_closer_hash) {
+            return Err(DenialError::DenialProofIncomplete);
+        }
+        Ok(())
+    }
+
+    fn validate_zone_records(&self, signer_zone: &Name) -> Result<(), DenialError> {
+        let valid = !self.records.is_empty()
+            && self.records.iter().all(|record| {
+                is_nsec3_in_zone(record, signer_zone) && extract_owner_hash(record).is_some()
+            });
+        if valid {
+            Ok(())
+        } else {
+            Err(DenialError::DenialProofIncomplete)
         }
     }
-    Ok(false)
-}
 
-/// Verifies an NSEC3 NODATA proof (RFC 5155 §7.2.3 and §7.2.4).
-///
-/// # Errors
-/// Returns [`DenialError`] if proof fails.
-pub fn verify_nsec3_nodata(
-    proof: &Nsec3Proof,
-    qname: &Name,
-    qtype: RecordType,
-    cap: Nsec3IterationsCap,
-) -> Result<(), DenialError> {
-    proof.prove_type_does_not_exist(qname, qtype, cap)
+    fn closest_encloser_legs(
+        &self,
+        signer_zone: &Name,
+        qname: &Name,
+        cap: Nsec3IterationsCap,
+    ) -> Result<ClosestEncloserProof, DenialError> {
+        let closest_encloser = self.find_closest_encloser(signer_zone, qname, cap)?;
+        let legs = ClosestEncloserProof::new(qname, closest_encloser)?;
+        let next_closer_hash = hash_nsec3_name(legs.next_closer(), &self.params, cap)?;
+        if !is_hash_covered(&self.records, &next_closer_hash) {
+            return Err(DenialError::DenialProofIncomplete);
+        }
+        Ok(legs)
+    }
 }

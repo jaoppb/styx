@@ -4,15 +4,17 @@
 mod support;
 
 use styx_dnssec::domain::denial::{Nsec3Flags, Nsec3Params};
-use styx_dnssec::domain::nsec3::{base32hex_encode, hash_nsec3_name};
+use styx_dnssec::domain::nsec3::hash_nsec3_name;
 use styx_dnssec::domain::signature::compute_dnskey_digest;
 use styx_dnssec::{
-    InMemoryChainSource, Nsec3IterationsCap, ValidationPolicy, ValidationVerdict, Validator,
-    VerdictReason,
+    DigestType, InMemoryChainSource, Nsec3HashAlgorithm, Nsec3IterationsCap, ValidationPolicy,
+    ValidationVerdict, Validator, VerdictReason,
 };
 use styx_proto::domain::rdata::{DnskeyRdata, Nsec3Rdata, NsecRdata, TypeBitmap};
 use styx_proto::{Name, RData, RecordType, ResponseCode};
-use support::{a_record, clock, name, query, record, StaticAnchorSource, ZoneKey};
+use support::{
+    a_record, base32hex_encode, clock, name, query, record, StaticAnchorSource, ZoneKey,
+};
 
 fn root_only(root_key: &ZoneKey) -> InMemoryChainSource {
     let source = InMemoryChainSource::new();
@@ -20,8 +22,8 @@ fn root_only(root_key: &ZoneKey) -> InMemoryChainSource {
     source
 }
 
-#[test]
-fn test_multi_record_rrset_validation_succeeds() {
+#[tokio::test]
+async fn test_multi_record_rrset_validation_succeeds() {
     let root_key = ZoneKey::generate(&Name::root());
     let rrset = vec![a_record(&Name::root(), 1), a_record(&Name::root(), 2)];
 
@@ -31,14 +33,16 @@ fn test_multi_record_rrset_validation_succeeds() {
 
     let validator = Validator::new(clock(), ValidationPolicy::default());
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
-    let outcome = validator.validate(&message, &root_only(&root_key), &anchors);
+    let outcome = validator
+        .validate(&message, &root_only(&root_key), &anchors)
+        .await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
     assert_eq!(outcome.reason, VerdictReason::AnchorMatched);
 }
 
-#[test]
-fn test_multi_level_descent_and_subdomain_hostname() {
+#[tokio::test]
+async fn test_multi_level_descent_and_subdomain_hostname() {
     let root_key = ZoneKey::generate(&Name::root());
     let example_key = ZoneKey::generate(&name("example."));
     let source = root_only(&root_key);
@@ -54,19 +58,24 @@ fn test_multi_level_descent_and_subdomain_hostname() {
 
     let validator = Validator::new(clock(), ValidationPolicy::default());
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
-    let outcome = validator.validate(&message, &source, &anchors);
+    let outcome = validator.validate(&message, &source, &anchors).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
     assert_eq!(outcome.reason, VerdictReason::AnchorMatched);
 }
 
-#[test]
-fn test_nsec3_nodata_verification() {
+#[tokio::test]
+async fn test_nsec3_nodata_verification() {
     let root = Name::root();
     let root_key = ZoneKey::generate(&root);
 
     let salt = vec![0x12, 0x34];
-    let params = Nsec3Params::new(1, Nsec3Flags::new(0), 1, salt.clone());
+    let params = Nsec3Params::new(
+        Nsec3HashAlgorithm::SHA1,
+        Nsec3Flags::new(0),
+        1,
+        salt.clone(),
+    );
     let root_hash = hash_nsec3_name(&root, &params, Nsec3IterationsCap::DEFAULT).unwrap();
     let owner = name(&format!("{}.", base32hex_encode(&root_hash)));
     let a_only = TypeBitmap::new(vec![0x00, 0x01, 0x40]);
@@ -85,14 +94,16 @@ fn test_nsec3_nodata_verification() {
 
     let validator = Validator::new(clock(), ValidationPolicy::default());
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
-    let outcome = validator.validate(&message, &root_only(&root_key), &anchors);
+    let outcome = validator
+        .validate(&message, &root_only(&root_key), &anchors)
+        .await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
-    assert_eq!(outcome.reason, VerdictReason::AnchorMatched);
+    assert_eq!(outcome.reason, VerdictReason::ProvenDenialOfExistence);
 }
 
-#[test]
-fn test_unsigned_denial_rejected_as_bogus() {
+#[tokio::test]
+async fn test_unsigned_denial_rejected_as_bogus() {
     let root = Name::root();
     let root_key = ZoneKey::generate(&root);
     let nsec = record(
@@ -107,7 +118,9 @@ fn test_unsigned_denial_rejected_as_bogus() {
 
     let validator = Validator::new(clock(), ValidationPolicy::default());
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
-    let outcome = validator.validate(&message, &root_only(&root_key), &anchors);
+    let outcome = validator
+        .validate(&message, &root_only(&root_key), &anchors)
+        .await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
     assert_eq!(outcome.reason, VerdictReason::NoValidRrsig);
@@ -117,6 +130,6 @@ fn test_unsigned_denial_rejected_as_bogus() {
 fn test_sha1_ds_digest_computation() {
     let zone = name("example.com.");
     let dnskey = DnskeyRdata::new(257, 3, 8, vec![0x01, 0x02, 0x03, 0x04]);
-    let digest = compute_dnskey_digest(&zone, &dnskey, 1);
+    let digest = compute_dnskey_digest(&zone, &dnskey, DigestType::SHA1);
     assert_eq!(digest.map(|digest| digest.len()), Some(20));
 }

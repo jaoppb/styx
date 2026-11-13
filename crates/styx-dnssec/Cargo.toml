@@ -10,6 +10,7 @@ description = "styx DNSSEC validation feature crate."
 [dependencies]
 styx-proto = { path = "../styx-proto" }
 styx-core = { path = "../styx-core" }
+data-encoding.workspace = true
 ring.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

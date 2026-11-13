@@ -9,8 +9,8 @@ use styx_dnssec::{
 use styx_proto::{Name, RecordType};
 use support::{a_record, clock, query, StaticAnchorSource, ZoneKey};
 
-#[test]
-fn test_multi_key_rollover_validates_with_any_valid_signature() {
+#[tokio::test]
+async fn test_multi_key_rollover_validates_with_any_valid_signature() {
     let root = Name::root();
     let active = ZoneKey::generate(&root);
     let incoming = ZoneKey::generate_with_flags(&root, 256);
@@ -34,14 +34,14 @@ fn test_multi_key_rollover_validates_with_any_valid_signature() {
 
     let anchors = StaticAnchorSource::new(vec![active.anchor()]);
     let validator = Validator::new(clock(), ValidationPolicy::default());
-    let outcome = validator.validate(&message, &source, &anchors);
+    let outcome = validator.validate(&message, &source, &anchors).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
     assert_eq!(outcome.reason, VerdictReason::AnchorMatched);
 }
 
-#[test]
-fn test_unsupported_nsec3_hash_algorithm_yields_insecure() {
+#[tokio::test]
+async fn test_unsupported_nsec3_hash_algorithm_yields_insecure() {
     let root = Name::root();
     let active = ZoneKey::generate(&root);
     let source = InMemoryChainSource::new();
@@ -75,7 +75,7 @@ fn test_unsupported_nsec3_hash_algorithm_yields_insecure() {
 
     let anchors = StaticAnchorSource::new(vec![active.anchor()]);
     let validator = Validator::new(clock(), ValidationPolicy::default());
-    let outcome = validator.validate(&message, &source, &anchors);
+    let outcome = validator.validate(&message, &source, &anchors).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Insecure);
     assert_eq!(outcome.reason, VerdictReason::UnsupportedAlgorithm);
