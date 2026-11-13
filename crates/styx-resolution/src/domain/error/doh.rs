@@ -33,6 +33,10 @@ pub enum DohError {
     #[error("request body too large")]
     BodyTooLarge,
 
+    /// Reading the request body took longer than the stream deadline.
+    #[error("request body read timed out")]
+    BodyReadTimeout,
+
     /// A `POST` with no body.
     #[error("empty request body")]
     EmptyBody,
@@ -60,6 +64,7 @@ impl DohError {
             | Self::EmptyBody
             | Self::Unanswerable => 400,
             Self::BodyTooLarge => 413,
+            Self::BodyReadTimeout => 408,
             Self::StreamBudgetExceeded => 503,
         }
     }

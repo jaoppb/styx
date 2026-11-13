@@ -53,7 +53,7 @@ pub use infrastructure::cache::{
     Eviction, EvictionReport, Shard, ShardedAnswerCache, DEFAULT_SHARDS,
 };
 pub use infrastructure::do53::Do53Forwarder;
-pub use infrastructure::doh::DohListener;
+pub use infrastructure::doh::{DohListener, DohSettings};
 pub use infrastructure::dot::DotListener;
 pub use infrastructure::filter::AllowAllFilter;
 pub use infrastructure::local::NoLocalRecords;

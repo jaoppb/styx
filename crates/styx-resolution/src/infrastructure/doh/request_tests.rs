@@ -146,6 +146,7 @@ fn every_error_maps_to_its_documented_status() {
         (DohError::MissingDnsParameter, 400),
         (DohError::MalformedBase64Url, 400),
         (DohError::BodyTooLarge, 413),
+        (DohError::BodyReadTimeout, 408),
         (DohError::EmptyBody, 400),
         (DohError::Unanswerable, 400),
         (DohError::StreamBudgetExceeded, 503),

@@ -275,3 +275,39 @@ async fn http1_is_served_only_when_enabled() {
     assert_eq!(response.status(), 200);
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_stalled_request_body_times_out_with_408_and_releases_the_connection() {
+    let mut options = EncryptedOptions::default();
+    options.limits.idle_timeout = Duration::from_millis(200);
+    let mut server = boot(options).await;
+    let tls = tls_connect(server.doh(), &server.certificate, &[b"h2"])
+        .await
+        .unwrap();
+    let (mut sender, mut connection) = h2::client::handshake(tls).await.unwrap();
+    let request = hyper::Request::builder()
+        .method("POST")
+        .uri(DOH)
+        .header(hyper::header::CONTENT_TYPE, "application/dns-message")
+        .header(hyper::header::CONTENT_LENGTH, "16")
+        .body(())
+        .unwrap();
+    let (response, _body) = sender.send_request(request, false).unwrap();
+    let status = tokio::time::timeout(PROMPTLY, async {
+        tokio::select! {
+            response = response => response.unwrap().status(),
+            _ = &mut connection => panic!("connection ended before the 408 response"),
+        }
+    })
+    .await
+    .expect("a stalled body must time out rather than hang until shutdown");
+    assert_eq!(status, 408);
+
+    tokio::time::timeout(PROMPTLY, &mut connection)
+        .await
+        .expect(
+            "timed-out stream releases its in-flight slot so idle expiry can close the connection",
+        )
+        .unwrap();
+    server.shutdown().await;
+}

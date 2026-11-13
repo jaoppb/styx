@@ -15,9 +15,9 @@ use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
-use crate::domain::tls::TlsConfig;
+use crate::domain::tls::EncryptedLimits;
 use crate::infrastructure::admission::{ConnectionBudget, ListenerShared, WarnLimiter};
-use crate::infrastructure::doh::connection::{serve, DohSettings, StreamHandler};
+use crate::infrastructure::doh::connection::{DohEndpoint, DohSettings};
 use crate::infrastructure::malformed_warning::{ListenerKind, MalformedWarning};
 use crate::infrastructure::tcp::{is_descriptor_exhaustion, DESCRIPTOR_EXHAUSTION_BACKOFF};
 
@@ -27,10 +27,9 @@ pub struct DohListener<L, F, O, C, T = RefusedTerminal, S = SystemSleeper> {
     acceptor: TlsAcceptor,
     shared: ListenerShared<L, F, O, C, T, S>,
     connections: ConnectionBudget,
-    settings: DohSettings,
+    endpoint: Arc<DohEndpoint<L, F, O, C, T, S>>,
     bound_addr: SocketAddr,
     refusal_warning: WarnLimiter,
-    malformed_warning: Arc<MalformedWarning<C, S>>,
 }
 
 impl<L, F, O, C, T, S> DohListener<L, F, O, C, T, S>
@@ -42,7 +41,7 @@ where
     T: TerminalHandler + Send + Sync + 'static,
     S: Sleeper + Send + Sync + 'static,
 {
-    /// Binds a DoH listener to `addr`, serving `config`'s resource under its limits.
+    /// Binds a DoH listener to `addr`, serving `settings` under `limits`.
     ///
     /// # Errors
     /// Returns [`ListenerError::Io`] if the socket cannot be bound.
@@ -50,7 +49,8 @@ where
         addr: SocketAddr,
         acceptor: TlsAcceptor,
         shared: ListenerShared<L, F, O, C, T, S>,
-        config: &TlsConfig,
+        limits: EncryptedLimits,
+        settings: DohSettings,
     ) -> Result<Self, ListenerError> {
         let listener = TokioTcpListener::bind(addr).await?;
         let bound_addr = listener.local_addr()?;
@@ -63,19 +63,20 @@ where
             shared.shutdown.clone(),
             shared.abort.clone(),
         );
+        let endpoint = Arc::new(DohEndpoint::new(
+            shared.clone(),
+            malformed_warning,
+            limits,
+            settings,
+        ));
         Ok(Self {
             listener,
             acceptor,
             shared,
-            connections: ConnectionBudget::new(config.limits().max_connections),
-            settings: DohSettings {
-                resource: config.doh_path().clone(),
-                limits: config.limits(),
-                allow_http1: config.allow_http1(),
-            },
+            connections: ConnectionBudget::new(limits.max_connections),
+            endpoint,
             bound_addr,
             refusal_warning: WarnLimiter::default(),
-            malformed_warning,
         })
     }
 
@@ -122,12 +123,7 @@ where
             self.warn_limited("DoH connection ceiling reached; refusing connections");
             return Ok(());
         };
-        let handler = Arc::new(StreamHandler::new(
-            self.shared.clone(),
-            Arc::clone(&self.malformed_warning),
-            self.settings.clone(),
-            peer,
-        ));
+        let connection = self.endpoint.connection(peer);
         let acceptor = self.acceptor.clone();
         let closing = cancel.child_token();
         let abort = self.shared.abort.clone();
@@ -135,7 +131,7 @@ where
             let _permit = permit;
             tokio::select! {
                 () = abort.cancelled() => {}
-                () = serve(handler, acceptor, stream, closing) => {}
+                () = connection.serve(acceptor, stream, closing) => {}
             }
         });
         Ok(())

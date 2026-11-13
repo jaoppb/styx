@@ -33,7 +33,7 @@ mod warn_gate;
 pub use admission::{ConnectionBudget, ConnectionPermit, ListenerShared, QueryBudget, QueryPermit};
 pub use cache::{Eviction, EvictionReport, ShardedAnswerCache, DEFAULT_SHARDS};
 pub use do53::Do53Forwarder;
-pub use doh::DohListener;
+pub use doh::{DohListener, DohSettings};
 pub use dot::DotListener;
 pub use filter::AllowAllFilter;
 pub use local::NoLocalRecords;

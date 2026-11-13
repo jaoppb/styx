@@ -17,7 +17,7 @@ use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
 use crate::domain::tls::TlsConfig;
 use crate::infrastructure::admission::ListenerShared;
-use crate::infrastructure::doh::DohListener;
+use crate::infrastructure::doh::{DohListener, DohSettings};
 use crate::infrastructure::dot::DotListener;
 use crate::infrastructure::supervisor::{spawn_listener_supervisor, SupervisorBackoffPolicy};
 use crate::infrastructure::tls::TlsServerSetup;
@@ -91,12 +91,17 @@ where
                 self.cancel.clone(),
             ));
         }
+        let settings = DohSettings::new(
+            encrypted.config.doh_path().clone(),
+            encrypted.config.allow_http1(),
+        );
         for &addr in encrypted.config.doh_listen_addrs() {
             let doh = DohListener::bind(
                 addr,
                 encrypted.setup.doh(),
                 self.shared.clone(),
-                &encrypted.config,
+                limits,
+                settings.clone(),
             )
             .await
             .map_err(|e| bind_error(addr, e))?;

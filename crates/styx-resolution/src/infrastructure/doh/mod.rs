@@ -10,6 +10,7 @@ pub mod listener;
 pub mod request;
 pub mod response;
 
+pub use connection::DohSettings;
 pub use listener::DohListener;
 pub use request::{accept_body, extract_head, DohHead, DohRequestForm, DNS_MESSAGE_MEDIA_TYPE};
 pub use response::DohResponse;
