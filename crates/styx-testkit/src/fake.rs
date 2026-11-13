@@ -1,7 +1,7 @@
 //! In-process fake DNS name servers — root, TLD or authoritative — over real
 //! UDP and TCP sockets.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 use styx_proto::Question;
@@ -71,9 +71,12 @@ impl FakeNameServer {
         let received = Arc::new(Mutex::new(Vec::new()));
         let script = Arc::new(script);
 
-        let udp_socket = Arc::new(UdpSocket::bind(address).await?);
+        let UdpTcpPair {
+            udp,
+            tcp: tcp_listener,
+        } = bind_udp_tcp_pair_on(address).await?;
+        let udp_socket = Arc::new(udp);
         let udp_addr = udp_socket.local_addr()?;
-        let tcp_listener = TcpListener::bind(udp_addr).await?;
         let tcp_addr = tcp_listener.local_addr()?;
 
         let shared = Shared {
@@ -151,6 +154,60 @@ impl Shared {
         }
         exchange.reply
     }
+}
+
+/// Maximum attempts to bind a matching TCP/UDP ephemeral port pair on `AddrInUse`.
+const MAX_BIND_ATTEMPTS: usize = 32;
+
+/// Bound UDP and TCP sockets sharing one local address.
+#[derive(Debug)]
+pub struct UdpTcpPair {
+    /// Bound UDP socket.
+    pub udp: UdpSocket,
+    /// Bound TCP listener on the same address and port.
+    pub tcp: TcpListener,
+}
+
+/// Binds an ephemeral UDP and TCP socket pair on the same port of `ip`.
+///
+/// # Errors
+/// Returns [`HarnessError`] if binding fails with a non-`AddrInUse` I/O error
+/// or if no matching port can be acquired within 32 attempts.
+pub async fn bind_udp_tcp_pair(ip: IpAddr) -> Result<UdpTcpPair, HarnessError> {
+    bind_udp_tcp_pair_on(SocketAddr::new(ip, 0)).await
+}
+
+/// Binds a UDP and TCP socket pair on `address`, retrying on `AddrInUse` only
+/// when `address.port() == 0`.
+///
+/// # Errors
+/// Returns [`HarnessError`] if binding fails, propagating `AddrInUse` directly
+/// for a fixed port or after 32 ephemeral attempts.
+pub async fn bind_udp_tcp_pair_on(address: SocketAddr) -> Result<UdpTcpPair, HarnessError> {
+    if address.port() != 0 {
+        return Ok(try_bind_pair(address).await?);
+    }
+    for _ in 0..MAX_BIND_ATTEMPTS {
+        match try_bind_pair(address).await {
+            Ok(pair) => return Ok(pair),
+            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AddrInUse,
+        format!(
+            "failed to bind matching UDP/TCP pair on {address} after {MAX_BIND_ATTEMPTS} attempts"
+        ),
+    )
+    .into())
+}
+
+async fn try_bind_pair(address: SocketAddr) -> std::io::Result<UdpTcpPair> {
+    let tcp = TcpListener::bind(address).await?;
+    let udp_addr = SocketAddr::new(address.ip(), tcp.local_addr()?.port());
+    let udp = UdpSocket::bind(udp_addr).await?;
+    Ok(UdpTcpPair { udp, tcp })
 }
 
 async fn serve_udp(socket: Arc<UdpSocket>, shared: Shared) {

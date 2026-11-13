@@ -4,7 +4,7 @@
 //! `styx-proto`, tracks query counts, and supports dynamic behavior scripting
 //! (delay, timeout, truncation, SERVFAIL/REFUSED, ID mismatch, drop).
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
@@ -25,6 +25,7 @@ use tokio::net::{TcpListener, UdpSocket};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::HarnessError;
+use crate::fake::{bind_udp_tcp_pair, UdpTcpPair};
 
 /// Scripted response behavior for a [`CommandableUpstream`].
 #[derive(Debug, Clone)]
@@ -103,9 +104,12 @@ impl CommandableUpstream {
         let query_count = Arc::new(AtomicUsize::new(0));
         let behavior = Arc::new(RwLock::new(UpstreamBehavior::Normal));
 
-        let tcp_listener = TcpListener::bind("127.0.0.1:0").await?;
+        let UdpTcpPair {
+            udp,
+            tcp: tcp_listener,
+        } = bind_udp_tcp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST)).await?;
         let shared_addr = tcp_listener.local_addr()?;
-        let udp_socket = Arc::new(UdpSocket::bind(shared_addr).await?);
+        let udp_socket = Arc::new(udp);
         let udp_addr = shared_addr;
         let tcp_addr = shared_addr;
 
