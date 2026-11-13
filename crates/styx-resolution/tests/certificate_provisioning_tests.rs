@@ -155,12 +155,17 @@ struct Logged {
 }
 
 #[derive(Default)]
-struct Message(String);
+struct Message {
+    message: String,
+    fields: Vec<String>,
+}
 
 impl Visit for Message {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
-            self.0 = format!("{value:?}");
+            self.message = format!("{value:?}");
+        } else {
+            self.fields.push(format!("{}={value:?}", field.name()));
         }
     }
 }
@@ -176,7 +181,7 @@ impl<S: Subscriber> Layer<S> for Capture {
             // Called as a path, not a method: arch-lint's no-sync-io matches a bare
             // `.metadata()` call as if it were `std::fs::metadata`.
             level: *Event::metadata(event).level(),
-            message: message.0,
+            message: format!("{} {}", message.message, message.fields.join(" ")),
         });
     }
 }
@@ -318,4 +323,51 @@ async fn existing_pin_reports_absence_without_generating() {
             .unwrap(),
         Some(existing.pin())
     );
+}
+
+struct FailingStore;
+
+impl SelfSignedStore for FailingStore {
+    async fn load_existing(&self, dir: &Path) -> Result<Option<ServingIdentity>, CertificateError> {
+        Err(CertificateError::InsecurePermissions {
+            path: dir.join("key.pem"),
+        })
+    }
+
+    async fn generate(
+        &self,
+        _dir: &Path,
+        _names: &[String],
+        _now: SystemTime,
+    ) -> Result<ServingIdentity, CertificateError> {
+        unreachable!("operator certificate is configured")
+    }
+}
+
+#[tokio::test]
+async fn unreadable_stale_self_signed_material_logs_its_error_separately() {
+    let capture = Capture::default();
+    let _guard = capture.install();
+    let clock = Arc::new(TestClock::new());
+    clock.set_utc(epoch_plus(5));
+    let operator = identity(b"operator", CertificateOrigin::OperatorSupplied, false);
+    let provisioner = CertificateProvisioner::new(
+        clock,
+        FakeLoader {
+            serves: Some(operator.clone()),
+            loads: Arc::new(AtomicUsize::new(0)),
+        },
+        FailingStore,
+    );
+
+    let served = provisioner.resolve(&config(true)).await.unwrap();
+
+    assert_eq!(served.pin(), operator.pin());
+    let warnings = capture.at(Level::WARN);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("unusable self-signed material"),
+        "{warnings:?}"
+    );
+    assert!(warnings[0].contains("chmod 600"), "{warnings:?}");
 }

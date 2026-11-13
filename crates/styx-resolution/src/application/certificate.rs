@@ -97,12 +97,19 @@ where
     ) -> Result<ServingIdentity, CertificateError> {
         let identity = self.reader.load(cert_path, key_path).await?;
         let stale = self.store.load_existing(config.self_signed_dir()).await;
-        if matches!(stale, Ok(Some(_)) | Err(_)) {
-            tracing::warn!(
+        match stale {
+            Ok(Some(_)) => tracing::warn!(
                 dir = %config.self_signed_dir().display(),
                 "self-signed material is present but the operator certificate is configured \
                  and serves; the self-signed pin is not in use"
-            );
+            ),
+            Err(error) => tracing::warn!(
+                dir = %config.self_signed_dir().display(),
+                %error,
+                "unusable self-signed material in fallback directory is ignored because the \
+                 operator certificate is configured and serves"
+            ),
+            Ok(None) => {}
         }
         Ok(identity)
     }
