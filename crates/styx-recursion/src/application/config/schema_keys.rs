@@ -5,8 +5,6 @@
 //! is then checked against `config/styx.example.toml`, which must mention every key, and
 //! the example's commented values must equal the defaults.
 
-use std::time::Duration;
-
 use styx_testkit::{ExampleDocument, SchemaTable};
 
 use super::raw::RawSettings;
@@ -64,7 +62,7 @@ fn recursion_schema_keys_match_the_example() {
 fn commented_recursion_keys_equal_the_defaults() {
     let enabled = ExampleDocument::parse(EXAMPLE).enabled();
     let parsed = RecursionSection::from_toml_str(&enabled)
-        .and_then(|section| section.for_member("recursor", Duration::from_secs(5)));
+        .and_then(|section| section.for_member("recursor"));
     assert!(
         matches!(&parsed, Ok(config) if config.capacity == InfraCapacity::default()),
         "switched-on example must parse with the default capacity: {parsed:?}"

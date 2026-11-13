@@ -4,8 +4,6 @@ use crate::domain::budget::{
 
 use super::*;
 
-const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
-
 const TWO_RECURSORS: &str = r#"
 [recursion]
 root_hints = "/etc/named.root"
@@ -31,7 +29,7 @@ fn section(text: &str) -> RecursionSection {
 fn each_member_merges_its_overrides_over_the_shared_section_and_the_defaults() {
     let section = section(TWO_RECURSORS);
 
-    let v4 = section.for_member("recursor-v4", QUERY_TIMEOUT).unwrap();
+    let v4 = section.for_member("recursor-v4").unwrap();
     assert_eq!(v4.root_hints, PathBuf::from("/etc/named.root"));
     assert_eq!(
         v4.settings(),
@@ -50,7 +48,7 @@ fn each_member_merges_its_overrides_over_the_shared_section_and_the_defaults() {
     assert_eq!(v4.tcp_timeout, DEFAULT_TCP_TIMEOUT);
     assert_eq!(v4.capacity, InfraCapacity::default());
 
-    let far = section.for_member("recursor-far", QUERY_TIMEOUT).unwrap();
+    let far = section.for_member("recursor-far").unwrap();
     assert_eq!(far.root_hints, PathBuf::from("/srv/other.root"));
     assert_eq!(
         far.settings(),
@@ -74,7 +72,7 @@ fn each_member_merges_its_overrides_over_the_shared_section_and_the_defaults() {
 #[test]
 fn a_member_without_overrides_takes_the_shared_section() {
     let section = section("[recursion]\nroot_hints = \"/etc/named.root\"\n");
-    let config = section.for_member("recursor", QUERY_TIMEOUT).unwrap();
+    let config = section.for_member("recursor").unwrap();
     assert_eq!(config.limits, DescentLimits::default());
     assert!(config.use_ipv6);
 }
@@ -82,9 +80,9 @@ fn a_member_without_overrides_takes_the_shared_section() {
 #[test]
 fn a_member_naming_its_own_root_hints_needs_no_shared_section() {
     let section = section("[recursion.members.solo]\nroot_hints = \"/etc/named.root\"\n");
-    assert!(section.for_member("solo", QUERY_TIMEOUT).is_ok());
+    assert!(section.for_member("solo").is_ok());
     assert_eq!(
-        section.for_member("other", QUERY_TIMEOUT),
+        section.for_member("other"),
         Err(ConfigError::member("other", ConfigError::MissingRootHints))
     );
 }
@@ -94,7 +92,7 @@ fn without_any_recursion_section_a_recursor_has_no_root_hints() {
     let section = section("listen_addrs = []");
     assert_eq!(section, RecursionSection::default());
     assert_eq!(
-        section.for_member("recursor", QUERY_TIMEOUT),
+        section.for_member("recursor"),
         Err(ConfigError::member(
             "recursor",
             ConfigError::MissingRootHints
@@ -123,7 +121,7 @@ fn an_unknown_key_in_a_member_override_names_the_member() {
 fn a_zero_limit_in_a_member_override_names_the_member() {
     let zero = "[recursion]\nroot_hints = \"x\"\n[recursion.members.recursor-v4]\nmax_depth = 0\n";
     assert_eq!(
-        section(zero).for_member("recursor-v4", QUERY_TIMEOUT),
+        section(zero).for_member("recursor-v4"),
         Err(ConfigError::member(
             "recursor-v4",
             ConfigError::ZeroLimit("max_depth")
@@ -155,28 +153,5 @@ fn an_override_for_a_name_that_is_not_a_recursor_is_rejected() {
     assert_eq!(
         section.check_overrides(&["recursor-v4"]),
         Err(ConfigError::UnknownMember("recursor-far".to_owned()))
-    );
-}
-
-#[test]
-fn a_wall_clock_that_outlasts_the_query_deadline_names_the_member() {
-    let section = section(TWO_RECURSORS);
-    let deadline = Duration::from_millis(4000);
-    assert!(section.for_member("recursor-v4", deadline).is_ok());
-    assert_eq!(
-        section.for_member("recursor-far", deadline),
-        Err(ConfigError::member(
-            "recursor-far",
-            ConfigError::WallClockOutlastsDeadline {
-                wall_clock: Duration::from_millis(4500),
-                query_timeout: deadline,
-            }
-        ))
-    );
-    assert!(
-        section
-            .for_member("recursor-v4", Duration::from_millis(3000))
-            .is_err(),
-        "a wall clock equal to the deadline is cut off by it too"
     );
 }

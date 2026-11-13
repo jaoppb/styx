@@ -55,10 +55,7 @@ fn recursors(recursion: &str) -> Result<Vec<RecursionConfig>, ConfigError> {
         .collect();
     let section = RecursionSection::from_toml_str(&text)?;
     section.check_overrides(&names)?;
-    names
-        .iter()
-        .map(|name| section.for_member(name, server.query_timeout))
-        .collect()
+    names.iter().map(|name| section.for_member(name)).collect()
 }
 
 #[test]
@@ -125,18 +122,6 @@ fn an_override_for_a_forwarder_or_a_misspelt_member_fails() {
         .expect_err("an override nothing uses is rejected");
         assert_eq!(error, ConfigError::UnknownMember(name.to_owned()));
     }
-}
-
-#[test]
-fn a_member_wall_clock_past_the_query_deadline_fails_naming_the_member() {
-    let error = recursors(&format!(
-        "{SHARED}[recursion.members.recursor-tight]\nwall_clock_ms = 5000\n"
-    ))
-    .expect_err("the deadline would cut the descent off");
-    assert!(
-        matches!(&error, ConfigError::Member { member, .. } if member == "recursor-tight"),
-        "{error:?}"
-    );
 }
 
 #[test]

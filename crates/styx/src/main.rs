@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
         .context("missing [upstream] configuration")?;
 
     let clock = Arc::new(SystemClock::new());
-    let recursion = RecursionWiring::new(recursion, pool_config, config.query_timeout)?;
+    let recursion = RecursionWiring::new(recursion, pool_config)?;
     let pool = build_pool(pool_config, &recursion, &clock).await?;
     let pipeline = build_pipeline(pool.clone(), clock.clone(), config.query_timeout, cache)?;
 
@@ -98,23 +98,17 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The `[recursion]` section, the deadline every recursor's wall clock must end
-/// before, and the diagnostics store the admin/web layer will read (Phase 11), shared by
-/// every recursor and keyed by member.
+/// The `[recursion]` section and the diagnostics store the admin/web layer will read
+/// (Phase 11), shared by every recursor and keyed by member.
 struct RecursionWiring {
     section: RecursionSection,
-    query_timeout: Duration,
     diagnostics: Arc<DiagnosticsStore>,
 }
 
 impl RecursionWiring {
     /// Rejects a `[recursion.members.<name>]` table that names no recursor of the pool:
     /// its overrides would otherwise be silently unused.
-    fn new(
-        section: RecursionSection,
-        pool_config: &PoolConfig,
-        query_timeout: Duration,
-    ) -> anyhow::Result<Self> {
+    fn new(section: RecursionSection, pool_config: &PoolConfig) -> anyhow::Result<Self> {
         let recursors: Vec<&str> = pool_config
             .members
             .iter()
@@ -124,7 +118,6 @@ impl RecursionWiring {
         section.check_overrides(&recursors)?;
         Ok(Self {
             section,
-            query_timeout,
             diagnostics: Arc::new(DiagnosticsStore::new()),
         })
     }
@@ -138,7 +131,7 @@ impl RecursionWiring {
         id: UpstreamId,
         clock: &Arc<SystemClock>,
     ) -> anyhow::Result<ProductionRecursor> {
-        let config = self.section.for_member(id.as_str(), self.query_timeout)?;
+        let config = self.section.for_member(id.as_str())?;
         let hints = RootHints::from_config_path(&config.root_hints)
             .await
             .with_context(|| format!("failed to load root hints for recursor member '{id}'"))?;

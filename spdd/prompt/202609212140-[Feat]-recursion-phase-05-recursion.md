@@ -631,10 +631,8 @@ resolves member override → `[recursion]` → the built-in constant. The overri
 recursion setting. Both tables reject unknown keys, and an override table that names no
 recursor of the pool is a startup error, so a typo cannot fall back to a default in
 silence. Validation runs on each merged result, with the member's name in the error: a
-zero limit, no `root_hints` anywhere, or a `wall_clock_ms` that does not end before
-`query_timeout` (the deadline would otherwise cut a descent off before its own budget
-could fail it). The shared section is optional: a member that names its own `root_hints`
-needs none.
+zero limit or no `root_hints` anywhere. The shared section is optional: a member that names
+its own `root_hints` needs none.
 
 ### 8. Errors and observability
 
@@ -1518,9 +1516,8 @@ constraint 3.
   resolution.
 - Every recursion setting is overridable per recursor member through
   `[recursion.members.<name>]`, and every merged result is validated with the member's
-  name in the error: unknown keys, zero limits, missing root hints, an override for a name
-  that is not a recursor, and a wall clock that does not end before `query_timeout` all
-  stop startup.
+  name in the error: unknown keys, zero limits, missing root hints, and an override for a
+  name that is not a recursor all stop startup.
 - **Accepted consequence, carried forward: changing an upstream requires SSH and a
   restart, which is the thing people most want to do from the UI.**
 

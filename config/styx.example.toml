@@ -98,7 +98,7 @@ addr = "9.9.9.9:53"
 
 # Infrastructure for the recursor, shared by every recursor member as its default. The
 # root-hints file is the only source of root servers: a missing or unparseable file stops
-# styx at startup. wall_clock_ms must stay below query_timeout_secs.
+# styx at startup.
 [recursion]
 root_hints = "config/named.root"
 # This path is relative to the directory styx is started from, so run styx from the

@@ -1,7 +1,5 @@
 //! The recursion crate's error types.
 
-use std::time::Duration;
-
 use thiserror::Error;
 
 /// Which denial-of-service bound a descent ran into.
@@ -95,19 +93,6 @@ pub enum ConfigError {
     /// root-hints file.
     #[error("no root_hints in [recursion] or in the member's overrides")]
     MissingRootHints,
-    /// The descent wall clock does not end before the whole-query deadline, so the
-    /// deadline would cut a descent off before its own budget could fail it.
-    #[error(
-        "wall_clock_ms ({}ms) must be below query_timeout ({}ms)",
-        .wall_clock.as_millis(),
-        .query_timeout.as_millis()
-    )]
-    WallClockOutlastsDeadline {
-        /// The member's descent wall clock.
-        wall_clock: Duration,
-        /// The server's whole-query deadline.
-        query_timeout: Duration,
-    },
     /// A `[recursion.members.<name>]` table names no recursor member of the pool.
     #[error("[recursion.members.{0}] names no recursor member of the pool")]
     UnknownMember(String),

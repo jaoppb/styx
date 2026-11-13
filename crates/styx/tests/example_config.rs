@@ -49,7 +49,7 @@ fn problem_with(text: &str) -> Option<String> {
     recursors.iter().find_map(|name| {
         parsed
             .recursion
-            .for_member(name, parsed.server.query_timeout)
+            .for_member(name)
             .err()
             .map(|error| error.to_string())
     })

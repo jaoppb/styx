@@ -134,19 +134,13 @@ impl RecursionSection {
     /// # Errors
     ///
     /// Returns [`ConfigError::Member`] naming `member` when the merged settings name no
-    /// root hints, hold a zero limit, or give a wall clock that does not end before
-    /// `query_timeout`.
-    pub fn for_member(
-        &self,
-        member: &str,
-        query_timeout: Duration,
-    ) -> Result<RecursionConfig, ConfigError> {
+    /// root hints or hold a zero limit.
+    pub fn for_member(&self, member: &str) -> Result<RecursionConfig, ConfigError> {
         let raw = self
             .overrides
             .get(member)
             .map_or_else(|| self.defaults.clone(), |own| own.over(&self.defaults));
         raw.resolve()
-            .and_then(|config| config.check_deadline(query_timeout).map(|()| config))
             .map_err(|reason| ConfigError::member(member, reason))
     }
 
@@ -176,19 +170,6 @@ impl RecursionConfig {
             limits: self.limits,
             use_ipv6: self.use_ipv6,
         }
-    }
-
-    /// A descent that may outlast the whole-query deadline is cut off by it instead of
-    /// failing on its own budget, so `wall_clock_ms` must end first.
-    fn check_deadline(&self, query_timeout: Duration) -> Result<(), ConfigError> {
-        let wall_clock = self.limits.wall_clock();
-        if wall_clock < query_timeout {
-            return Ok(());
-        }
-        Err(ConfigError::WallClockOutlastsDeadline {
-            wall_clock,
-            query_timeout,
-        })
     }
 }
 
