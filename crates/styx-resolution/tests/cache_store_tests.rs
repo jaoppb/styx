@@ -159,7 +159,7 @@ fn make_test_key(name: &str) -> Option<CacheKey> {
 /// Single shard holding three entries, so the hand's walk is deterministic.
 fn three_slot_cache(clock: &Arc<TestClock>) -> ShardedAnswerCache<TestClock> {
     let capacity = CacheCapacity::new(3, HeapBytes::new(1024 * 1024));
-    ShardedAnswerCache::new(Arc::clone(clock), capacity, TtlPolicy::default(), 1).expect("cache")
+    ShardedAnswerCache::new(Arc::clone(clock), capacity, 1).expect("cache")
 }
 
 fn admit_record(
@@ -282,13 +282,7 @@ fn run_worker(c: Arc<ShardedAnswerCache<TestClock>>, clk: Arc<TestClock>, task_i
 async fn test_concurrent_admissions_safety() {
     let clock = Arc::new(TestClock::new());
     let cache = Arc::new(
-        ShardedAnswerCache::new(
-            Arc::clone(&clock),
-            CacheCapacity::default(),
-            TtlPolicy::default(),
-            8,
-        )
-        .expect("cache"),
+        ShardedAnswerCache::new(Arc::clone(&clock), CacheCapacity::default(), 8).expect("cache"),
     );
 
     let mut handles = Vec::new();

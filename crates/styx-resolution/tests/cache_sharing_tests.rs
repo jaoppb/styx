@@ -64,7 +64,6 @@ fn fixed_seed_cache(clock: &Arc<TestClock>) -> ShardedAnswerCache<TestClock, Fix
     ShardedAnswerCache::with_hasher(
         Arc::clone(clock),
         CacheCapacity::default(),
-        TtlPolicy::default(),
         DEFAULT_SHARDS,
         FixedSeed::default(),
     )

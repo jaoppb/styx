@@ -25,7 +25,7 @@ use styx_recursion::infrastructure::do53_transport::{Do53Transport, DNS_PORT};
 use styx_recursion::infrastructure::infra_cache::MemoryInfraCache;
 use styx_recursion::infrastructure::sinks::{DiagnosticsStore, DiscardChainMaterial};
 use styx_resolution::{
-    Admission, AllowAllFilter, AnswerCache, CacheConfig, CacheStage, CanaryConfig,
+    Admission, AllowAllFilter, CacheConfig, CacheStage, CacheStatsLogger, CanaryConfig,
     ConfiguredStrategy, DiscardObserver, Do53Forwarder, NoLocalRecords, Pipeline, PoolConfig,
     PoolMember, ProbePolicy, ProbeScheduler, Server, ServerConfig, ShardedAnswerCache, TtlPolicy,
     UpstreamConfig, UpstreamPool,
@@ -85,16 +85,14 @@ async fn main() -> anyhow::Result<()> {
         cache.ttl,
     );
 
-    let probe_cancel = CancellationToken::new();
+    let sleeper = Arc::new(SystemSleeper::new());
+    let bg_cancel = CancellationToken::new();
     let scheduler = ProbeScheduler::new(pool, clock.clone(), pool_config.probe.tick);
-    let probe_token = probe_cancel.clone();
-    tokio::spawn(async move {
-        scheduler.run(probe_token).await;
-    });
-    let stats_cancel = CancellationToken::new();
-    tokio::spawn(log_cache_stats(answer_cache, stats_cancel.clone()));
+    tokio::spawn(scheduler.run(bg_cancel.clone()));
+    let stats_logger = CacheStatsLogger::new(answer_cache, sleeper.clone(), CACHE_STATS_INTERVAL);
+    let stats_handle = tokio::spawn(stats_logger.run(bg_cancel.clone()));
 
-    let mut server = Server::bind(config, pipeline, clock, Arc::new(SystemSleeper::new()))
+    let mut server = Server::bind(config, pipeline, clock, sleeper)
         .await
         .context("failed to bind server listeners")?;
 
@@ -107,12 +105,14 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to listen for shutdown signal")?;
 
     tracing::info!("shutdown signal received; closing listeners");
-    probe_cancel.cancel();
-    stats_cancel.cancel();
+    bg_cancel.cancel();
     server
         .shutdown()
         .await
         .context("failed to shut down server")?;
+    stats_handle
+        .await
+        .context("cache stats logger task failed")?;
     Ok(())
 }
 
@@ -221,18 +221,13 @@ fn build_cache(
     clock: Arc<SystemClock>,
     cache_config: &CacheConfig,
 ) -> anyhow::Result<Arc<ConcreteCache>> {
-    let cache = ShardedAnswerCache::new(
-        clock,
-        cache_config.capacity,
-        cache_config.ttl,
-        cache_config.shards,
-    )
-    .context("failed to size the answer cache from [cache]")?;
+    let cache = ShardedAnswerCache::new(clock, cache_config.capacity, cache_config.shards)
+        .context("failed to size the answer cache from [cache]")?;
     Ok(Arc::new(cache))
 }
 
 /// The TTL clamps are applied by the stage's admission, not by the cache store, so the
-/// configured policy has to reach `Admission` for `[cache]` to change anything.
+/// configured policy goes straight to `Admission`.
 fn build_pipeline(
     pool: Arc<ConcretePool>,
     clock: Arc<SystemClock>,
@@ -256,17 +251,6 @@ fn build_pipeline(
         )
         .with_terminal(cache_stage),
     )
-}
-
-async fn log_cache_stats(cache: Arc<ConcreteCache>, shutdown: CancellationToken) {
-    loop {
-        tokio::select! {
-            () = shutdown.cancelled() => break,
-            () = tokio::time::sleep(CACHE_STATS_INTERVAL) => {
-                tracing::debug!(stats = ?cache.stats(), "answer cache stats");
-            }
-        }
-    }
 }
 
 /// What the TOML file holds, one parsed section per owner.
