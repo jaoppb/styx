@@ -340,7 +340,9 @@ impl SelfSignedStore for FailingStore {
         _names: &[String],
         _now: SystemTime,
     ) -> Result<ServingIdentity, CertificateError> {
-        unreachable!("operator certificate is configured")
+        Err(CertificateError::GenerationFailed(
+            "unexpected generate call".into(),
+        ))
     }
 }
 
