@@ -159,3 +159,31 @@ async fn missing_and_malformed_operator_files_name_the_file_at_fault() {
         "{error}"
     );
 }
+
+#[tokio::test]
+async fn failed_cert_persist_leaves_no_orphan_key_behind() {
+    let scratch = Scratch::new();
+    let blocker = scratch.path(SELF_SIGNED_CERT_FILE);
+    tokio::fs::create_dir_all(&blocker).await.unwrap();
+
+    let error = SelfSignedGenerator::new()
+        .generate(scratch.dir(), &names(), fixture_now())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, CertificateError::PersistFailed { .. }),
+        "{error}"
+    );
+    assert!(
+        !tokio::fs::try_exists(scratch.path(SELF_SIGNED_KEY_FILE))
+            .await
+            .unwrap(),
+        "key.pem must not survive when cert.pem failed to persist"
+    );
+    let mut entries = tokio::fs::read_dir(scratch.dir()).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        assert!(!name.ends_with(".tmp"), "leftover temp file: {name}");
+    }
+}

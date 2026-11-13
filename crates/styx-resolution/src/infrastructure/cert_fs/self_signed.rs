@@ -5,6 +5,7 @@
 //! permissions: the key is owner-only, and a key found readable by anyone else is refused.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use rcgen::{CertificateParams, DnType, KeyPair};
@@ -71,8 +72,14 @@ impl SelfSignedStore for SelfSignedGenerator {
         let cert_path = dir.join(SELF_SIGNED_CERT_FILE);
         let key_path = dir.join(SELF_SIGNED_KEY_FILE);
         create_dir(dir).await?;
-        write_new(&key_path, minted.key_pem.as_bytes(), 0o600).await?;
-        write_new(&cert_path, minted.cert_pem.as_bytes(), 0o644).await?;
+        persist_pair(
+            dir,
+            &cert_path,
+            &key_path,
+            minted.cert_pem.as_bytes(),
+            minted.key_pem.as_bytes(),
+        )
+        .await?;
         let pair = PemPair {
             cert_path: &cert_path,
             cert_pem: minted.cert_pem.into_bytes(),
@@ -138,6 +145,79 @@ async fn create_dir(dir: &Path) -> Result<(), CertificateError> {
             path: dir.to_path_buf(),
             reason: error.to_string(),
         })
+}
+
+/// Writes both files to temporary paths in `dir`, syncs them, and renames them into place
+/// with the certificate last so a failure never leaves a half-written pair on disk.
+async fn persist_pair(
+    dir: &Path,
+    cert_path: &Path,
+    key_path: &Path,
+    cert_bytes: &[u8],
+    key_bytes: &[u8],
+) -> Result<(), CertificateError> {
+    let (temp_key, temp_cert) = temp_paths(dir);
+    write_new(&temp_key, key_bytes, 0o600).await?;
+    if let Err(err) = write_new(&temp_cert, cert_bytes, 0o644).await {
+        remove_quietly(&temp_key).await;
+        return Err(err);
+    }
+    if let Err(err) = rename_file(&temp_key, key_path).await {
+        remove_quietly(&temp_key).await;
+        remove_quietly(&temp_cert).await;
+        return Err(err);
+    }
+    if let Err(err) = rename_file(&temp_cert, cert_path).await {
+        remove_quietly(key_path).await;
+        remove_quietly(&temp_cert).await;
+        return Err(err);
+    }
+    sync_dir(dir).await
+}
+
+fn temp_paths(dir: &Path) -> (PathBuf, PathBuf) {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let key = dir.join(format!(".{SELF_SIGNED_KEY_FILE}.{pid}.{seq}.tmp"));
+    let cert = dir.join(format!(".{SELF_SIGNED_CERT_FILE}.{pid}.{seq}.tmp"));
+    (key, cert)
+}
+
+async fn rename_file(from: &Path, to: &Path) -> Result<(), CertificateError> {
+    tokio::fs::rename(from, to)
+        .await
+        .map_err(|error| CertificateError::PersistFailed {
+            path: to.to_path_buf(),
+            reason: error.to_string(),
+        })
+}
+
+async fn remove_quietly(path: &Path) {
+    let _ = tokio::fs::remove_file(path).await;
+}
+
+#[cfg(unix)]
+async fn sync_dir(dir: &Path) -> Result<(), CertificateError> {
+    let handle =
+        tokio::fs::File::open(dir)
+            .await
+            .map_err(|error| CertificateError::PersistFailed {
+                path: dir.to_path_buf(),
+                reason: error.to_string(),
+            })?;
+    handle
+        .sync_all()
+        .await
+        .map_err(|error| CertificateError::PersistFailed {
+            path: dir.to_path_buf(),
+            reason: error.to_string(),
+        })
+}
+
+#[cfg(not(unix))]
+async fn sync_dir(_dir: &Path) -> Result<(), CertificateError> {
+    Ok(())
 }
 
 /// Writes a file that must not exist yet, with `mode` applied at creation so the key is
