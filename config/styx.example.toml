@@ -28,6 +28,11 @@ query_timeout_secs = 5
 # max_in_flight_queries = 1024
 # max_tcp_connections = 256
 
+# Answer every AAAA question NOERROR with no records, without asking an upstream, so
+# clients on a network with a broken IPv6 path fall back to IPv4. A local record for the
+# name still answers, and a blocked name is still blocked.
+# filter_aaaa = false
+
 # How the listener supervisor backs off when a listener task dies.
 # [supervisor]
 # initial_backoff_ms = 50

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `filter_aaaa = true` at the top of `styx.toml` answers every AAAA question NOERROR with
+  no records, without asking an upstream and without caching the reply, so clients fall
+  back to IPv4. Local records and blocked names keep their own answers. Off by default.
+  HTTPS and SVCB answers may still carry an `ipv6hint`.
 - Recursion settings can be overridden per recursor member: a
   `[recursion.members.<name>]` table sets any `[recursion]` key for that member alone,
   and unset keys fall back to `[recursion]`, then to the built-in defaults. A member that
