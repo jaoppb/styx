@@ -164,3 +164,19 @@ fn an_override_for_a_name_that_is_not_a_recursor_is_rejected() {
         Err(ConfigError::UnknownMember("recursor-far".to_owned()))
     );
 }
+
+#[test]
+fn validate_checks_overrides_and_resolves_every_recursor() {
+    let section = section(TWO_RECURSORS);
+    let resolved = section
+        .validate(&["recursor-v4", "recursor-far"])
+        .expect("both recursors validate");
+    assert_eq!(resolved.len(), 2);
+    assert!(!resolved["recursor-v4"].use_ipv6);
+    assert_eq!(resolved["recursor-far"].capacity.max_servers, 50);
+
+    assert_eq!(
+        section.validate(&["recursor-v4"]),
+        Err(ConfigError::UnknownMember("recursor-far".to_owned()))
+    );
+}

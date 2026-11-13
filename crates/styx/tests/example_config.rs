@@ -2,7 +2,6 @@
 //! server, supervisor and upstream tables and `styx-recursion` takes `[recursion]`. Only
 //! the composition root may name both, so only it can prove the whole file parses.
 
-use styx_core::UpstreamKind;
 use styx_recursion::application::config::RecursionSection;
 use styx_resolution::ServerConfig;
 use styx_testkit::ExampleDocument;
@@ -34,25 +33,15 @@ fn problem_with(text: &str) -> Option<String> {
     let Some(pool) = parsed.server.upstream else {
         return Some("the example configures no pool".to_owned());
     };
-    let recursors: Vec<&str> = pool
-        .members
-        .iter()
-        .filter(|member| member.kind == UpstreamKind::Recursor)
-        .map(|member| member.name.as_str())
-        .collect();
+    let recursors = pool.recursor_names();
     if recursors.is_empty() {
         return Some("the example keeps no recursor member".to_owned());
     }
-    if let Err(error) = parsed.recursion.check_overrides(&recursors) {
-        return Some(error.to_string());
-    }
-    recursors.iter().find_map(|name| {
-        parsed
-            .recursion
-            .for_member(name)
-            .err()
-            .map(|error| error.to_string())
-    })
+    parsed
+        .recursion
+        .validate(&recursors)
+        .err()
+        .map(|error| error.to_string())
 }
 
 #[test]

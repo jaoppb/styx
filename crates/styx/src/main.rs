@@ -12,13 +12,15 @@
 
 mod upstream;
 
+use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
 use styx_core::{SystemClock, SystemSleeper, UpstreamId, UpstreamKind};
 use styx_net::Do53Client;
-use styx_recursion::application::config::RecursionSection;
+use styx_recursion::application::config::{RecursionConfig, RecursionSection};
 use styx_recursion::application::recursor::{Recursor, RecursorPorts};
 use styx_recursion::domain::root_hints::RootHints;
 use styx_recursion::infrastructure::do53_transport::{Do53Transport, DNS_PORT};
@@ -66,8 +68,8 @@ async fn main() -> anyhow::Result<()> {
         .context("missing [upstream] configuration")?;
 
     let clock = Arc::new(SystemClock::new());
-    let recursion = RecursionWiring::new(recursion, pool_config)?;
-    let pool = build_pool(pool_config, &recursion, &clock).await?;
+    let recursion = RecursionWiring::load(recursion, pool_config).await?;
+    let pool = build_pool(pool_config, &recursion, &clock)?;
     let pipeline = build_pipeline(pool.clone(), clock.clone(), config.query_timeout, cache)?;
 
     let probe_cancel = CancellationToken::new();
@@ -98,48 +100,60 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The `[recursion]` section and the diagnostics store the admin/web layer will read
-/// (Phase 11), shared by every recursor and keyed by member.
+/// Validated per-member recursion settings, each unique root-hints file loaded once,
+/// and the diagnostics store the admin/web layer will read (Phase 11), shared by every
+/// recursor and keyed by member.
 struct RecursionWiring {
-    section: RecursionSection,
+    configs: BTreeMap<String, RecursionConfig>,
+    hints: HashMap<PathBuf, RootHints>,
     diagnostics: Arc<DiagnosticsStore>,
 }
 
 impl RecursionWiring {
-    /// Rejects a `[recursion.members.<name>]` table that names no recursor of the pool:
-    /// its overrides would otherwise be silently unused.
-    fn new(section: RecursionSection, pool_config: &PoolConfig) -> anyhow::Result<Self> {
-        let recursors: Vec<&str> = pool_config
-            .members
-            .iter()
-            .filter(|member| member.kind == UpstreamKind::Recursor)
-            .map(|member| member.name.as_str())
-            .collect();
-        section.check_overrides(&recursors)?;
+    /// Validates every recursor's merged settings before touching disk, then loads each
+    /// distinct root-hints file once. A missing or unparseable file is a startup error,
+    /// like any other invalid configuration: failing loudly beats a pool that silently
+    /// lost its recursor.
+    async fn load(section: RecursionSection, pool_config: &PoolConfig) -> anyhow::Result<Self> {
+        let recursors = pool_config.recursor_names();
+        let configs = section.validate(&recursors)?;
+        let mut hints = HashMap::new();
+        for (name, config) in &configs {
+            if hints.contains_key(&config.root_hints) {
+                continue;
+            }
+            let loaded = RootHints::from_config_path(&config.root_hints)
+                .await
+                .with_context(|| {
+                    format!("failed to load root hints for recursor member '{name}'")
+                })?;
+            hints.insert(config.root_hints.clone(), loaded);
+        }
         Ok(Self {
-            section,
+            configs,
+            hints,
             diagnostics: Arc::new(DiagnosticsStore::new()),
         })
     }
 
-    /// Builds the recursor for one member from its merged settings, loading the root
-    /// hints they name. A missing or unparseable file is a startup error, like any
-    /// other invalid configuration: failing loudly beats a pool that silently lost its
-    /// recursor.
-    async fn recursor(
+    fn recursor(
         &self,
         id: UpstreamId,
         clock: &Arc<SystemClock>,
     ) -> anyhow::Result<ProductionRecursor> {
-        let config = self.section.for_member(id.as_str())?;
-        let hints = RootHints::from_config_path(&config.root_hints)
-            .await
-            .with_context(|| format!("failed to load root hints for recursor member '{id}'"))?;
+        let config = self
+            .configs
+            .get(id.as_str())
+            .with_context(|| format!("missing validated recursion config for '{id}'"))?;
+        let hints = self
+            .hints
+            .get(&config.root_hints)
+            .with_context(|| format!("missing loaded root hints for '{id}'"))?;
         let client = Do53Client::new(config.udp_timeout, config.tcp_timeout, Arc::clone(clock));
         Ok(Recursor::new(
             id,
             config.settings(),
-            &hints,
+            hints,
             RecursorPorts {
                 clock: Arc::clone(clock),
                 transport: Arc::new(Do53Transport::new(client, DNS_PORT)),
@@ -151,7 +165,7 @@ impl RecursionWiring {
     }
 }
 
-async fn build_upstream(
+fn build_upstream(
     member_cfg: &UpstreamConfig,
     id: &UpstreamId,
     recursion: &RecursionWiring,
@@ -167,12 +181,12 @@ async fn build_upstream(
             Arc::clone(clock),
         ))),
         UpstreamKind::Recursor => Ok(PoolUpstream::Recursor(Arc::new(
-            recursion.recursor(id.clone(), clock).await?,
+            recursion.recursor(id.clone(), clock)?,
         ))),
     }
 }
 
-async fn build_pool(
+fn build_pool(
     pool_config: &PoolConfig,
     recursion: &RecursionWiring,
     clock: &Arc<SystemClock>,
@@ -180,7 +194,7 @@ async fn build_pool(
     let mut members = Vec::with_capacity(pool_config.members.len());
     for member_cfg in &pool_config.members {
         let id = UpstreamId::new(member_cfg.name.as_str());
-        let upstream = build_upstream(member_cfg, &id, recursion, clock).await?;
+        let upstream = build_upstream(member_cfg, &id, recursion, clock)?;
         let canary = member_cfg
             .canary
             .clone()

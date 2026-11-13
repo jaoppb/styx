@@ -5,7 +5,6 @@
 
 use std::time::Duration;
 
-use styx_core::UpstreamKind;
 use styx_recursion::application::config::{RecursionConfig, RecursionSection};
 use styx_recursion::domain::error::{ConfigError, MemberConfigError};
 use styx_resolution::ServerConfig;
@@ -47,15 +46,13 @@ fn recursors(recursion: &str) -> Result<Vec<RecursionConfig>, ConfigError> {
     let pool = server
         .upstream
         .ok_or_else(|| ConfigError::Toml("the file has no pool".to_owned()))?;
-    let names: Vec<&str> = pool
-        .members
-        .iter()
-        .filter(|member| member.kind == UpstreamKind::Recursor)
-        .map(|member| member.name.as_str())
-        .collect();
+    let names = pool.recursor_names();
     let section = RecursionSection::from_toml_str(&text)?;
-    section.check_overrides(&names)?;
-    names.iter().map(|name| section.for_member(name)).collect()
+    let mut configs = section.validate(&names)?;
+    Ok(names
+        .iter()
+        .filter_map(|name| configs.remove(*name))
+        .collect())
 }
 
 #[test]

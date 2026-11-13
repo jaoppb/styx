@@ -142,6 +142,24 @@ impl RecursionSection {
             .map_err(|reason| ConfigError::member(member, reason))
     }
 
+    /// Checks that every `[recursion.members.<name>]` table names one of `recursors`
+    /// and resolves every recursor's merged settings upfront.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::UnknownMember`] when an override names no recursor, or
+    /// [`ConfigError::Member`] when a recursor's merged settings are invalid.
+    pub fn validate(
+        &self,
+        recursors: &[&str],
+    ) -> Result<BTreeMap<String, RecursionConfig>, ConfigError> {
+        self.check_overrides(recursors)?;
+        recursors
+            .iter()
+            .map(|name| Ok(((*name).to_owned(), self.for_member(name)?)))
+            .collect()
+    }
+
     /// Checks that every `[recursion.members.<name>]` table names one of `recursors`,
     /// so an override for a misspelt or non-recursor member cannot be silently unused.
     ///
