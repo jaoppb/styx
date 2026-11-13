@@ -20,9 +20,6 @@ use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::{QueryDetail, QueryObserver};
 use crate::domain::request::RequestContext;
 
-/// Default TTL for blocked forged answers (2 seconds, anti-cache-pollution).
-const BLOCKED_TTL: Ttl = Ttl::from_secs(2);
-
 /// Default TTL for forged local record answers.
 const LOCAL_RECORD_TTL: Ttl = Ttl::from_secs(60);
 
@@ -125,25 +122,26 @@ where
             Err(err) => return self.handle_error(ctx, err),
         };
 
-        if let Some(forged) = self.try_local_records(ctx, question) {
-            let outcome = forged.outcome();
-            self.record_telemetry(ctx, question, &outcome);
-            return Ok(Self::finish(ctx, forged.into_response()));
-        }
-
-        if let Some(forged) = self.try_filter(ctx, question) {
-            let outcome = forged.outcome();
-            self.record_telemetry(ctx, question, &outcome);
-            return Ok(Self::finish(ctx, forged.into_response()));
-        }
-
-        if let Some(forged) = self.try_aaaa_filter(ctx, question) {
-            let outcome = forged.outcome();
-            self.record_telemetry(ctx, question, &outcome);
-            return Ok(Self::finish(ctx, forged.into_response()));
+        if let Some(forged) = self
+            .try_local_records(ctx, question)
+            .or_else(|| self.try_filter(ctx, question))
+            .or_else(|| self.try_aaaa_filter(ctx, question))
+        {
+            return Ok(self.finish_forged(ctx, question, forged));
         }
 
         self.run_terminal(ctx, question, deadline).await
+    }
+
+    fn finish_forged(
+        &self,
+        ctx: &RequestContext,
+        question: &Question,
+        forged: ForgedAnswer,
+    ) -> Message {
+        let outcome = forged.outcome();
+        self.record_telemetry(ctx, question, &outcome);
+        Self::finish(ctx, forged.into_response())
     }
 
     /// The one place a reply becomes the client's answer: whichever stage produced `message`,
@@ -193,11 +191,9 @@ where
     fn try_filter(&self, ctx: &RequestContext, question: &Question) -> Option<ForgedAnswer> {
         match self.filter.evaluate(&ctx.client, question) {
             FilterVerdict::Allow => None,
-            FilterVerdict::Block => Some(ForgedAnswer::build_with_source(
+            FilterVerdict::Block => Some(ForgedAnswer::empty(
                 ctx,
-                Vec::new(),
                 ResponseCode::NXDOMAIN,
-                BLOCKED_TTL,
                 ForgedSource::Blocked,
             )),
         }
@@ -208,11 +204,9 @@ where
         if !(self.filter_aaaa && question.qtype == RecordType::AAAA) {
             return None;
         }
-        Some(ForgedAnswer::build_with_source(
+        Some(ForgedAnswer::empty(
             ctx,
-            Vec::new(),
             ResponseCode::NOERROR,
-            BLOCKED_TTL,
             ForgedSource::AaaaFiltered,
         ))
     }

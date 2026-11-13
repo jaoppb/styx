@@ -28,8 +28,8 @@ per-group version belongs with query-type filtering rules (#107).
 
 **The stage order becomes `validation -> local_records -> filter -> aaaa_filter -> cache
 -> upstream -> terminal`.** With `filter_aaaa` enabled, an AAAA question that got
-past local records and the block filter is answered by `ForgedAnswer::build_with_source`
-with NOERROR and an empty answer section, under the new `ForgedSource::AaaaFiltered`.
+past local records and the block filter is answered by `ForgedAnswer::empty` with
+NOERROR and an empty answer section, under the new `ForgedSource::AaaaFiltered`.
 It short-circuits like the stages before it, so the question never reaches the cache or
 an upstream.
 
