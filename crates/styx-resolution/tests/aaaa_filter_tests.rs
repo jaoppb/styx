@@ -3,17 +3,20 @@
 
 mod harness;
 
-use std::net::SocketAddr;
+use std::net::{Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 use harness::{CommandableUpstream, DnsClient};
 use styx_core::{SystemClock, SystemSleeper, UpstreamId};
-use styx_proto::{Header, Message, Name, Opcode, Question, RecordClass, RecordType, ResponseCode};
+use styx_proto::{
+    Header, Message, Name, Opcode, Question, RData, RecordClass, RecordType, ResourceRecord,
+    ResponseCode, Ttl,
+};
 use styx_resolution::{
     AllowAllFilter, AnswerCache, AnswerSource, CacheKey, CacheStage, CanaryConfig, ClientId,
-    ConfiguredStrategy, Do53Forwarder, Lookup, NoLocalRecords, Pipeline, PoolMember, ProbePolicy,
-    QueryDetail, QueryObserver, ResolutionOutcome, Server, ServerConfig, ShardedAnswerCache,
-    UpstreamPool,
+    ConfiguredStrategy, Do53Forwarder, FilterPolicy, FilterVerdict, LocalRecords, Lookup,
+    NoLocalRecords, Pipeline, PoolMember, ProbePolicy, QueryDetail, QueryObserver,
+    ResolutionOutcome, Server, ServerConfig, ShardedAnswerCache, UpstreamPool,
 };
 
 #[derive(Default)]
@@ -41,16 +44,41 @@ impl QueryObserver for RecordingObserver {
     }
 }
 
+struct LocalAaaa;
+
+impl LocalRecords for LocalAaaa {
+    fn lookup(&self, question: &Question) -> Option<Vec<ResourceRecord>> {
+        if question.qtype == RecordType::AAAA {
+            Some(vec![ResourceRecord::new(
+                question.qname.clone(),
+                RecordType::AAAA,
+                RecordClass::In,
+                Ttl::from_secs(60),
+                RData::Aaaa(Ipv6Addr::LOCALHOST),
+            )])
+        } else {
+            None
+        }
+    }
+}
+
+struct BlockAllFilter;
+
+impl FilterPolicy for BlockAllFilter {
+    fn evaluate(&self, _: &ClientId, _: &Question) -> FilterVerdict {
+        FilterVerdict::Block
+    }
+}
+
 type TestCache = ShardedAnswerCache<SystemClock>;
 type TestPool = UpstreamPool<ConfiguredStrategy, Do53Forwarder<SystemClock>, SystemClock>;
 type TestStage = CacheStage<TestCache, ConfiguredStrategy, Do53Forwarder<SystemClock>, SystemClock>;
-type TestServer = Server<NoLocalRecords, AllowAllFilter, RecordingObserver, SystemClock, TestStage>;
 
-struct Fixture {
+struct Fixture<L = NoLocalRecords, F = AllowAllFilter> {
     upstream: CommandableUpstream,
     cache: Arc<TestCache>,
     observer: Arc<RecordingObserver>,
-    server: TestServer,
+    server: Server<L, F, RecordingObserver, SystemClock, TestStage>,
 }
 
 fn server_config(filter_line: &str, upstream: SocketAddr) -> Option<ServerConfig> {
@@ -96,8 +124,18 @@ fn single_member_pool(config: &ServerConfig, clock: &Arc<SystemClock>) -> Option
     )))
 }
 
-impl Fixture {
+impl Fixture<NoLocalRecords, AllowAllFilter> {
     async fn boot(filter_line: &str) -> Option<Self> {
+        Self::boot_with(filter_line, NoLocalRecords::new(), AllowAllFilter::new()).await
+    }
+}
+
+impl<L, F> Fixture<L, F>
+where
+    L: LocalRecords + Send + Sync + 'static,
+    F: FilterPolicy + Send + Sync + 'static,
+{
+    async fn boot_with(filter_line: &str, local: L, filter: F) -> Option<Self> {
         let upstream = CommandableUpstream::start().await.ok()?;
         let config = server_config(filter_line, upstream.udp_addr())?;
         let clock = Arc::new(SystemClock::new());
@@ -106,8 +144,8 @@ impl Fixture {
         let stage = CacheStage::new(cache.clone(), pool, clock.clone(), config.query_timeout);
         let observer = Arc::new(RecordingObserver::default());
         let pipeline = Pipeline::new(
-            Arc::new(NoLocalRecords::new()),
-            Arc::new(AllowAllFilter::new()),
+            Arc::new(local),
+            Arc::new(filter),
             observer.clone(),
             clock.clone(),
         )
@@ -190,6 +228,60 @@ async fn test_aaaa_reaches_the_upstream_when_the_key_is_absent() {
     assert_eq!(fixture.upstream.query_count(), 1);
     let outcome = fixture.observer.last().expect("outcome recorded");
     assert_ne!(outcome.source(), AnswerSource::AaaaFiltered);
+
+    fixture.server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn test_any_questions_still_reach_the_upstream_with_filter_aaaa_on() {
+    let mut fixture = Fixture::boot("filter_aaaa = true").await.expect("boot");
+
+    fixture.ask(RecordType::ANY).await.expect("answer");
+
+    assert_eq!(fixture.upstream.query_count(), 1);
+    let outcome = fixture.observer.last().expect("outcome recorded");
+    assert_ne!(outcome.source(), AnswerSource::AaaaFiltered);
+
+    fixture.server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn test_local_aaaa_record_answers_when_filter_aaaa_is_true() {
+    let mut fixture = Fixture::boot_with("filter_aaaa = true", LocalAaaa, BlockAllFilter)
+        .await
+        .expect("boot");
+
+    let response = fixture.ask(RecordType::AAAA).await.expect("answer");
+
+    assert_eq!(response.header.rcode, ResponseCode::NOERROR);
+    assert!(!response.header.authentic_data);
+    assert_eq!(response.answers.len(), 1);
+    assert_eq!(
+        response.answers.first().map(|rr| &rr.rdata),
+        Some(&RData::Aaaa(Ipv6Addr::LOCALHOST))
+    );
+    assert_eq!(fixture.upstream.query_count(), 0);
+    let outcome = fixture.observer.last().expect("outcome recorded");
+    assert_eq!(outcome.source(), AnswerSource::LocalRecord);
+
+    fixture.server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn test_blocked_aaaa_keeps_nxdomain_and_blocked_source_when_filter_aaaa_is_true() {
+    let mut fixture =
+        Fixture::boot_with("filter_aaaa = true", NoLocalRecords::new(), BlockAllFilter)
+            .await
+            .expect("boot");
+
+    let response = fixture.ask(RecordType::AAAA).await.expect("answer");
+
+    assert_eq!(response.header.rcode, ResponseCode::NXDOMAIN);
+    assert!(response.answers.is_empty());
+    assert!(!response.header.authentic_data);
+    assert_eq!(fixture.upstream.query_count(), 0);
+    let outcome = fixture.observer.last().expect("outcome recorded");
+    assert_eq!(outcome.source(), AnswerSource::Blocked);
 
     fixture.server.shutdown().await.expect("shutdown");
 }
