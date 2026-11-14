@@ -5,6 +5,7 @@ use std::net::IpAddr;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use styx_core::UpstreamId;
 use styx_proto::Name;
 
 use crate::domain::diagnostics::{
@@ -124,9 +125,13 @@ impl DiagnosticsState {
         state.minimisation_fallbacks = state.minimisation_fallbacks.saturating_add(fallbacks);
     }
 
-    /// A snapshot as of `now`, or `None` if one was taken within
+    /// A snapshot of `upstream` as of `now`, or `None` if one was taken within
     /// [`PUBLISH_INTERVAL`].
-    pub fn snapshot_if_due(&self, now: Instant) -> Option<RecursionDiagnostics> {
+    pub fn snapshot_if_due(
+        &self,
+        upstream: &UpstreamId,
+        now: Instant,
+    ) -> Option<RecursionDiagnostics> {
         let mut state = self.lock();
         let due = state
             .last_published
@@ -135,7 +140,7 @@ impl DiagnosticsState {
             return None;
         }
         state.last_published = Some(now);
-        Some(snapshot(&state, now))
+        Some(snapshot(upstream, &state, now))
     }
 }
 
@@ -147,12 +152,13 @@ fn outcome(rtt: Option<Duration>) -> ContactOutcome {
     }
 }
 
-fn snapshot(state: &State, now: Instant) -> RecursionDiagnostics {
+fn snapshot(upstream: &UpstreamId, state: &State, now: Instant) -> RecursionDiagnostics {
     let mut roots: Vec<RootServerStatus> = state.roots.values().cloned().collect();
     roots.sort_by_key(|status| status.name.to_string());
     let mut tlds: Vec<TldStatus> = state.tlds.values().cloned().collect();
     tlds.sort_by_key(|status| status.tld.to_string());
     RecursionDiagnostics {
+        upstream: upstream.clone(),
         roots,
         tlds,
         last_successful_priming: state.last_successful_priming,

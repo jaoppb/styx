@@ -4,7 +4,7 @@ mod support;
 
 use std::net::Ipv4Addr;
 
-use styx_core::Clock;
+use styx_core::{Clock, Upstream};
 use styx_proto::{RecordType, ResponseCode};
 use styx_recursion::domain::budget::DescentLimits;
 use styx_recursion::domain::metrics::MinimisationVerdict;
@@ -170,7 +170,10 @@ async fn a_server_refusing_minimised_queries_gets_the_full_name_after_proof() {
         ["example.com. NS", "www.example.com. A", "x.other.com. A"],
         "the proven server is asked in full at once, not refused again"
     );
-    let snapshot = network.diagnostics.snapshot().expect("published");
+    let snapshot = network
+        .diagnostics
+        .snapshot(&recursor.id())
+        .expect("published");
     assert_eq!(snapshot.minimisation_fallbacks, 1);
 }
 

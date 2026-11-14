@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no records, without asking an upstream and without caching the reply, so clients fall
   back to IPv4. Local records and blocked names keep their own answers. Off by default.
   HTTPS and SVCB answers may still carry an `ipv6hint`.
+- Recursion settings can be overridden per recursor member: a
+  `[recursion.members.<name>]` table sets any `[recursion]` key for that member alone,
+  and unset keys fall back to `[recursion]`, then to the built-in defaults. A member that
+  sets its own `root_hints` needs no `[recursion]` section. An override table that names no
+  recursor member of the pool is a startup error. Recursion diagnostics are kept per
+  member, so several recursors no longer overwrite each other's snapshot.
 
 ### Changed
 

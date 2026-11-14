@@ -11,6 +11,7 @@
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+use styx_core::UpstreamId;
 use styx_proto::Name;
 
 /// The outcome of the most recent contact with a server or zone.
@@ -53,6 +54,8 @@ pub struct TldStatus {
 /// A snapshot of the recursor's view of delegation infrastructure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecursionDiagnostics {
+    /// The recursor member this snapshot describes.
+    pub upstream: UpstreamId,
     /// Root servers, from the current root NS set.
     pub roots: Vec<RootServerStatus>,
     /// TLDs the recursor has contacted.

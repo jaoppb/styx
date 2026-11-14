@@ -1,19 +1,26 @@
 //! The `[recursion]` section of the TOML file.
 //!
+//! The section holds the defaults every recursor member shares; a member's
+//! `[recursion.members.<name>]` table overrides any of them, key by key. A member that
+//! names its own `root_hints` needs no shared section at all.
+//!
 //! The file owns infrastructure: root hints, budgets and timeouts are needed before
 //! any database exists, so they live here and nowhere else. Changing them means
 //! editing the file and restarting.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
+use toml::Table;
 
-use crate::domain::budget::{
-    DescentLimits, DEFAULT_MAX_CNAME_CHAIN, DEFAULT_MAX_DEPTH, DEFAULT_MAX_OUTBOUND_QUERIES,
-    DEFAULT_WALL_CLOCK,
-};
-use crate::domain::error::ConfigError;
+use crate::application::recursor::RecursorSettings;
+use crate::domain::budget::DescentLimits;
+use crate::domain::error::{ConfigError, MemberConfigError};
+use raw::RawSettings;
+
+mod raw;
 
 /// Default per-query UDP timeout. Authoritative servers answer in tens of
 /// milliseconds; 800 ms leaves room for a distant one while letting a descent try
@@ -49,7 +56,7 @@ impl Default for InfraCapacity {
     }
 }
 
-/// The recursor's settings.
+/// One recursor member's settings, merged and validated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecursionConfig {
     /// Path of the `named.root`-style root-hints file.
@@ -67,95 +74,127 @@ pub struct RecursionConfig {
     pub capacity: InfraCapacity,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct RawRecursion {
+    #[serde(default)]
+    members: BTreeMap<String, Table>,
+    #[serde(flatten)]
+    defaults: Table,
+}
+
 #[derive(Debug, Deserialize)]
 struct RawFile {
     recursion: Option<RawRecursion>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawRecursion {
-    root_hints: PathBuf,
-    max_depth: Option<u8>,
-    max_outbound_queries: Option<u16>,
-    max_cname_chain: Option<u8>,
-    wall_clock_ms: Option<u64>,
-    udp_timeout_ms: Option<u64>,
-    tcp_timeout_ms: Option<u64>,
-    use_ipv6: Option<bool>,
-    max_delegations: Option<usize>,
-    max_servers: Option<usize>,
+/// The `[recursion]` section as written: shared defaults and, per recursor member, the
+/// keys its `[recursion.members.<name>]` table overrides. Nothing is merged until
+/// [`Self::for_member`] asks for one member.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RecursionSection {
+    defaults: Table,
+    overrides: BTreeMap<String, Table>,
 }
 
-impl RecursionConfig {
-    /// Reads the `[recursion]` section of a whole styx TOML file. `None` when the
-    /// file has no such section, so no recursor is configured.
+impl RecursionSection {
+    /// Reads the `[recursion]` section of a whole styx TOML file. A file without one
+    /// yields an empty section: no defaults and no overrides.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError::Toml`] for malformed TOML or an unknown key, and
-    /// [`ConfigError::ZeroLimit`] for a zero limit.
-    pub fn from_toml_str(content: &str) -> Result<Option<Self>, ConfigError> {
-        let file: RawFile =
-            toml::from_str(content).map_err(|error| ConfigError::Toml(error.to_string()))?;
+    /// Returns [`ConfigError::Toml`] for malformed TOML or an unknown key in the shared
+    /// defaults, [`ConfigError::ZeroLimit`] for a zero limit there, and
+    /// [`ConfigError::Member`] for an unknown key in a member's overrides.
+    pub fn from_toml_str(content: &str) -> Result<Self, ConfigError> {
+        let file: RawFile = toml::from_str(content).map_err(toml_error)?;
         let Some(raw) = file.recursion else {
-            return Ok(None);
+            return Ok(Self::default());
         };
-        let millis =
-            |value: Option<u64>, default: Duration| value.map_or(default, Duration::from_millis);
-        let limits = DescentLimits::new(
-            raw.max_depth.unwrap_or(DEFAULT_MAX_DEPTH),
-            raw.max_outbound_queries
-                .unwrap_or(DEFAULT_MAX_OUTBOUND_QUERIES),
-            raw.max_cname_chain.unwrap_or(DEFAULT_MAX_CNAME_CHAIN),
-            millis(raw.wall_clock_ms, DEFAULT_WALL_CLOCK),
-        )?;
-        Ok(Some(Self {
-            root_hints: raw.root_hints,
-            limits,
-            udp_timeout: millis(raw.udp_timeout_ms, DEFAULT_UDP_TIMEOUT),
-            tcp_timeout: millis(raw.tcp_timeout_ms, DEFAULT_TCP_TIMEOUT),
-            use_ipv6: raw.use_ipv6.unwrap_or(true),
-            capacity: InfraCapacity {
-                max_delegations: raw.max_delegations.unwrap_or(DEFAULT_MAX_DELEGATIONS),
-                max_servers: raw.max_servers.unwrap_or(DEFAULT_MAX_SERVERS),
-            },
-        }))
+        let defaults: RawSettings = raw.defaults.clone().try_into().map_err(toml_error)?;
+        defaults.limits()?;
+        for (member, table) in &raw.members {
+            let _: RawSettings = table.clone().try_into().map_err(|error| {
+                ConfigError::member(member, MemberConfigError::Toml(error.to_string()))
+            })?;
+        }
+        Ok(Self {
+            defaults: raw.defaults,
+            overrides: raw.members,
+        })
     }
+
+    /// The settings of the recursor member named `member`: its overrides, then the
+    /// shared defaults, then the built-in defaults, key by key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Member`] naming `member` when the merged settings name no
+    /// root hints or hold a zero limit.
+    pub fn for_member(&self, member: &str) -> Result<RecursionConfig, ConfigError> {
+        let mut merged = self.defaults.clone();
+        if let Some(own) = self.overrides.get(member) {
+            merged.extend(own.clone());
+        }
+        let raw: RawSettings = merged.try_into().map_err(|error| {
+            ConfigError::member(member, MemberConfigError::Toml(error.to_string()))
+        })?;
+        raw.resolve()
+            .map_err(|reason| ConfigError::member(member, reason))
+    }
+
+    /// Checks that every `[recursion.members.<name>]` table names one of `recursors`
+    /// and resolves every recursor's merged settings upfront.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::UnknownMember`] when an override names no recursor, or
+    /// [`ConfigError::Member`] when a recursor's merged settings are invalid.
+    pub fn validate(
+        &self,
+        recursors: &[&str],
+    ) -> Result<BTreeMap<String, RecursionConfig>, ConfigError> {
+        self.check_overrides(recursors)?;
+        recursors
+            .iter()
+            .map(|name| Ok(((*name).to_owned(), self.for_member(name)?)))
+            .collect()
+    }
+
+    /// Checks that every `[recursion.members.<name>]` table names one of `recursors`,
+    /// so an override for a misspelt or non-recursor member cannot be silently unused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::UnknownMember`] with the first name that is not a recursor.
+    pub fn check_overrides(&self, recursors: &[&str]) -> Result<(), ConfigError> {
+        match self
+            .overrides
+            .keys()
+            .find(|name| !recursors.contains(&name.as_str()))
+        {
+            Some(name) => Err(ConfigError::UnknownMember(name.clone())),
+            None => Ok(()),
+        }
+    }
+}
+
+impl RecursionConfig {
+    /// The behaviour settings a [`crate::application::recursor::Recursor`] takes.
+    #[must_use]
+    pub const fn settings(&self) -> RecursorSettings {
+        RecursorSettings {
+            limits: self.limits,
+            use_ipv6: self.use_ipv6,
+        }
+    }
+}
+
+fn toml_error(error: impl ToString) -> ConfigError {
+    ConfigError::Toml(error.to_string())
 }
 
 #[cfg(test)]
 mod schema_keys;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_section_is_optional_and_defaults_fill_the_gaps() {
-        assert_eq!(
-            RecursionConfig::from_toml_str("listen_addrs = []"),
-            Ok(None)
-        );
-        let config =
-            RecursionConfig::from_toml_str("[recursion]\nroot_hints = \"/etc/named.root\"\n")
-                .unwrap()
-                .unwrap();
-        assert_eq!(config.limits, DescentLimits::default());
-        assert!(config.use_ipv6);
-    }
-
-    #[test]
-    fn zero_limits_and_unknown_keys_are_rejected() {
-        let zero = "[recursion]\nroot_hints = \"x\"\nmax_depth = 0\n";
-        assert_eq!(
-            RecursionConfig::from_toml_str(zero),
-            Err(ConfigError::ZeroLimit("max_depth"))
-        );
-        let typo = "[recursion]\nroot_hints = \"x\"\nmax_dept = 3\n";
-        assert!(matches!(
-            RecursionConfig::from_toml_str(typo),
-            Err(ConfigError::Toml(_))
-        ));
-    }
-}
+mod tests;

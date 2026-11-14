@@ -109,6 +109,16 @@ impl PoolConfig {
             circuit: resolve_circuit(raw.circuit),
         })
     }
+
+    /// Names of every pool member configured as a recursor, in pool order.
+    #[must_use]
+    pub fn recursor_names(&self) -> Vec<&str> {
+        self.members
+            .iter()
+            .filter(|member| member.kind == UpstreamKind::Recursor)
+            .map(|member| member.name.as_str())
+            .collect()
+    }
 }
 
 fn resolve_probe(raw: RawProbeConfig) -> ProbeConfig {
