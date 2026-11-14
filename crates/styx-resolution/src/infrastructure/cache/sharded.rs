@@ -16,7 +16,6 @@ use crate::domain::cache::error::CacheError;
 use crate::domain::cache::key::CacheKey;
 use crate::domain::cache::port::{AdmittedCount, AnswerCache, Lookup, PurgedCount};
 use crate::domain::cache::stats::{AtomicCacheCounters, CacheStats};
-use crate::domain::cache::ttl::TtlPolicy;
 use crate::infrastructure::cache::eviction::{Eviction, EvictionReport};
 use crate::infrastructure::cache::shard::{Shard, ShardInner};
 
@@ -38,7 +37,6 @@ pub struct ShardedAnswerCache<C, S = RandomState> {
     hasher: S,
     clock: Arc<C>,
     capacity: CacheCapacity,
-    ttl_policy: TtlPolicy,
     counters: AtomicCacheCounters,
 }
 
@@ -56,29 +54,22 @@ impl<C: Clock> ShardedAnswerCache<C> {
     pub fn new(
         clock: Arc<C>,
         capacity: CacheCapacity,
-        ttl_policy: TtlPolicy,
         shard_count: usize,
     ) -> Result<Self, CacheError> {
-        Self::with_hasher(clock, capacity, ttl_policy, shard_count, RandomState::new())
+        Self::with_hasher(clock, capacity, shard_count, RandomState::new())
     }
 
-    /// Creates a new `ShardedAnswerCache` using default capacity and TTL policies.
+    /// Creates a new `ShardedAnswerCache` using default capacity.
     #[must_use]
     pub fn with_defaults(clock: Arc<C>) -> Self {
         let capacity = CacheCapacity::default();
-        let built = Self::new(
-            Arc::clone(&clock),
-            capacity,
-            TtlPolicy::default(),
-            DEFAULT_SHARDS,
-        );
+        let built = Self::new(Arc::clone(&clock), capacity, DEFAULT_SHARDS);
         // The const assertion above rules the error out; one whole-budget shard is the
         // fallback that keeps this constructor free of a panic.
         built.unwrap_or_else(|_| {
             Self::from_shards(
                 clock,
                 capacity,
-                TtlPolicy::default(),
                 vec![Shard::new(capacity)],
                 RandomState::new(),
             )
@@ -94,7 +85,6 @@ impl<C: Clock, S: BuildHasher> ShardedAnswerCache<C, S> {
     pub fn with_hasher(
         clock: Arc<C>,
         capacity: CacheCapacity,
-        ttl_policy: TtlPolicy,
         shard_count: usize,
         hasher: S,
     ) -> Result<Self, CacheError> {
@@ -103,24 +93,15 @@ impl<C: Clock, S: BuildHasher> ShardedAnswerCache<C, S> {
             .into_iter()
             .map(Shard::new)
             .collect();
-        Ok(Self::from_shards(
-            clock, capacity, ttl_policy, shards, hasher,
-        ))
+        Ok(Self::from_shards(clock, capacity, shards, hasher))
     }
 
-    fn from_shards(
-        clock: Arc<C>,
-        capacity: CacheCapacity,
-        ttl_policy: TtlPolicy,
-        shards: Vec<Shard>,
-        hasher: S,
-    ) -> Self {
+    fn from_shards(clock: Arc<C>, capacity: CacheCapacity, shards: Vec<Shard>, hasher: S) -> Self {
         Self {
             shards,
             hasher,
             clock,
             capacity,
-            ttl_policy,
             counters: AtomicCacheCounters::new(),
         }
     }
@@ -217,12 +198,6 @@ impl<C: Clock, S: BuildHasher> ShardedAnswerCache<C, S> {
         if write_guard.remove(key).is_some() {
             self.counters.inc_expired(1);
         }
-    }
-
-    /// Returns the configured TTL policy.
-    #[must_use]
-    pub const fn ttl_policy(&self) -> &TtlPolicy {
-        &self.ttl_policy
     }
 
     /// Returns the configured capacity limits.

@@ -9,6 +9,7 @@
 
 pub mod cache_config;
 pub mod cache_stage;
+pub mod cache_stats_logger;
 pub mod pipeline;
 pub mod pool;
 pub mod probe_scheduler;
@@ -19,6 +20,7 @@ pub mod trial_guard;
 
 pub use cache_config::CacheConfig;
 pub use cache_stage::CacheStage;
+pub use cache_stats_logger::CacheStatsLogger;
 pub use pipeline::Pipeline;
 pub use pool::{PoolMember, UpstreamPool};
 pub use probe_scheduler::ProbeScheduler;
