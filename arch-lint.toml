@@ -191,6 +191,22 @@ name = "styx-filtering-infrastructure"
 paths = ["crates/styx-filtering/src/infrastructure/**", "src/infrastructure/**"]
 
 [[scopes]]
+name = "styx-dnssec"
+paths = ["crates/styx-dnssec/src/**"]
+
+[[scopes]]
+name = "styx-dnssec-domain"
+paths = ["crates/styx-dnssec/src/domain/**", "src/domain/**"]
+
+[[scopes]]
+name = "styx-dnssec-application"
+paths = ["crates/styx-dnssec/src/application/**", "src/application/**"]
+
+[[scopes]]
+name = "styx-dnssec-infrastructure"
+paths = ["crates/styx-dnssec/src/infrastructure/**", "src/infrastructure/**"]
+
+[[scopes]]
 name = "styx-testkit"
 paths = ["crates/styx-testkit/src/**"]
 
@@ -242,6 +258,18 @@ to = ["styx-filtering-infrastructure"]
 message = "application orchestrates over the ports declared in domain; it must not know which adapter implements them. Depend on the port, and let the styx binary inject the adapter at startup"
 
 [[deny-scope-dep]]
+name = "dnssec-domain-outward"
+from = "styx-dnssec-domain"
+to = ["styx-dnssec-application", "styx-dnssec-infrastructure"]
+message = "domain is the innermost layer: it declares ports and owns error types, and depends outward on nothing but styx-proto and third-party crates. Move the type into domain, or invert the call behind a port that infrastructure implements"
+
+[[deny-scope-dep]]
+name = "dnssec-application-to-infrastructure"
+from = "styx-dnssec-application"
+to = ["styx-dnssec-infrastructure"]
+message = "application orchestrates over the ports declared in domain (ChainSource, TrustAnchorSource, Clock); it must not know which adapter implements them. Depend on the port, and let the styx binary inject the adapter at startup"
+
+[[deny-scope-dep]]
 name = "proto-domain-outward"
 from = "styx-proto-domain"
 to = ["styx-proto-application", "styx-proto-infrastructure"]
@@ -286,25 +314,31 @@ message = "domain is the innermost layer: the exchange's value and error types d
 [[restrict-use]]
 name = "no-resolution-to-filtering"
 scope = "styx-resolution"
-deny = ["styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**"]
+deny = ["styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**", "styx_dnssec", "styx_dnssec::**"]
 message = "feature crates must not name each other. styx-resolution declares a FilterPolicy port in its domain module and the styx binary wires styx-filtering into it; a direct dependency makes the isolation a rewrite to recover"
 
 [[restrict-use]]
 name = "no-filtering-to-resolution"
 scope = "styx-filtering"
-deny = ["styx_resolution", "styx_resolution::**", "styx_recursion", "styx_recursion::**"]
+deny = ["styx_resolution", "styx_resolution::**", "styx_recursion", "styx_recursion::**", "styx_dnssec", "styx_dnssec::**"]
 message = "feature crates must not name each other. Declare a port in this crate's domain module and let the styx binary inject the adapter"
 
 [[restrict-use]]
 name = "no-recursion-to-feature"
 scope = "styx-recursion"
-deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**"]
+deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_dnssec", "styx_dnssec::**"]
 message = "feature crates must not name each other. styx-recursion implements styx-core's Upstream port, and the styx binary puts it in styx-resolution's pool; neither crate names the other"
+
+[[restrict-use]]
+name = "no-dnssec-to-feature"
+scope = "styx-dnssec"
+deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**"]
+message = "feature crates must not name each other. styx-dnssec receives chain material and trust anchors through ports; the styx binary injects adapters, and neither crate names the other"
 
 [[restrict-use]]
 name = "proto-names-no-feature"
 scope = "styx-proto"
-deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**"]
+deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**", "styx_dnssec", "styx_dnssec::**"]
 message = "styx-proto is shared foundation: it is exempt from feature isolation as a dependency target, not as a source. Every crate parses through the wire codec, so the codec must depend on none of them"
 
 [[restrict-use]]
@@ -316,7 +350,7 @@ message = "styx-proto is the wire codec and bottom-most shared foundation crate;
 [[restrict-use]]
 name = "core-names-no-feature"
 scope = "styx-core"
-deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**"]
+deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**", "styx_dnssec", "styx_dnssec::**"]
 message = "styx-core is shared foundation: it is exempt from feature isolation as a dependency target, not as a source. Core contracts and ports must depend on no feature crate"
 
 [[restrict-use]]
@@ -328,13 +362,13 @@ message = "styx-core sits below styx-net: styx-net depends on styx-core for the 
 [[restrict-use]]
 name = "testkit-names-no-feature"
 scope = "styx-testkit"
-deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**"]
+deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**", "styx_dnssec", "styx_dnssec::**"]
 message = "styx-testkit is a dev-dependency of every feature crate. Naming one would create a dependency cycle through those dev edges; harness pieces that wrap a feature crate's own types stay in that crate's tests"
 
 [[restrict-use]]
 name = "net-names-no-feature"
 scope = "styx-net"
-deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**"]
+deny = ["styx_resolution", "styx_resolution::**", "styx_filtering", "styx_filtering::**", "styx_recursion", "styx_recursion::**", "styx_dnssec", "styx_dnssec::**"]
 message = "styx-net is shared foundation: it is exempt from feature isolation as a dependency target, not as a source. The outbound exchange every feature shares must depend on none of them"
 
 # ===========================================================================
@@ -561,6 +595,50 @@ deny = [
 ]
 message = "styx-net's domain holds only the values an exchange produces; every socket lives in infrastructure, and only the async ones"
 
+[[restrict-use]]
+name = "no-sync-io-dnssec-domain"
+scope = "styx-dnssec-domain"
+deny = [
+    "std::fs",
+    "std::fs::**",
+    "std::net::TcpStream",
+    "std::net::TcpListener",
+    "std::net::UdpSocket",
+    "std::net::ToSocketAddrs",
+    "std::io::Read",
+    "std::io::Write",
+    "std::io::BufRead",
+    "std::io::Seek",
+    "std::io::prelude",
+    "std::io::prelude::**",
+    "std::io::stdin",
+    "std::io::stdout",
+    "std::io::stderr",
+]
+message = "the validator is pure and performs no I/O. Trust anchors and chain material are passed in through ports"
+
+[[restrict-use]]
+name = "no-sync-io-dnssec-application"
+scope = "styx-dnssec-application"
+deny = [
+    "std::fs",
+    "std::fs::**",
+    "std::net::TcpStream",
+    "std::net::TcpListener",
+    "std::net::UdpSocket",
+    "std::net::ToSocketAddrs",
+    "std::io::Read",
+    "std::io::Write",
+    "std::io::BufRead",
+    "std::io::Seek",
+    "std::io::prelude",
+    "std::io::prelude::**",
+    "std::io::stdin",
+    "std::io::stdout",
+    "std::io::stderr",
+]
+message = "the validator orchestration runs on the resolution path, which touches no synchronous I/O. File trust anchors are read in infrastructure"
+
 # ===========================================================================
 # `anyhow` by crate (amendment, 2026-09-24).
 #
@@ -613,3 +691,9 @@ name = "no-anyhow-filtering"
 scope = "styx-filtering"
 deny = ["anyhow", "anyhow::**"]
 message = "library crates return a crate-owned thiserror enum, never anyhow (Norm 3). anyhow is reserved for the styx binary's own startup errors and for xtask, which reports a verdict to a human rather than exposing a library boundary"
+
+[[restrict-use]]
+name = "no-anyhow-dnssec"
+scope = "styx-dnssec"
+deny = ["anyhow", "anyhow::**"]
+message = "library crates return a crate-owned thiserror enum, never anyhow (Norm 3). ValidationError is the one error type at this crate's boundary"
