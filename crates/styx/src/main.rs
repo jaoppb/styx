@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
     let pipeline = build_pipeline(
         pool.clone(),
         clock.clone(),
-        config.query_timeout,
+        &config,
         answer_cache.clone(),
         cache.ttl,
     );
@@ -231,7 +231,7 @@ fn build_cache(
 fn build_pipeline(
     pool: Arc<ConcretePool>,
     clock: Arc<SystemClock>,
-    query_timeout: Duration,
+    config: &ServerConfig,
     cache: Arc<ConcreteCache>,
     ttl: TtlPolicy,
 ) -> Arc<ConcretePipeline> {
@@ -240,7 +240,7 @@ fn build_pipeline(
         pool,
         Admission::new(ttl),
         clock.clone(),
-        query_timeout,
+        config.query_timeout,
     ));
     Arc::new(
         Pipeline::new(
@@ -249,6 +249,7 @@ fn build_pipeline(
             Arc::new(DiscardObserver::new()),
             clock,
         )
+        .with_filter_aaaa(config.filter_aaaa)
         .with_terminal(cache_stage),
     )
 }

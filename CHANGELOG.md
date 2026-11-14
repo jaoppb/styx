@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `[cache]` takes `ttl_floor_secs`, `ttl_ceiling_secs` and `negative_ttl_ceiling_secs`,
   defaulting to 5, 86400 and 300 seconds. A floor above the ceiling is a startup error.
 - The answer cache's counters are logged at `debug` every 60 seconds.
+- `filter_aaaa = true` at the top of `styx.toml` answers every AAAA question NOERROR with
+  no records, without asking an upstream and without caching the reply, so clients fall
+  back to IPv4. Local records and blocked names keep their own answers. Off by default.
+  HTTPS and SVCB answers may still carry an `ipv6hint`.
 
 ### Changed
 
