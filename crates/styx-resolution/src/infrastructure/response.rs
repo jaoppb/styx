@@ -81,7 +81,7 @@ impl ResponseWriter {
                     Err(err) => Err(err),
                 }
             }
-            Transport::Tcp => {
+            Transport::Tcp | Transport::Dot | Transport::Doh => {
                 let mut encoder = Encoder::new(MAX_TCP_MESSAGE_LEN);
                 encoder.encode_message(&message)?;
                 Ok(encoder.buf)

@@ -14,6 +14,8 @@ use crate::infrastructure::warn_gate::{FlushPlan, Verdict, WarnGate};
 pub(crate) enum ListenerKind {
     Udp,
     Tcp,
+    Dot,
+    Doh,
 }
 
 /// At most one `warn` per [`WARN_INTERVAL`](super::admission::WARN_INTERVAL) from one
@@ -103,6 +105,16 @@ where
                 addr = %self.addr,
                 suppressed,
                 "malformed TCP queries; answering FORMERR (per-query detail at debug)"
+            ),
+            ListenerKind::Dot => tracing::warn!(
+                addr = %self.addr,
+                suppressed,
+                "malformed DoT queries; answering FORMERR (per-query detail at debug)"
+            ),
+            ListenerKind::Doh => tracing::warn!(
+                addr = %self.addr,
+                suppressed,
+                "malformed DoH queries; answering FORMERR (per-request detail at debug)"
             ),
         }
     }

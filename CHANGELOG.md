@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- DNS over TLS and DNS over HTTPS (HTTP/2, `GET` and `POST`) listeners, configured in a new
+  `[tls]` section and off by default. They answer through the same pipeline as UDP and TCP.
+  An operator certificate is named with `cert_path` and `key_path`; without them styx
+  generates a self-signed certificate once, keeps it in `self_signed_dir`, and logs its SPKI
+  pin on that first boot. `styx pin [config]` prints the pin again. Connection, handshake,
+  idle, stream, per-connection query and request-body bounds are `[tls]` keys. See
+  `docs/operator/encrypted-inbound.md`.
 - `filter_aaaa = true` at the top of `styx.toml` answers every AAAA question NOERROR with
   no records, without asking an upstream and without caching the reply, so clients fall
   back to IPv4. Local records and blocked names keep their own answers. Off by default.

@@ -343,10 +343,11 @@ fmt:
 # Fuzzing
 # ---------------------------------------------------------------------------
 
-# Runs cargo-fuzz targets for styx-proto.
+# Runs cargo-fuzz targets for styx-proto (the wire codec) and styx-resolution (the
+# stream framing and the DoH request extraction).
 # Continuous from phase 1 (ROADMAP.md:78). Not part of `gate` because fuzzing
 # is non-deterministic and requires the nightly toolchain.
-[doc("Run cargo-fuzz targets locally (target=all|decode_arbitrary|decode_encode_roundtrip, duration in seconds).")]
+[doc("Run cargo-fuzz targets locally (target=all|decode_arbitrary|decode_encode_roundtrip|stream_framing|doh_extract, duration in seconds).")]
 fuzz target="all" duration="60":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -358,14 +359,26 @@ fuzz target="all" duration="60":
         echo "Rust nightly toolchain is required for fuzzing. Run: rustup toolchain install nightly" >&2
         exit 1
     fi
+    # Each target is named after the crate whose fuzz/ directory holds it.
+    declare -A crate_of=(
+        [decode_arbitrary]=styx-proto
+        [decode_encode_roundtrip]=styx-proto
+        [stream_framing]=styx-resolution
+        [doh_extract]=styx-resolution
+    )
     targets=()
     if [[ "{{ target }}" == "all" ]]; then
-        targets=("decode_arbitrary" "decode_encode_roundtrip")
+        targets=("decode_arbitrary" "decode_encode_roundtrip" "stream_framing" "doh_extract")
     else
         targets=("{{ target }}")
     fi
     for t in "${targets[@]}"; do
+        crate="${crate_of[$t]:-}"
+        if [[ -z "$crate" ]]; then
+            echo "unknown fuzz target: $t" >&2
+            exit 1
+        fi
         echo "── fuzz: $t ({{ duration }}s) ────────────────────────────────"
-        (cd crates/styx-proto && cargo +nightly fuzz run "$t" -- -max_total_time="{{ duration }}")
+        (cd "crates/$crate" && cargo +nightly fuzz run "$t" -- -max_total_time="{{ duration }}")
     done
 
