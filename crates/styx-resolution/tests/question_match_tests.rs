@@ -277,6 +277,7 @@ fn test_an_ineligible_source_is_refused_whole_and_not_as_a_mismatch() {
     let expected = [
         (AnswerSource::LocalRecord, RejectReason::ForgedAnswer),
         (AnswerSource::Blocked, RejectReason::ForgedAnswer),
+        (AnswerSource::AaaaFiltered, RejectReason::ForgedAnswer),
         (AnswerSource::CacheHit, RejectReason::InadmissibleSource),
         (AnswerSource::Error, RejectReason::InadmissibleSource),
     ];

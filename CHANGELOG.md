@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pin on that first boot. `styx pin [config]` prints the pin again. Connection, handshake,
   idle, stream, per-connection query and request-body bounds are `[tls]` keys. See
   `docs/operator/encrypted-inbound.md`.
+- `filter_aaaa = true` at the top of `styx.toml` answers every AAAA question NOERROR with
+  no records, without asking an upstream and without caching the reply, so clients fall
+  back to IPv4. Local records and blocked names keep their own answers. Off by default.
+  HTTPS and SVCB answers may still carry an `ipv6hint`.
 
 ### Changed
 

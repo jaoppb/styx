@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use styx_core::Clock;
-use styx_proto::{Message, MessageKind, Opcode, Question, RecordClass, ResponseCode, Ttl};
+use styx_proto::{
+    Message, MessageKind, Opcode, Question, RecordClass, RecordType, ResponseCode, Ttl,
+};
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::domain::answer::{
@@ -18,18 +20,16 @@ use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::{QueryDetail, QueryObserver};
 use crate::domain::request::RequestContext;
 
-/// Default TTL for blocked forged answers (2 seconds, anti-cache-pollution).
-const BLOCKED_TTL: Ttl = Ttl::from_secs(2);
-
 /// Default TTL for forged local record answers.
 const LOCAL_RECORD_TTL: Ttl = Ttl::from_secs(60);
 
 /// DNS resolution pipeline enforcing fixed stage execution order.
 ///
-/// Order is a correctness property: Local Records -> Filter -> Cache -> Upstream.
+/// Order is a correctness property: Local Records -> Filter -> AAAA filter -> Cache -> Upstream.
 pub struct Pipeline<L, F, O, C, T = RefusedTerminal> {
     local_records: Arc<L>,
     filter: Arc<F>,
+    filter_aaaa: bool,
     observer: Arc<O>,
     clock: Arc<C>,
     terminal: Arc<T>,
@@ -48,6 +48,7 @@ where
         Self {
             local_records,
             filter,
+            filter_aaaa: false,
             observer,
             clock,
             terminal: Arc::new(RefusedTerminal::new()),
@@ -63,12 +64,20 @@ where
     C: Clock,
     T: TerminalHandler,
 {
+    /// Sets whether `AAAA` questions are answered NODATA without asking upstream.
+    #[must_use]
+    pub const fn with_filter_aaaa(mut self, filter_aaaa: bool) -> Self {
+        self.filter_aaaa = filter_aaaa;
+        self
+    }
+
     /// Substitutes the terminal handler (used by test fixtures).
     #[must_use]
     pub fn with_terminal<T2: TerminalHandler>(self, terminal: Arc<T2>) -> Pipeline<L, F, O, C, T2> {
         Pipeline {
             local_records: self.local_records,
             filter: self.filter,
+            filter_aaaa: self.filter_aaaa,
             observer: self.observer,
             clock: self.clock,
             terminal,
@@ -113,19 +122,26 @@ where
             Err(err) => return self.handle_error(ctx, err),
         };
 
-        if let Some(forged) = self.try_local_records(ctx, question) {
-            let outcome = forged.outcome();
-            self.record_telemetry(ctx, question, &outcome);
-            return Ok(Self::finish(ctx, forged.into_response()));
-        }
-
-        if let Some(forged) = self.try_filter(ctx, question) {
-            let outcome = forged.outcome();
-            self.record_telemetry(ctx, question, &outcome);
-            return Ok(Self::finish(ctx, forged.into_response()));
+        if let Some(forged) = self
+            .try_local_records(ctx, question)
+            .or_else(|| self.try_filter(ctx, question))
+            .or_else(|| self.try_aaaa_filter(ctx, question))
+        {
+            return Ok(self.finish_forged(ctx, question, forged));
         }
 
         self.run_terminal(ctx, question, deadline).await
+    }
+
+    fn finish_forged(
+        &self,
+        ctx: &RequestContext,
+        question: &Question,
+        forged: ForgedAnswer,
+    ) -> Message {
+        let outcome = forged.outcome();
+        self.record_telemetry(ctx, question, &outcome);
+        Self::finish(ctx, forged.into_response())
     }
 
     /// The one place a reply becomes the client's answer: whichever stage produced `message`,
@@ -175,14 +191,24 @@ where
     fn try_filter(&self, ctx: &RequestContext, question: &Question) -> Option<ForgedAnswer> {
         match self.filter.evaluate(&ctx.client, question) {
             FilterVerdict::Allow => None,
-            FilterVerdict::Block => Some(ForgedAnswer::build_with_source(
+            FilterVerdict::Block => Some(ForgedAnswer::empty(
                 ctx,
-                Vec::new(),
                 ResponseCode::NXDOMAIN,
-                BLOCKED_TTL,
                 ForgedSource::Blocked,
             )),
         }
+    }
+
+    /// NODATA with no SOA: styx asks no one, so it knows no zone apex to cite.
+    fn try_aaaa_filter(&self, ctx: &RequestContext, question: &Question) -> Option<ForgedAnswer> {
+        if !(self.filter_aaaa && question.qtype == RecordType::AAAA) {
+            return None;
+        }
+        Some(ForgedAnswer::empty(
+            ctx,
+            ResponseCode::NOERROR,
+            ForgedSource::AaaaFiltered,
+        ))
     }
 
     async fn run_terminal(

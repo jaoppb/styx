@@ -14,6 +14,8 @@ pub enum AnswerSource {
     LocalRecord,
     /// Synthesized via block policy (e.g. adlist filter).
     Blocked,
+    /// Answered NODATA because the `filter_aaaa` switch is on.
+    AaaaFiltered,
     /// Retrieved from the in-memory answer cache.
     CacheHit,
     /// Forwarded to and answered by an upstream resolver.
@@ -31,14 +33,23 @@ pub enum ForgedSource {
     LocalRecord,
     /// Synthesized via block policy (e.g. adlist filter).
     Blocked,
+    /// Answered NODATA because the `filter_aaaa` switch is on.
+    AaaaFiltered,
+}
+
+impl ForgedSource {
+    const fn as_answer_source(self) -> AnswerSource {
+        match self {
+            Self::LocalRecord => AnswerSource::LocalRecord,
+            Self::Blocked => AnswerSource::Blocked,
+            Self::AaaaFiltered => AnswerSource::AaaaFiltered,
+        }
+    }
 }
 
 impl From<ForgedSource> for AnswerSource {
     fn from(source: ForgedSource) -> Self {
-        match source {
-            ForgedSource::LocalRecord => Self::LocalRecord,
-            ForgedSource::Blocked => Self::Blocked,
-        }
+        source.as_answer_source()
     }
 }
 
@@ -53,13 +64,19 @@ pub enum ResolvedSource {
     Recursion,
 }
 
+impl ResolvedSource {
+    const fn as_answer_source(self) -> AnswerSource {
+        match self {
+            Self::CacheHit => AnswerSource::CacheHit,
+            Self::Upstream => AnswerSource::Upstream,
+            Self::Recursion => AnswerSource::Recursion,
+        }
+    }
+}
+
 impl From<ResolvedSource> for AnswerSource {
     fn from(source: ResolvedSource) -> Self {
-        match source {
-            ResolvedSource::CacheHit => Self::CacheHit,
-            ResolvedSource::Upstream => Self::Upstream,
-            ResolvedSource::Recursion => Self::Recursion,
-        }
+        source.as_answer_source()
     }
 }
 
@@ -133,15 +150,8 @@ impl ResolutionOutcome {
     #[must_use]
     pub const fn source(&self) -> AnswerSource {
         match self {
-            Self::Forged { source, .. } => match source {
-                ForgedSource::LocalRecord => AnswerSource::LocalRecord,
-                ForgedSource::Blocked => AnswerSource::Blocked,
-            },
-            Self::Resolved { source, .. } => match source {
-                ResolvedSource::CacheHit => AnswerSource::CacheHit,
-                ResolvedSource::Upstream => AnswerSource::Upstream,
-                ResolvedSource::Recursion => AnswerSource::Recursion,
-            },
+            Self::Forged { source, .. } => source.as_answer_source(),
+            Self::Resolved { source, .. } => source.as_answer_source(),
             Self::Error { .. } => AnswerSource::Error,
         }
     }
@@ -215,6 +225,12 @@ impl ForgedAnswer {
         }
 
         Self { message, source }
+    }
+
+    /// Constructs an empty forged answer (e.g. `NXDOMAIN` or `NODATA`) with no records.
+    #[must_use]
+    pub fn empty(ctx: &RequestContext, rcode: ResponseCode, source: ForgedSource) -> Self {
+        Self::build_with_source(ctx, Vec::new(), rcode, Ttl::ZERO, source)
     }
 
     /// Returns the resolution outcome audit descriptor for this forged answer.

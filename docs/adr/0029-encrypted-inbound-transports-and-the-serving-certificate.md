@@ -1,4 +1,4 @@
-# ADR 0028 — Encrypted inbound transports and the serving certificate
+# ADR 0029 — Encrypted inbound transports and the serving certificate
 
 - **Status**: accepted
 - **Date**: 2026-10-28
