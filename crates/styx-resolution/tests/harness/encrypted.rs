@@ -147,6 +147,7 @@ fn server_config() -> ServerConfig {
         tcp_idle_timeout: Duration::from_secs(5),
         query_timeout: Duration::from_secs(2),
         limits: ConcurrencyLimits::default_limits(),
+        filter_aaaa: false,
         supervisor: SupervisorBackoffPolicy::default(),
         upstream: None,
     }
