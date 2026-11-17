@@ -1,0 +1,38 @@
+# Opt-in marker for ai-memory: only a repository that carries this file is
+# captured by the agents' lifecycle hooks. No server address, token, or
+# hostname belongs here.
+workspace = "default"
+project = "jaoppb-styx"
+drop_subagent_captures = true
+
+[briefing]
+inject_on_session_start = true
+max_chars = 4000
+
+[capture]
+ignore_paths = [
+  "AGENTS.md",
+  "ROADMAP.md",
+  "CHANGELOG.md",
+  "docs/adr/**",
+  "spdd/**",
+  ".env",
+  "**/.env",
+  ".env.local",
+  "**/.env.local",
+  "styx.toml",
+  "**/styx.toml",
+  ".claude/settings.local.json",
+  "*.pem",
+  "**/*.pem",
+  "*.key",
+  "**/*.key",
+  "*.crt",
+  "**/*.crt",
+  "*.db*",
+  "**/*.db*",
+  "target/**",
+  "**/target/**",
+  "**/fuzz/corpus/**",
+  "**/fuzz/artifacts/**",
+]
