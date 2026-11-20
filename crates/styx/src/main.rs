@@ -10,6 +10,8 @@
 //! pipeline, and graceful shutdown. The Leptos SSR handler is wired in
 //! Phase 11.
 
+#[cfg(test)]
+mod recursion_wiring_tests;
 mod upstream;
 
 use std::collections::{BTreeMap, HashMap};

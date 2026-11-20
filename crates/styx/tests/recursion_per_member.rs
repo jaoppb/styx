@@ -3,6 +3,9 @@
 //! built-in defaults. The pool's member list belongs to `styx-resolution` and the overrides
 //! to `styx-recursion`, so only the composition root can pair the two.
 
+// The helper below sits outside `#[test]` functions, where clippy's expect allowance stops.
+#![allow(clippy::expect_used)]
+
 use std::time::Duration;
 
 use styx_recursion::application::config::{RecursionConfig, RecursionSection};
@@ -41,11 +44,8 @@ wall_clock_ms = 3000
 /// builds them at startup.
 fn recursors(recursion: &str) -> Result<Vec<RecursionConfig>, ConfigError> {
     let text = format!("{POOL}{recursion}");
-    let server = ServerConfig::from_toml_str(&text)
-        .map_err(|error| ConfigError::Toml(format!("the pool does not parse: {error}")))?;
-    let pool = server
-        .upstream
-        .ok_or_else(|| ConfigError::Toml("the file has no pool".to_owned()))?;
+    let server = ServerConfig::from_toml_str(&text).expect("the pool parses");
+    let pool = server.upstream.expect("the file has a pool");
     let names = pool.recursor_names();
     let section = RecursionSection::from_toml_str(&text)?;
     let mut configs = section.validate(&names)?;
