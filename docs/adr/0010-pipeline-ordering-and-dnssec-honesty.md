@@ -3,6 +3,8 @@
 - **Status**: accepted
 - **Date**: 2026-09-26
 - **Phase**: 2 — Server loop and test harness
+- **Superseded in part by**: [ADR 0028](0028-aaaa-filter-stage.md), the fixed stage order
+  (an AAAA filter stage between `filter` and `cache`).
 
 ## Context
 

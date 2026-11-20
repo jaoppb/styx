@@ -16,6 +16,7 @@ rand.workspace = true
 
 [dev-dependencies]
 styx-core = { path = "../styx-core", features = ["test-support"] }
+styx-testkit = { path = "../styx-testkit" }
 
 [lints]
 workspace = true

@@ -1167,6 +1167,7 @@ dependencies = [
  "rand",
  "styx-core",
  "styx-proto",
+ "styx-testkit",
  "thiserror 1.0.69",
  "tokio",
 ]

@@ -32,3 +32,6 @@ oom-*
 
 # Git worktrees
 .worktrees/
+
+# Personal Claude Code settings (permission answers, local overrides)
+**/.claude/settings.local.json
