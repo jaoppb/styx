@@ -133,6 +133,8 @@ impl RecursionSection {
     pub fn for_member(&self, member: &str) -> Result<RecursionConfig, ConfigError> {
         let mut merged = self.defaults.clone();
         if let Some(own) = self.overrides.get(member) {
+            // A shallow, per-key merge: correct only while `RawSettings` is flat. A nested
+            // table added later would be replaced whole by an override, not merged.
             merged.extend(own.clone());
         }
         let raw: RawSettings = merged.try_into().map_err(|error| {
