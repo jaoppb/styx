@@ -24,10 +24,9 @@ use crate::infrastructure::admission::{ListenerShared, QueryPermit};
 pub use crate::infrastructure::connection_bounds::{ConnectionInFlight, InFlightSlot};
 use crate::infrastructure::connection_bounds::{ConnectionLimiter, QueryLimit, Spend};
 use crate::infrastructure::early_reply::{badvers_reply, formerr_reply};
-use crate::infrastructure::framing::read_frame;
+use crate::infrastructure::framing::{read_frame, send_frame, SendFrameError};
 use crate::infrastructure::malformed_warning::MalformedWarning;
 use crate::infrastructure::response::ResponseWriter;
-use styx_net::write_framed;
 
 /// An encoded response on its way to the writer, carrying its in-flight slot.
 #[derive(Debug)]
@@ -200,20 +199,15 @@ where
         mut outbound: mpsc::Receiver<OutboundFrame>,
     ) {
         while let Some(frame) = outbound.recv().await {
-            let written = tokio::time::timeout(
-                self.settings.write_timeout,
-                write_framed(&mut write_half, &frame.body),
-            )
-            .await;
-            match written {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => {
-                    tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, %err, "failed to write response frame");
+            match send_frame(&mut write_half, &frame.body, self.settings.write_timeout).await {
+                Ok(()) => {}
+                Err(SendFrameError::TimedOut) => {
+                    tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, "response write timed out; closing");
                     self.closing.cancel();
                     return;
                 }
-                Err(_) => {
-                    tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, "response write timed out; closing");
+                Err(err) => {
+                    tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, %err, "failed to write response frame");
                     self.closing.cancel();
                     return;
                 }

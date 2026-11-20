@@ -1,14 +1,49 @@
 //! The two-octet big-endian length prefix that precedes each DNS message on a stream.
 //!
 //! One implementation for every stream transport: plaintext TCP and DNS over TLS read
-//! through [`read_frame`] and write through [`styx_net::write_framed`], so the framing
+//! through [`read_frame`] and write through [`send_frame`], so the framing
 //! that sits under `indexing_slicing` and `arithmetic_side_effects` scrutiny exists once.
 
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt};
+use styx_net::{write_framed, FrameWriteError};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::domain::error::ListenerError;
+
+/// Why a response frame did not reach the stream.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum SendFrameError {
+    /// The frame could not be written.
+    #[error(transparent)]
+    Write(#[from] FrameWriteError),
+    /// The frame was written but could not be flushed.
+    #[error("flushing the frame failed: {0}")]
+    Flush(std::io::Error),
+    /// The write and flush did not finish within the write timeout.
+    #[error("the frame was not sent within the write timeout")]
+    TimedOut,
+}
+
+/// Writes one length-prefixed frame and flushes it, both within `write_timeout`.
+///
+/// The flush is what puts a DNS-over-TLS answer on the wire: tokio-rustls reports a
+/// write as done once rustls holds the plaintext, even while the encrypted records still
+/// wait for the socket, and only a later write, a flush or a shutdown sends them.
+/// Bounding the flush too keeps `write_timeout` a bound on a slow reader.
+pub(crate) async fn send_frame<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    body: &[u8],
+    write_timeout: Duration,
+) -> Result<(), SendFrameError> {
+    let sent = async {
+        write_framed(writer, body).await?;
+        writer.flush().await.map_err(SendFrameError::Flush)
+    };
+    tokio::time::timeout(write_timeout, sent)
+        .await
+        .map_err(|_| SendFrameError::TimedOut)?
+}
 
 /// Reads one length-prefixed frame; `Ok(None)` when the peer closed cleanly before a prefix.
 ///
@@ -63,6 +98,33 @@ mod tests {
         let frame = read_frame(&mut server, TIMEOUT).await.unwrap();
         writer.await.unwrap();
         assert_eq!(frame, Some(vec![1, 2, 3]));
+    }
+
+    #[tokio::test]
+    async fn a_sent_frame_reaches_a_peer_behind_a_buffering_writer() {
+        let (near, mut far) = tokio::io::duplex(64);
+        // Like tokio-rustls, a BufWriter reports the write done while the bytes wait in
+        // its buffer; without the flush the peer would see nothing.
+        let mut buffered = tokio::io::BufWriter::new(near);
+        send_frame(&mut buffered, &[1, 2, 3], TIMEOUT)
+            .await
+            .unwrap();
+
+        let frame = tokio::time::timeout(TIMEOUT, read_frame(&mut far, TIMEOUT))
+            .await
+            .expect("the frame was flushed")
+            .unwrap();
+        assert_eq!(frame, Some(vec![1, 2, 3]));
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_never_reads_times_the_send_out() {
+        let (near, _far) = tokio::io::duplex(8);
+        let mut buffered = tokio::io::BufWriter::new(near);
+        let err = send_frame(&mut buffered, &[7; 64], Duration::from_millis(50))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SendFrameError::TimedOut), "{err}");
     }
 
     #[tokio::test]
