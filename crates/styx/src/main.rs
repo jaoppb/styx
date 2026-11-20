@@ -25,11 +25,11 @@ use styx_recursion::infrastructure::do53_transport::{Do53Transport, DNS_PORT};
 use styx_recursion::infrastructure::infra_cache::MemoryInfraCache;
 use styx_recursion::infrastructure::sinks::{DiagnosticsStore, DiscardChainMaterial};
 use styx_resolution::{
-    Admission, AllowAllFilter, CacheConfig, CacheStage, CacheStatsLogger, CanaryConfig,
-    ConfiguredStrategy, DiscardObserver, Do53Forwarder, NoLocalRecords, Pipeline, PoolConfig,
-    PoolMember, ProbePolicy, ProbeScheduler, Server, ServerConfig, ShardedAnswerCache, TtlPolicy,
-    UpstreamConfig, UpstreamPool,
+    AllowAllFilter, CacheConfig, CacheStage, CacheStatsLogger, CanaryConfig, ConfiguredStrategy,
+    DiscardObserver, Do53Forwarder, NoLocalRecords, Pipeline, PoolConfig, PoolMember, ProbePolicy,
+    ProbeScheduler, Server, ServerConfig, ShardedAnswerCache, UpstreamConfig, UpstreamPool,
 };
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -82,15 +82,14 @@ async fn main() -> anyhow::Result<()> {
         clock.clone(),
         &config,
         answer_cache.clone(),
-        cache.ttl,
+        &cache,
     );
 
     let sleeper = Arc::new(SystemSleeper::new());
-    let background_shutdown = CancellationToken::new();
-    let scheduler = ProbeScheduler::new(pool, clock.clone(), pool_config.probe.tick);
-    tokio::spawn(scheduler.run(background_shutdown.clone()));
-    let stats_logger = CacheStatsLogger::new(answer_cache, sleeper.clone(), CACHE_STATS_INTERVAL);
-    let stats_handle = tokio::spawn(stats_logger.run(background_shutdown.clone()));
+    let background = BackgroundTasks::spawn(
+        ProbeScheduler::new(pool, clock.clone(), pool_config.probe.tick),
+        CacheStatsLogger::new(answer_cache, sleeper.clone(), CACHE_STATS_INTERVAL)?,
+    );
 
     let mut server = Server::bind(config, pipeline, clock, sleeper)
         .await
@@ -105,15 +104,38 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to listen for shutdown signal")?;
 
     tracing::info!("shutdown signal received; closing listeners");
-    background_shutdown.cancel();
-    server
-        .shutdown()
-        .await
-        .context("failed to shut down server")?;
-    stats_handle
-        .await
-        .context("cache stats logger task failed")?;
-    Ok(())
+    let (server_stopped, background_stopped) = tokio::join!(server.shutdown(), background.stop());
+    server_stopped.context("failed to shut down server")?;
+    background_stopped
+}
+
+/// The tasks that run beside the listeners, sharing one shutdown token.
+struct BackgroundTasks {
+    shutdown: CancellationToken,
+    probe_scheduler: JoinHandle<()>,
+    cache_stats: JoinHandle<()>,
+}
+
+impl BackgroundTasks {
+    fn spawn(
+        scheduler: ProbeScheduler<ConfiguredStrategy, PoolUpstream, SystemClock>,
+        stats_logger: CacheStatsLogger<ConcreteCache, SystemSleeper>,
+    ) -> Self {
+        let shutdown = CancellationToken::new();
+        Self {
+            probe_scheduler: tokio::spawn(scheduler.run(shutdown.clone())),
+            cache_stats: tokio::spawn(stats_logger.run(shutdown.clone())),
+            shutdown,
+        }
+    }
+
+    /// Cancels every task and waits for all of them, even when one of them failed.
+    async fn stop(self) -> anyhow::Result<()> {
+        self.shutdown.cancel();
+        let (probe_scheduler, cache_stats) = tokio::join!(self.probe_scheduler, self.cache_stats);
+        probe_scheduler.context("probe scheduler task failed")?;
+        cache_stats.context("cache stats logger task failed")
+    }
 }
 
 /// The `[recursion]` settings with their root hints loaded, and the diagnostics
@@ -226,19 +248,17 @@ fn build_cache(
     Ok(Arc::new(cache))
 }
 
-/// The TTL clamps are applied by the stage's admission, not by the cache store, so the
-/// configured policy goes straight to `Admission`.
 fn build_pipeline(
     pool: Arc<ConcretePool>,
     clock: Arc<SystemClock>,
     config: &ServerConfig,
     cache: Arc<ConcreteCache>,
-    ttl: TtlPolicy,
+    cache_config: &CacheConfig,
 ) -> Arc<ConcretePipeline> {
-    let cache_stage = Arc::new(CacheStage::with_admission(
+    let cache_stage = Arc::new(CacheStage::from_config(
         cache,
         pool,
-        Admission::new(ttl),
+        cache_config,
         clock.clone(),
         config.query_timeout,
     ));

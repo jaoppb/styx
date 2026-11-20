@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use styx_core::{Clock, Upstream, UpstreamKind};
 
+use crate::application::cache_config::CacheConfig;
 use crate::application::pool::UpstreamPool;
 use crate::application::terminal::TerminalHandler;
 use crate::domain::answer::{AnswerSource, ResolutionOutcome, ResolutionResponse, ResolvedSource};
@@ -50,6 +51,25 @@ where
             clock,
             query_timeout,
         }
+    }
+
+    /// Creates the `CacheStage` the `[cache]` section describes: admission clamps every
+    /// answer to `config.ttl`. `cache` must already be sized from the same `config`.
+    #[must_use]
+    pub fn from_config(
+        cache: Arc<A>,
+        pool: Arc<UpstreamPool<S, U, C>>,
+        config: &CacheConfig,
+        clock: Arc<C>,
+        query_timeout: Duration,
+    ) -> Self {
+        Self::with_admission(
+            cache,
+            pool,
+            Admission::new(config.ttl),
+            clock,
+            query_timeout,
+        )
     }
 
     /// Creates a new `CacheStage` with custom admission policy.
