@@ -4,8 +4,8 @@ use thiserror::Error;
 
 /// Why a DoH request carries no DNS message to answer.
 ///
-/// Each variant becomes an HTTP status with an empty body: never a panic and never a
-/// half-formed DNS response. The text names no path, configuration value or address, so
+/// Each variant becomes an HTTP status with an empty body, chosen where the HTTP response
+/// is built: never a panic and never a half-formed DNS response. The text names no path, configuration value or address, so
 /// it is safe in a client-facing status line.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum DohError {
@@ -41,6 +41,11 @@ pub enum DohError {
     #[error("empty request body")]
     EmptyBody,
 
+    /// A `POST` body that ended before it was complete: the client reset the stream, or
+    /// sent fewer octets than it declared.
+    #[error("malformed request body")]
+    MalformedBody,
+
     /// A message the resolver does not answer at all, such as a response (QR=1).
     #[error("message not answered")]
     Unanswerable,
@@ -48,24 +53,4 @@ pub enum DohError {
     /// The connection's query ceiling is spent.
     #[error("connection query budget exceeded")]
     StreamBudgetExceeded,
-}
-
-impl DohError {
-    /// The HTTP status this error is answered with. A total match: a new variant does not
-    /// compile until its status is chosen.
-    #[must_use]
-    pub const fn status(&self) -> u16 {
-        match self {
-            Self::MethodNotAllowed => 405,
-            Self::PathNotFound => 404,
-            Self::UnsupportedMediaType => 415,
-            Self::MissingDnsParameter
-            | Self::MalformedBase64Url
-            | Self::EmptyBody
-            | Self::Unanswerable => 400,
-            Self::BodyTooLarge => 413,
-            Self::BodyReadTimeout => 408,
-            Self::StreamBudgetExceeded => 503,
-        }
-    }
 }

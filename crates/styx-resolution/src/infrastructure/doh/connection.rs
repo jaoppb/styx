@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use http_body_util::{BodyExt, Full, Limited};
+use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use hyper::rt::Executor;
@@ -37,7 +37,7 @@ use crate::domain::request::Transport;
 use crate::domain::tls::{DohResourcePath, EncryptedLimits, StreamMessageLimit};
 use crate::infrastructure::admission::ListenerShared;
 use crate::infrastructure::connection_bounds::{ConnectionLimiter, QueryLimit, Spend};
-use crate::infrastructure::doh::request::{extract_head, DohHead, DohRequestForm};
+use crate::infrastructure::doh::request::{accept_body, extract_head, DohHead, DohRequestForm};
 use crate::infrastructure::doh::response::DohResponse;
 use crate::infrastructure::malformed_warning::MalformedWarning;
 use crate::infrastructure::tcp_connection::QueryTask;
@@ -146,11 +146,11 @@ where
             .http1()
             .timer(TokioTimer::new())
             .header_read_timeout(self.limits.idle_timeout);
+        // No HTTP/2 keep-alive pings: the idle timer already closes a connection with no
+        // stream outstanding, and a stalled body is bounded by its own read deadline.
         builder
             .http2()
             .timer(TokioTimer::new())
-            .keep_alive_interval(Some(self.limits.idle_timeout))
-            .keep_alive_timeout(self.limits.handshake_timeout)
             .max_concurrent_streams(self.limits.max_streams_per_connection.as_u32())
             .max_header_list_size(MAX_HEADER_LIST_BYTES);
         builder
@@ -287,6 +287,9 @@ async fn read_wire(
     }
 }
 
+/// Reads a `POST` body under the cap. `Limited` stops a body the moment it passes the cap,
+/// so no more than the cap is ever buffered; what was read is then judged by
+/// [`accept_body`], the same rule the `GET` parameter goes through.
 async fn read_body(
     body: Incoming,
     limit: StreamMessageLimit,
@@ -296,13 +299,15 @@ async fn read_body(
     let collected = tokio::time::timeout(timeout, limited.collect())
         .await
         .map_err(|_| DohError::BodyReadTimeout)?
-        .map_err(|_| DohError::BodyTooLarge)?;
+        .map_err(|error| {
+            if error.is::<LengthLimitError>() {
+                DohError::BodyTooLarge
+            } else {
+                DohError::MalformedBody
+            }
+        })?;
     let bytes = collected.to_bytes();
-    // `Limited` already enforces the upper byte bound while streaming; only an empty
-    // chunked/un-lengthed body remains to reject here.
-    if bytes.is_empty() {
-        return Err(DohError::EmptyBody);
-    }
+    accept_body(&bytes, limit)?;
     Ok(bytes)
 }
 

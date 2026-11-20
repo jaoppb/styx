@@ -41,7 +41,8 @@ generated it, and re-derivable with `styx pin`.
 **Every stateful resource has a named bound.** Per listener: a connection ceiling checked
 before the handshake, a handshake deadline and an idle timeout. Per connection: a query
 ceiling (counted per stream on DoH) and, on DoH, the HTTP/2 stream ceiling in SETTINGS.
-Per request: the DoH body cap, judged on the declared length before anything is read.
+Per request: the DoH body cap, judged on a declared `Content-Length` before anything is
+read, and otherwise on the body as it streams in, which is stopped at the cap.
 These are `[tls]` values, not library defaults.
 
 **DoH is a DNS listener, not part of the admin UI.** It builds without the `web` feature,

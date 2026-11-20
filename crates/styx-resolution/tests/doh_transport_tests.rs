@@ -1,7 +1,8 @@
 //! DNS over HTTPS over HTTP/2, against a real server over real TLS (issue #9): both request
 //! forms, the documented HTTP errors for every malformed request, and each bound.
 
-#![allow(clippy::unwrap_used)]
+// The helpers below sit outside `#[test]` functions, where clippy's allowances stop.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod harness;
 
@@ -160,6 +161,62 @@ async fn an_enormous_declared_length_is_refused_without_reading_the_body() {
     .await
     .expect("the cap is judged on the declared length, before any body arrives");
     assert_eq!(status, 413);
+    server.shutdown().await;
+}
+
+/// POSTs `chunks` as one body with no `Content-Length`, so the server can judge it only
+/// as it streams in, and returns the status it answers with.
+async fn post_streamed(
+    server: &EncryptedTestServer<AnsweringTerminal>,
+    chunks: &[&[u8]],
+) -> hyper::StatusCode {
+    let tls = tls_connect(server.doh(), &server.certificate, &[b"h2"])
+        .await
+        .unwrap();
+    let (mut sender, mut connection) = h2::client::handshake(tls).await.unwrap();
+    let request = hyper::Request::builder()
+        .method("POST")
+        .uri(DOH)
+        .header(hyper::header::CONTENT_TYPE, "application/dns-message")
+        .body(())
+        .unwrap();
+    let (response, mut body) = sender.send_request(request, false).unwrap();
+    for chunk in chunks {
+        body.send_data(hyper::body::Bytes::copy_from_slice(chunk), false)
+            .unwrap();
+    }
+    // The server may already have answered and reset the stream past the cap.
+    let _ = body.send_data(hyper::body::Bytes::new(), true);
+    tokio::time::timeout(PROMPTLY, async {
+        tokio::select! {
+            response = response => response.unwrap().status(),
+            _ = &mut connection => panic!("connection ended before the answer"),
+        }
+    })
+    .await
+    .expect("a streamed body is answered")
+}
+
+#[tokio::test]
+async fn a_streamed_body_without_a_declared_length_is_judged_as_it_arrives() {
+    let mut options = EncryptedOptions::default();
+    options.limits.max_request_body = StreamMessageLimit::from_configured(512).unwrap();
+    let mut server = boot(options).await;
+
+    let wire = query("example.com.");
+    // Split after the DNS header, so neither chunk is a message on its own.
+    let (head, tail) = wire.split_at(12);
+    assert_eq!(post_streamed(&server, &[head, tail]).await, 200);
+    assert_eq!(
+        post_streamed(&server, &[&[0; 300], &[0; 300]]).await,
+        413,
+        "past the cap while streaming"
+    );
+    assert_eq!(
+        post_streamed(&server, &[]).await,
+        400,
+        "an empty streamed body"
+    );
     server.shutdown().await;
 }
 

@@ -4,7 +4,9 @@
 //! attacker-reachable parser of the encrypted listeners. Any outcome but a panic is fine.
 
 use libfuzzer_sys::fuzz_target;
-use styx_resolution::infrastructure::doh::{accept_body, extract_head, DohHead, DohRequestForm};
+use styx_resolution::infrastructure::doh::{
+    accept_body, extract_head, DohHead, DohRequestForm, DohResponse,
+};
 use styx_resolution::{DohResourcePath, StreamMessageLimit};
 
 /// Splits `data` into five NUL-separated text fields and a trailing body.
@@ -42,7 +44,7 @@ fuzz_target!(|data: &[u8]| {
             let _ = accept_body(body, limit);
         }
         Err(error) => {
-            let _ = error.status();
+            let _ = DohResponse::Error(error).into_http();
         }
     }
 });

@@ -3,7 +3,7 @@
 
 use http_body_util::Full;
 use hyper::body::Bytes;
-use hyper::header::{HeaderValue, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
+use hyper::header::{HeaderValue, ALLOW, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
 use hyper::{Response, StatusCode};
 use styx_proto::application::Decoder;
 
@@ -73,10 +73,65 @@ fn answer_response(wire: Vec<u8>, max_age: Option<u32>) -> Response<Full<Bytes>>
 
 fn error_response(error: &DohError) -> Response<Full<Bytes>> {
     let mut response = Response::new(Full::new(Bytes::new()));
-    *response.status_mut() =
-        StatusCode::from_u16(error.status()).unwrap_or(StatusCode::BAD_REQUEST);
+    *response.status_mut() = status(error);
+    let headers = response.headers_mut();
+    headers.insert(CONTENT_LENGTH, HeaderValue::from_static("0"));
+    if *error == DohError::MethodNotAllowed {
+        // RFC 9110 §15.5.6: a 405 names the methods the resource does accept.
+        headers.insert(ALLOW, HeaderValue::from_static("GET, POST"));
+    }
     response
-        .headers_mut()
-        .insert(CONTENT_LENGTH, HeaderValue::from_static("0"));
-    response
+}
+
+/// The HTTP status an error is answered with. A total match: a new variant does not
+/// compile until its status is chosen.
+const fn status(error: &DohError) -> StatusCode {
+    match error {
+        DohError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
+        DohError::PathNotFound => StatusCode::NOT_FOUND,
+        DohError::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        DohError::MissingDnsParameter
+        | DohError::MalformedBase64Url
+        | DohError::EmptyBody
+        | DohError::MalformedBody
+        | DohError::Unanswerable => StatusCode::BAD_REQUEST,
+        DohError::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        DohError::BodyReadTimeout => StatusCode::REQUEST_TIMEOUT,
+        DohError::StreamBudgetExceeded => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_error_maps_to_its_documented_status() {
+        let statuses = [
+            (DohError::MethodNotAllowed, 405),
+            (DohError::PathNotFound, 404),
+            (DohError::UnsupportedMediaType, 415),
+            (DohError::MissingDnsParameter, 400),
+            (DohError::MalformedBase64Url, 400),
+            (DohError::BodyTooLarge, 413),
+            (DohError::BodyReadTimeout, 408),
+            (DohError::EmptyBody, 400),
+            (DohError::MalformedBody, 400),
+            (DohError::Unanswerable, 400),
+            (DohError::StreamBudgetExceeded, 503),
+        ];
+        for (error, expected) in statuses {
+            let response = DohResponse::Error(error.clone()).into_http();
+            assert_eq!(response.status().as_u16(), expected, "{error}");
+        }
+    }
+
+    #[test]
+    fn only_a_405_names_the_allowed_methods() {
+        let refused = DohResponse::Error(DohError::MethodNotAllowed).into_http();
+        assert_eq!(refused.headers()[ALLOW], "GET, POST");
+
+        let not_found = DohResponse::Error(DohError::PathNotFound).into_http();
+        assert!(!not_found.headers().contains_key(ALLOW));
+    }
 }
