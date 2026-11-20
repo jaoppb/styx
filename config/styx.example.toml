@@ -107,7 +107,10 @@ addr = "9.9.9.9:53"
 # With neither, it generates a self-signed certificate once into self_signed_dir and logs
 # its SPKI pin; that is enough for curl and DoH clients that accept a pin, not for Android
 # Private DNS, which wants a publicly-valid name: bring a certificate for that. A
-# certificate replaced on disk is only picked up on restart. Every limit is per listener.
+# certificate replaced on disk is only picked up on restart. Every limit below is per
+# listener. A DoT connection also has plain TCP's fixed bounds, which are not [tls] keys:
+# 5 seconds to write each answer and 32 queries in flight. Both timeouts accept 1 to 3600
+# seconds, and max_request_body_bytes 12 (a DNS header) to 65535 octets.
 # See docs/operator/encrypted-inbound.md.
 # [tls]
 # enabled = false
@@ -124,7 +127,7 @@ addr = "9.9.9.9:53"
 # max_connections = 128
 # max_streams_per_connection = 100
 # max_queries_per_connection = 10000
-# max_request_body_bytes = 65535
+# max_request_body_bytes = 4096
 
 # Infrastructure for the recursor. The root-hints file is the only source of root
 # servers: a missing or unparseable file stops styx at startup.

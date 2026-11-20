@@ -79,11 +79,11 @@ fn parts_from(raw: RawTls) -> Result<TlsConfigParts, ConfigError> {
         raw.doh_path
             .unwrap_or_else(|| DohResourcePath::DEFAULT.to_owned()),
     )?;
+    let defaults = EncryptedLimits::default();
     let max_request_body = match raw.max_request_body_bytes {
         Some(octets) => StreamMessageLimit::from_configured(octets)?,
-        None => StreamMessageLimit::protocol_max(),
+        None => defaults.max_request_body,
     };
-    let defaults = EncryptedLimits::default();
     let limits = EncryptedLimits {
         handshake_timeout: raw
             .handshake_timeout_secs
@@ -156,9 +156,12 @@ mod tests {
         assert_eq!(
             config.certificate_source(),
             &CertificateSource::SelfSigned {
-                dir: PathBuf::from(DEFAULT_SELF_SIGNED_DIR),
                 names: vec![DEFAULT_SELF_SIGNED_NAME.to_owned()],
             }
+        );
+        assert_eq!(
+            config.self_signed_dir(),
+            PathBuf::from(DEFAULT_SELF_SIGNED_DIR)
         );
     }
 

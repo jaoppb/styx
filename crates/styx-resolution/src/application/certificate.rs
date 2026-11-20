@@ -56,7 +56,9 @@ where
                 cert_path,
                 key_path,
             } => Some(self.reader.load(cert_path, key_path).await?),
-            CertificateSource::SelfSigned { dir, .. } => self.store.load_existing(dir).await?,
+            CertificateSource::SelfSigned { .. } => {
+                self.store.load_existing(config.self_signed_dir()).await?
+            }
         };
         Ok(identity.map(|identity| identity.pin()))
     }
@@ -160,8 +162,9 @@ where
                 cert_path,
                 key_path,
             } => self.operator_identity(config, cert_path, key_path).await?,
-            CertificateSource::SelfSigned { dir, names } => {
-                self.self_signed_identity(dir, names).await?
+            CertificateSource::SelfSigned { names } => {
+                self.self_signed_identity(config.self_signed_dir(), names)
+                    .await?
             }
         };
         self.warn_outside_validity(&identity);

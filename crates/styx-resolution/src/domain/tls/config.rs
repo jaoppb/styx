@@ -14,13 +14,22 @@ use crate::domain::error::ConfigError;
 /// The cap on one DNS message carried over a stream transport.
 ///
 /// The two-octet length prefix cannot describe more than 65535 octets, so that is the
-/// ceiling every configured cap must stay under.
+/// ceiling every configured cap must stay under; nothing shorter than a DNS header is a
+/// message, so 12 octets is the floor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamMessageLimit {
     octets: u16,
 }
 
 impl StreamMessageLimit {
+    /// The length of a DNS header, the smallest message there is.
+    const MIN_OCTETS: u16 = 12;
+
+    /// The default DoH request cap. A query is rarely past a few hundred octets, even
+    /// padded, and every stream of every connection may hold one body this large while it
+    /// is read, so the cap is what bounds that memory.
+    pub const DEFAULT_REQUEST: Self = Self { octets: 4096 };
+
     /// The largest message a two-octet length prefix can describe.
     #[must_use]
     pub const fn protocol_max() -> Self {
@@ -30,12 +39,13 @@ impl StreamMessageLimit {
     /// Validates a configured cap.
     ///
     /// # Errors
-    /// Returns [`ConfigError::Invalid`] for zero or anything above 65535.
+    /// Returns [`ConfigError::Invalid`] for anything below 12 (a DNS header) or above 65535.
     pub fn from_configured(raw: usize) -> Result<Self, ConfigError> {
         match u16::try_from(raw) {
-            Ok(octets) if octets > 0 => Ok(Self { octets }),
+            Ok(octets) if octets >= Self::MIN_OCTETS => Ok(Self { octets }),
             _ => Err(ConfigError::Invalid(format!(
-                "[tls]: max_request_body_bytes must be between 1 and 65535, got {raw}"
+                "[tls]: max_request_body_bytes must be between {} and 65535, got {raw}",
+                Self::MIN_OCTETS
             ))),
         }
     }
@@ -111,11 +121,9 @@ pub enum CertificateSource {
         /// PEM file holding the private key.
         key_path: PathBuf,
     },
-    /// No certificate was configured: a self-signed one is generated once into `dir`
-    /// and reused on every later boot.
+    /// No certificate was configured: a self-signed one is generated once into
+    /// [`TlsConfig::self_signed_dir`] and reused on every later boot.
     SelfSigned {
-        /// Directory the generated certificate and key are persisted in.
-        dir: PathBuf,
         /// Subject alternative names minted into the certificate.
         names: Vec<String>,
     },
@@ -201,6 +209,9 @@ impl EncryptedLimits {
     pub const DEFAULT_MAX_STREAMS: StreamConcurrencyLimit = StreamConcurrencyLimit::DEFAULT;
     /// Default per-connection query ceiling.
     pub const DEFAULT_MAX_QUERIES: NonZeroU64 = NonZeroU64::MIN.saturating_add(9_999);
+    /// The longest handshake or idle timeout accepted. Far above any useful value, and far
+    /// below what `Instant` arithmetic in the HTTP and TLS stacks can overflow on.
+    pub const MAX_TIMEOUT: Duration = Duration::from_secs(3600);
 }
 
 impl Default for EncryptedLimits {
@@ -211,7 +222,7 @@ impl Default for EncryptedLimits {
             max_connections: Self::DEFAULT_MAX_CONNECTIONS,
             max_streams_per_connection: Self::DEFAULT_MAX_STREAMS,
             max_queries_per_connection: Self::DEFAULT_MAX_QUERIES,
-            max_request_body: StreamMessageLimit::protocol_max(),
+            max_request_body: StreamMessageLimit::DEFAULT_REQUEST,
         }
     }
 }
@@ -257,17 +268,23 @@ impl TlsConfig {
     /// # Errors
     /// Returns [`ConfigError::Invalid`] when only one of the certificate and key paths is
     /// set, when neither DoT nor DoH has an address, when a self-signed certificate would
-    /// carry no name, or when a timeout is zero.
+    /// carry no name, or when a timeout is zero or longer than
+    /// [`EncryptedLimits::MAX_TIMEOUT`].
     pub fn new(parts: TlsConfigParts) -> Result<Self, ConfigError> {
         if parts.dot_listen_addrs.is_empty() && parts.doh_listen_addrs.is_empty() {
             return Err(invalid(
                 "enabled with neither dot_listen_addrs nor doh_listen_addrs",
             ));
         }
-        if parts.limits.handshake_timeout.is_zero() || parts.limits.idle_timeout.is_zero() {
-            return Err(invalid(
-                "handshake_timeout_secs and idle_timeout_secs must be non-zero",
-            ));
+        let timeouts = [parts.limits.handshake_timeout, parts.limits.idle_timeout];
+        if timeouts
+            .iter()
+            .any(|timeout| timeout.is_zero() || *timeout > EncryptedLimits::MAX_TIMEOUT)
+        {
+            return Err(invalid(&format!(
+                "handshake_timeout_secs and idle_timeout_secs must be between 1 and {}",
+                EncryptedLimits::MAX_TIMEOUT.as_secs()
+            )));
         }
         let source = match (parts.cert_path, parts.key_path) {
             (Some(cert_path), Some(key_path)) => CertificateSource::OperatorSupplied {
@@ -278,7 +295,6 @@ impl TlsConfig {
                 return Err(invalid("self_signed_names must name at least one host"));
             }
             (None, None) => CertificateSource::SelfSigned {
-                dir: parts.self_signed_dir.clone(),
                 names: parts.self_signed_names,
             },
             _ => return Err(invalid("cert_path and key_path must be set together")),
@@ -361,8 +377,10 @@ mod tests {
     }
 
     #[test]
-    fn stream_limit_rejects_zero_and_values_past_the_prefix() {
+    fn stream_limit_rejects_less_than_a_header_and_values_past_the_prefix() {
         assert!(StreamMessageLimit::from_configured(0).is_err());
+        assert!(StreamMessageLimit::from_configured(11).is_err());
+        assert!(StreamMessageLimit::from_configured(12).is_ok());
         assert!(StreamMessageLimit::from_configured(65_536).is_err());
         assert_eq!(
             StreamMessageLimit::from_configured(65_535).unwrap(),
@@ -425,5 +443,21 @@ mod tests {
         let mut zero = parts();
         zero.limits.idle_timeout = Duration::ZERO;
         assert!(TlsConfig::new(zero).is_err());
+    }
+
+    #[test]
+    fn a_timeout_past_the_maximum_is_refused() {
+        let past = EncryptedLimits::MAX_TIMEOUT.saturating_add(Duration::from_secs(1));
+        let mut idle = parts();
+        idle.limits.idle_timeout = past;
+        assert!(TlsConfig::new(idle).is_err());
+
+        let mut handshake = parts();
+        handshake.limits.handshake_timeout = past;
+        assert!(TlsConfig::new(handshake).is_err());
+
+        let mut at_max = parts();
+        at_max.limits.idle_timeout = EncryptedLimits::MAX_TIMEOUT;
+        assert!(TlsConfig::new(at_max).is_ok());
     }
 }

@@ -125,15 +125,21 @@ at most once a second.
 
 | Key | Default | Bounds |
 |---|---|---|
-| `handshake_timeout_secs` | 5 | Time a client has to finish the TLS handshake |
-| `idle_timeout_secs` | 30 | Time a connection may stay open with no query in flight |
+| `handshake_timeout_secs` | 5 | Time a client has to finish the TLS handshake, 1 to 3600 |
+| `idle_timeout_secs` | 30 | Time a connection may stay open with no query in flight, 1 to 3600 |
 | `max_connections` | 128 | Open connections per listener; more are closed before the handshake |
 | `max_streams_per_connection` | 100 | Concurrent HTTP/2 streams per DoH connection |
 | `max_queries_per_connection` | 10000 | Queries one connection carries before styx closes it |
-| `max_request_body_bytes` | 65535 | Largest DNS message a DoH request may carry |
+| `max_request_body_bytes` | 4096 | Largest DNS message a DoH request may carry, 12 to 65535 |
 
 Encrypted queries also share the server-wide `max_in_flight_queries` budget with UDP and
-TCP.
+TCP. A DoT connection also has plain TCP's fixed per-connection bounds, which are not
+`[tls]` keys: 5 seconds to write each answer and 32 queries in flight.
+
+Every DoH stream may hold one request body of up to `max_request_body_bytes` while it is
+read, so the worst case per listener is `max_connections` × `max_streams_per_connection` ×
+`max_request_body_bytes`: about 50 MiB at the defaults. Lower one of the three on a small
+box.
 
 ## Every `[tls]` key
 
