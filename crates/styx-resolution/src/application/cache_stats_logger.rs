@@ -6,6 +6,7 @@ use std::time::Duration;
 use styx_core::Sleeper;
 use tokio_util::sync::CancellationToken;
 
+use crate::domain::cache::error::CacheError;
 use crate::domain::cache::port::AnswerCache;
 
 /// Periodically snapshots [`AnswerCache::stats`] and logs it at `debug` until shutdown.
@@ -21,13 +22,18 @@ where
     S: Sleeper,
 {
     /// Creates a new `CacheStatsLogger` that logs `cache.stats()` every `interval`.
-    #[must_use]
-    pub fn new(cache: Arc<A>, sleeper: Arc<S>, interval: Duration) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// Returns [`CacheError::ZeroStatsInterval`] when `interval` is zero.
+    pub fn new(cache: Arc<A>, sleeper: Arc<S>, interval: Duration) -> Result<Self, CacheError> {
+        if interval.is_zero() {
+            return Err(CacheError::ZeroStatsInterval);
+        }
+        Ok(Self {
             cache,
             sleeper,
             interval,
-        }
+        })
     }
 
     /// Runs the logging loop until `shutdown` is cancelled.
@@ -45,11 +51,12 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
-    use styx_core::{TestClock, TestSleeper};
+    use styx_core::{Sleeper, TestClock, TestSleeper};
     use tokio::sync::Notify;
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
@@ -71,18 +78,9 @@ mod tests {
     const INTERVAL: Duration = Duration::from_secs(60);
     const REAL_TIME_BUDGET: Duration = Duration::from_millis(500);
 
+    #[derive(Default)]
     struct SpyCache {
         stats_calls: AtomicUsize,
-        logged: Notify,
-    }
-
-    impl SpyCache {
-        fn new() -> Self {
-            Self {
-                stats_calls: AtomicUsize::new(0),
-                logged: Notify::new(),
-            }
-        }
     }
 
     impl AnswerCache for SpyCache {
@@ -100,8 +98,22 @@ mod tests {
 
         fn stats(&self) -> CacheStats {
             self.stats_calls.fetch_add(1, Ordering::SeqCst);
-            self.logged.notify_one();
             AtomicCacheCounters::default().snapshot(0, HeapBytes::zero())
+        }
+    }
+
+    /// A [`TestSleeper`] that signals each time a sleep is armed, so the test advances the
+    /// clock only once the logger's next deadline is fixed.
+    struct ArmedSleeper {
+        inner: TestSleeper,
+        armed: Notify,
+    }
+
+    impl Sleeper for ArmedSleeper {
+        fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send {
+            let sleeping = self.inner.sleep(duration);
+            self.armed.notify_one();
+            sleeping
         }
     }
 
@@ -118,48 +130,70 @@ mod tests {
         }
     }
 
-    struct DebugEventCounter(Arc<AtomicUsize>);
+    /// Counts the stats events once they are emitted, and signals after each one.
+    #[derive(Default)]
+    struct StatsEvents {
+        count: AtomicUsize,
+        emitted: Notify,
+    }
 
-    impl<S: Subscriber> Layer<S> for DebugEventCounter {
-        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+    struct StatsEventLayer(Arc<StatsEvents>);
+
+    impl<S: Subscriber> Layer<S> for StatsEventLayer {
+        fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
             let mut visitor = StatsMessageVisitor::default();
             event.record(&mut visitor);
             if visitor.matched {
-                self.0.fetch_add(1, Ordering::SeqCst);
+                self.0.count.fetch_add(1, Ordering::SeqCst);
+                self.0.emitted.notify_one();
             }
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn logs_after_each_interval_and_stops_on_cancellation() {
         let clock = Arc::new(TestClock::new());
-        let sleeper = Arc::new(TestSleeper::new(Arc::clone(&clock)));
-        let cache = Arc::new(SpyCache::new());
+        let sleeper = Arc::new(ArmedSleeper {
+            inner: TestSleeper::new(Arc::clone(&clock)),
+            armed: Notify::new(),
+        });
+        let cache = Arc::new(SpyCache::default());
         let shutdown = CancellationToken::new();
-        let debug_events = Arc::new(AtomicUsize::new(0));
+        let events = Arc::new(StatsEvents::default());
         let subscriber = tracing_subscriber::registry().with(
-            DebugEventCounter(Arc::clone(&debug_events))
-                .with_filter(LevelFilter::from_level(Level::DEBUG)),
+            StatsEventLayer(Arc::clone(&events)).with_filter(LevelFilter::from_level(Level::DEBUG)),
         );
 
-        let logger = CacheStatsLogger::new(Arc::clone(&cache), sleeper, INTERVAL);
+        let logger = CacheStatsLogger::new(Arc::clone(&cache), Arc::clone(&sleeper), INTERVAL)
+            .expect("non-zero interval");
         let handle = tokio::spawn(logger.run(shutdown.clone()).with_subscriber(subscriber));
 
-        tokio::task::yield_now().await;
-        assert_eq!(cache.stats_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(debug_events.load(Ordering::SeqCst), 0);
+        for interval in 1..=3 {
+            timeout(REAL_TIME_BUDGET, sleeper.armed.notified())
+                .await
+                .expect("logger waits for the next interval");
+            assert_eq!(events.count.load(Ordering::SeqCst), interval - 1);
 
-        clock.advance(INTERVAL);
-        timeout(REAL_TIME_BUDGET, cache.logged.notified())
-            .await
-            .expect("first stats log");
-        assert_eq!(cache.stats_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(debug_events.load(Ordering::SeqCst), 1);
+            clock.advance(INTERVAL);
+            timeout(REAL_TIME_BUDGET, events.emitted.notified())
+                .await
+                .expect("stats logged once the interval elapses");
+            assert_eq!(cache.stats_calls.load(Ordering::SeqCst), interval);
+            assert_eq!(events.count.load(Ordering::SeqCst), interval);
+        }
 
         shutdown.cancel();
         timeout(REAL_TIME_BUDGET, handle)
             .await
             .expect("logger stops on cancel")
             .expect("logger task join");
+    }
+
+    #[test]
+    fn a_zero_interval_is_refused() {
+        let clock = Arc::new(TestClock::new());
+        let sleeper = Arc::new(TestSleeper::new(clock));
+        let result = CacheStatsLogger::new(Arc::new(SpyCache::default()), sleeper, Duration::ZERO);
+        assert!(matches!(result, Err(CacheError::ZeroStatsInterval)));
     }
 }
