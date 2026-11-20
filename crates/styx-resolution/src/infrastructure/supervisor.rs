@@ -12,6 +12,7 @@ use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
+use crate::domain::request::Transport;
 use crate::infrastructure::doh::DohListener;
 use crate::infrastructure::dot::DotListener;
 use crate::infrastructure::tcp::TcpListener;
@@ -112,7 +113,7 @@ impl SupervisorBackoff {
 
 /// Trait implemented by transport listeners managed by a supervisor loop.
 pub trait SupervisedListener: Send + 'static {
-    /// Returns human-readable transport name for logging (e.g. "UDP" or "TCP").
+    /// The transport's [`Transport::name`], for logging.
     fn transport_name(&self) -> &'static str;
 
     /// Runs the listener until cancelled or a fatal error occurs.
@@ -132,7 +133,7 @@ where
     S: Sleeper + Send + Sync + 'static,
 {
     fn transport_name(&self) -> &'static str {
-        "UDP"
+        Transport::Udp.name()
     }
 
     fn run(
@@ -153,7 +154,7 @@ where
     S: Sleeper + Send + Sync + 'static,
 {
     fn transport_name(&self) -> &'static str {
-        "TCP"
+        Transport::Tcp.name()
     }
 
     fn run(
@@ -174,7 +175,7 @@ where
     S: Sleeper + Send + Sync + 'static,
 {
     fn transport_name(&self) -> &'static str {
-        "DoT"
+        Transport::Dot.name()
     }
 
     fn run(
@@ -195,7 +196,7 @@ where
     S: Sleeper + Send + Sync + 'static,
 {
     fn transport_name(&self) -> &'static str {
-        "DoH"
+        Transport::Doh.name()
     }
 
     fn run(

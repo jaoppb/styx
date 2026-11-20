@@ -7,7 +7,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use rustls::crypto::ring::default_provider;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -18,11 +17,12 @@ use styx_resolution::domain::tls::{
 };
 use styx_resolution::infrastructure::cert_fs::FilesystemCertificateReader;
 use styx_resolution::{
-    AllowAllFilter, ConcurrencyLimits, DiscardObserver, EncryptedListeners, MaxResponseSize,
-    NoLocalRecords, Pipeline, Server, ServerConfig, SupervisorBackoffPolicy, TerminalHandler,
-    TlsServerSetup,
+    AllowAllFilter, DiscardObserver, EncryptedListeners, NoLocalRecords, Pipeline, Server,
+    TerminalHandler, TlsServerSetup,
 };
 use styx_testkit::{TestClock, TestSleeper};
+
+use super::server::ServerSettings;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
@@ -103,7 +103,7 @@ impl<T: TerminalHandler + Send + Sync + 'static> EncryptedTestServer<T> {
         )
         .with_terminal(terminal);
         let server = Server::bind_with_encrypted(
-            server_config(),
+            ServerSettings::default().server_config(),
             Some(EncryptedListeners::new(config, setup)),
             Arc::new(pipeline),
             Arc::clone(&clock),
@@ -138,19 +138,6 @@ impl<T: TerminalHandler + Send + Sync + 'static> EncryptedTestServer<T> {
 
 fn loopback() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 0))
-}
-
-fn server_config() -> ServerConfig {
-    ServerConfig {
-        listen_addrs: vec![loopback()],
-        udp_payload_size_default: MaxResponseSize::from_edns_advertised(1232),
-        tcp_idle_timeout: Duration::from_secs(5),
-        query_timeout: Duration::from_secs(2),
-        limits: ConcurrencyLimits::default_limits(),
-        filter_aaaa: false,
-        supervisor: SupervisorBackoffPolicy::default(),
-        upstream: None,
-    }
 }
 
 fn tls_config(options: EncryptedOptions, cert_path: PathBuf, key_path: PathBuf) -> TlsConfig {

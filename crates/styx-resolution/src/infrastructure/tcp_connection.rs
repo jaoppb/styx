@@ -121,7 +121,7 @@ where
             if limiter.spend() != Spend::Within {
                 tracing::debug!(
                     peer = %self.peer,
-                    transport = ?self.settings.transport,
+                    transport = self.settings.transport.name(),
                     admitted = limiter.seen(),
                     "per-connection query ceiling reached; closing after the answers"
                 );
@@ -138,13 +138,13 @@ where
     ) -> Option<Vec<u8>> {
         tokio::select! {
             () = limiter.idle_expired() => {
-                tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, "stream connection idle; closing");
+                tracing::debug!(peer = %self.peer, transport = self.settings.transport.name(), "stream connection idle; closing");
                 None
             }
             frame = read_frame(read_half, self.settings.idle_timeout) => match frame {
                 Ok(frame) => frame,
                 Err(err) => {
-                    tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, %err, "stream closed or timed out");
+                    tracing::debug!(peer = %self.peer, transport = self.settings.transport.name(), %err, "stream closed or timed out");
                     None
                 }
             },
@@ -202,12 +202,12 @@ where
             match send_frame(&mut write_half, &frame.body, self.settings.write_timeout).await {
                 Ok(()) => {}
                 Err(SendFrameError::TimedOut) => {
-                    tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, "response write timed out; closing");
+                    tracing::debug!(peer = %self.peer, transport = self.settings.transport.name(), "response write timed out; closing");
                     self.closing.cancel();
                     return;
                 }
                 Err(err) => {
-                    tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, %err, "failed to write response frame");
+                    tracing::debug!(peer = %self.peer, transport = self.settings.transport.name(), %err, "failed to write response frame");
                     self.closing.cancel();
                     return;
                 }
@@ -217,7 +217,7 @@ where
         // the client sees a clean end rather than a truncated stream.
         let closed = tokio::time::timeout(self.settings.write_timeout, write_half.shutdown()).await;
         if !matches!(closed, Ok(Ok(()))) {
-            tracing::debug!(peer = %self.peer, transport = ?self.settings.transport, "stream did not close cleanly");
+            tracing::debug!(peer = %self.peer, transport = self.settings.transport.name(), "stream did not close cleanly");
         }
     }
 }
@@ -260,7 +260,7 @@ where
             .await
             .is_err()
         {
-            tracing::debug!(peer = %self.peer, transport = ?self.transport, "connection writer gone; dropping response");
+            tracing::debug!(peer = %self.peer, transport = self.transport.name(), "connection writer gone; dropping response");
         }
     }
 
@@ -291,14 +291,14 @@ where
                 return self.reply_early(badvers_reply(&rejected));
             }
             Err(err) => {
-                tracing::debug!(peer = %self.peer, transport = ?self.transport, %err, "malformed stream query; responding FORMERR");
+                tracing::debug!(peer = %self.peer, transport = self.transport.name(), %err, "malformed stream query; responding FORMERR");
                 self.malformed_warning.record();
                 return self.reply_early(formerr_reply(bytes));
             }
         };
 
         if query.header.kind == MessageKind::Response {
-            tracing::debug!(peer = %self.peer, transport = ?self.transport, "silently dropping inbound response (QR=1)");
+            tracing::debug!(peer = %self.peer, transport = self.transport.name(), "silently dropping inbound response (QR=1)");
             return None;
         }
 
@@ -328,7 +328,7 @@ where
     /// no reply to give.
     fn reply_early(&self, reply: Option<Message>) -> Option<Vec<u8>> {
         let Some(reply) = reply else {
-            tracing::debug!(peer = %self.peer, transport = ?self.transport, "silently dropping unanswerable message");
+            tracing::debug!(peer = %self.peer, transport = self.transport.name(), "silently dropping unanswerable message");
             return None;
         };
         self.encode_error_reply(reply)
@@ -352,7 +352,7 @@ where
         match ResponseWriter::new().write(message, ctx) {
             Ok(body) => Some(body),
             Err(err) => {
-                tracing::error!(peer = %self.peer, transport = ?self.transport, %err, "failed to serialize stream response");
+                tracing::error!(peer = %self.peer, transport = self.transport.name(), %err, "failed to serialize stream response");
                 None
             }
         }

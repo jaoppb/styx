@@ -29,7 +29,7 @@ use crate::domain::tls::EncryptedLimits;
 use crate::infrastructure::accept::{bind_malformed_warning, ServeStream, StreamListener};
 use crate::infrastructure::admission::{ConnectionBudget, ListenerShared};
 use crate::infrastructure::connection_bounds::QueryLimit;
-use crate::infrastructure::malformed_warning::{ListenerKind, MalformedWarning};
+use crate::infrastructure::malformed_warning::MalformedWarning;
 use crate::infrastructure::tcp_connection::{Connection, ConnectionSettings};
 use crate::infrastructure::tls::accept_tls;
 
@@ -50,7 +50,7 @@ where
     T: TerminalHandler + Send + Sync + 'static,
     S: Sleeper + Send + Sync + 'static,
 {
-    const LABEL: &'static str = "DoT";
+    const TRANSPORT: Transport = Transport::Dot;
 
     fn serve(
         &self,
@@ -68,7 +68,9 @@ where
             peer,
         );
         async move {
-            if let Some(tls) = accept_tls(&acceptor, stream, timeout, peer, Self::LABEL).await {
+            if let Some(tls) =
+                accept_tls(&acceptor, stream, timeout, peer, Self::TRANSPORT.name()).await
+            {
                 connection.run(tls).await;
             }
         }
@@ -113,7 +115,7 @@ where
             shared: shared.clone(),
             settings,
             handshake_timeout: limits.handshake_timeout,
-            malformed_warning: bind_malformed_warning(ListenerKind::Dot, bound_addr, &shared),
+            malformed_warning: bind_malformed_warning(Transport::Dot, bound_addr, &shared),
         })
         .await?;
         Ok(Self { inner })

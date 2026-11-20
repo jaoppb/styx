@@ -67,7 +67,8 @@ pub struct QueryPermit {
     _permit: OwnedSemaphorePermit,
 }
 
-/// The one process-wide budget of open TCP connections.
+/// A budget of open stream connections: plain TCP holds one for the whole process, and
+/// each DoT and DoH listener builds its own.
 #[derive(Debug, Clone)]
 pub struct ConnectionBudget {
     permits: Arc<Semaphore>,

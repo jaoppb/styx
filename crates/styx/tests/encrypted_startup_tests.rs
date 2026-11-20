@@ -2,12 +2,13 @@
 //! generating anything, and a configured certificate that cannot be loaded stops startup
 //! instead of falling back to self-signed.
 
-#![allow(clippy::unwrap_used)]
+// The helpers below sit outside `#[test]` functions, where clippy's allowances stop.
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use styx_resolution::domain::tls::SelfSignedStore;
 use styx_resolution::infrastructure::cert_fs::{
@@ -36,13 +37,28 @@ async fn write_config(dir: &Path, tls: &str) -> PathBuf {
     path
 }
 
+/// Every case here exits on its own; one that keeps running (say, because it fell back to
+/// self-signed and started serving) is killed and failed instead of hanging CI.
+const RUN_BUDGET: Duration = Duration::from_secs(30);
+
 async fn styx(args: Vec<String>) -> Output {
     tokio::task::spawn_blocking(move || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_styx"))
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_styx"))
             .args(args)
             .env("RUST_LOG", "warn")
-            .output()
-            .unwrap()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            if started.elapsed() >= RUN_BUDGET {
+                let _ = child.kill();
+                panic!("styx did not exit within {RUN_BUDGET:?}");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        child.wait_with_output().unwrap()
     })
     .await
     .unwrap()

@@ -20,7 +20,7 @@ use crate::domain::request::Transport;
 use crate::infrastructure::accept::{bind_malformed_warning, ServeStream, StreamListener};
 use crate::infrastructure::admission::{ConnectionBudget, ListenerShared};
 use crate::infrastructure::connection_bounds::QueryLimit;
-use crate::infrastructure::malformed_warning::{ListenerKind, MalformedWarning};
+use crate::infrastructure::malformed_warning::MalformedWarning;
 use crate::infrastructure::tcp_connection::{Connection, ConnectionSettings};
 
 /// Default idle timeout for idle TCP client connections (5 seconds).
@@ -41,7 +41,7 @@ where
     T: TerminalHandler + Send + Sync + 'static,
     S: Sleeper + Send + Sync + 'static,
 {
-    const LABEL: &'static str = "TCP";
+    const TRANSPORT: Transport = Transport::Tcp;
 
     fn serve(
         &self,
@@ -97,7 +97,7 @@ where
         let inner = StreamListener::bind(addr, connections, &shared, |bound_addr| TcpServe {
             shared: shared.clone(),
             settings,
-            malformed_warning: bind_malformed_warning(ListenerKind::Tcp, bound_addr, &shared),
+            malformed_warning: bind_malformed_warning(Transport::Tcp, bound_addr, &shared),
         })
         .await?;
         Ok(Self { inner })

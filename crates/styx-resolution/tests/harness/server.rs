@@ -40,6 +40,25 @@ impl Default for ServerSettings {
     }
 }
 
+impl ServerSettings {
+    /// The configuration every test server binds with: one loopback address on port 0,
+    /// these settings, and every other key at its default. The encrypted harness builds
+    /// from it too, so a new `ServerConfig` field is filled in one place.
+    #[must_use]
+    pub fn server_config(self) -> ServerConfig {
+        ServerConfig {
+            listen_addrs: vec![SocketAddr::from(([127, 0, 0, 1], 0))],
+            udp_payload_size_default: self.udp_payload_size_default,
+            tcp_idle_timeout: self.tcp_idle_timeout,
+            query_timeout: self.query_timeout,
+            limits: self.limits,
+            filter_aaaa: false,
+            supervisor: self.supervisor,
+            upstream: None,
+        }
+    }
+}
+
 /// Test fixture booting a real server instance on ephemeral ports (port 0).
 pub struct TestServer<
     L = NoLocalRecords,
@@ -158,16 +177,7 @@ where
         clock: Arc<TestClock>,
         settings: ServerSettings,
     ) -> Result<Self, HarnessError> {
-        let config = ServerConfig {
-            listen_addrs: vec![SocketAddr::from(([127, 0, 0, 1], 0))],
-            udp_payload_size_default: settings.udp_payload_size_default,
-            tcp_idle_timeout: settings.tcp_idle_timeout,
-            query_timeout: settings.query_timeout,
-            limits: settings.limits,
-            filter_aaaa: false,
-            supervisor: settings.supervisor,
-            upstream: None,
-        };
+        let config = settings.server_config();
 
         let sleeper = Arc::new(TestSleeper::new(Arc::clone(&clock)));
         let server = Server::bind(config, Arc::new(pipeline), Arc::clone(&clock), sleeper)

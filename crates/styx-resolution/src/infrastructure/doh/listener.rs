@@ -16,11 +16,11 @@ use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
+use crate::domain::request::Transport;
 use crate::domain::tls::EncryptedLimits;
 use crate::infrastructure::accept::{bind_malformed_warning, ServeStream, StreamListener};
 use crate::infrastructure::admission::{ConnectionBudget, ListenerShared};
 use crate::infrastructure::doh::connection::{DohEndpoint, DohSettings};
-use crate::infrastructure::malformed_warning::ListenerKind;
 
 struct DohServe<L, F, O, C, T, S> {
     acceptor: TlsAcceptor,
@@ -36,7 +36,7 @@ where
     T: TerminalHandler + Send + Sync + 'static,
     S: Sleeper + Send + Sync + 'static,
 {
-    const LABEL: &'static str = "DoH";
+    const TRANSPORT: Transport = Transport::Doh;
 
     fn serve(
         &self,
@@ -79,7 +79,7 @@ where
     ) -> Result<Self, ListenerError> {
         let connections = ConnectionBudget::new(limits.max_connections);
         let inner = StreamListener::bind(addr, connections, &shared, |bound_addr| {
-            let malformed_warning = bind_malformed_warning(ListenerKind::Doh, bound_addr, &shared);
+            let malformed_warning = bind_malformed_warning(Transport::Doh, bound_addr, &shared);
             let endpoint = Arc::new(DohEndpoint::new(
                 shared.clone(),
                 malformed_warning,

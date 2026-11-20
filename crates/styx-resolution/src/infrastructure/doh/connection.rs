@@ -208,7 +208,9 @@ where
         closing: CancellationToken,
     ) {
         let timeout = self.endpoint.limits.handshake_timeout;
-        let Some(tls) = accept_tls(&acceptor, stream, timeout, self.peer, "DoH").await else {
+        let Some(tls) =
+            accept_tls(&acceptor, stream, timeout, self.peer, Transport::Doh.name()).await
+        else {
             return;
         };
         let builder = self.endpoint.http_builder();

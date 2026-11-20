@@ -18,8 +18,9 @@ use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
+use crate::domain::request::Transport;
 use crate::infrastructure::admission::{ConnectionBudget, ListenerShared, WarnLimiter};
-use crate::infrastructure::malformed_warning::{ListenerKind, MalformedWarning};
+use crate::infrastructure::malformed_warning::MalformedWarning;
 
 /// Back-off before retrying `accept()` after the process ran out of descriptors.
 pub(crate) const DESCRIPTOR_EXHAUSTION_BACKOFF: Duration = Duration::from_millis(100);
@@ -32,8 +33,8 @@ const ENFILE: i32 = 23;
 
 /// Per-transport connection handler plugged into [`StreamListener`].
 pub(crate) trait ServeStream: Send + Sync {
-    /// Human-readable transport label used in log fields (`"TCP"`, `"DoT"`, `"DoH"`).
-    const LABEL: &'static str;
+    /// The transport this handler serves; its [`Transport::name`] labels every log line.
+    const TRANSPORT: Transport;
 
     /// Returns an owned future that serves one accepted TCP connection until completion or
     /// `closing` cancellation.
@@ -109,20 +110,20 @@ where
         let (stream, peer) = match accepted {
             Ok(pair) => pair,
             Err(err) if is_descriptor_exhaustion(&err) => {
-                self.warn_limited(
-                    &self.exhaustion_warning,
-                    "out of file descriptors accepting stream connection; retrying",
-                );
+                // The error tells EMFILE (this process) from ENFILE (the whole system).
+                if self.exhaustion_warning.allow(self.clock.now_monotonic()) {
+                    tracing::warn!(%err, addr = %self.bound_addr, transport = H::TRANSPORT.name(), "out of file descriptors accepting stream connection; retrying");
+                }
                 tokio::time::sleep(DESCRIPTOR_EXHAUSTION_BACKOFF).await;
                 return Ok(());
             }
             Err(err) => {
-                tracing::error!(%err, addr = %self.bound_addr, transport = H::LABEL, "stream accept error");
+                tracing::error!(%err, addr = %self.bound_addr, transport = H::TRANSPORT.name(), "stream accept error");
                 return Err(ListenerError::Io(err));
             }
         };
         let Some(permit) = self.connections.try_admit() else {
-            tracing::debug!(%peer, transport = H::LABEL, "connection ceiling reached; closing");
+            tracing::debug!(%peer, transport = H::TRANSPORT.name(), "connection ceiling reached; closing");
             self.warn_limited(
                 &self.refusal_warning,
                 "connection ceiling reached; refusing connections",
@@ -145,14 +146,14 @@ where
 
     fn warn_limited(&self, limiter: &WarnLimiter, message: &'static str) {
         if limiter.allow(self.clock.now_monotonic()) {
-            tracing::warn!(addr = %self.bound_addr, transport = H::LABEL, "{message}");
+            tracing::warn!(addr = %self.bound_addr, transport = H::TRANSPORT.name(), "{message}");
         }
     }
 }
 
 /// Builds a [`MalformedWarning`] tracker bound to a listener's address and shared runtime.
 pub(crate) fn bind_malformed_warning<L, F, O, C, T, S>(
-    kind: ListenerKind,
+    kind: Transport,
     bound_addr: SocketAddr,
     shared: &ListenerShared<L, F, O, C, T, S>,
 ) -> Arc<MalformedWarning<C, S>>
