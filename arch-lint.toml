@@ -696,4 +696,4 @@ message = "library crates return a crate-owned thiserror enum, never anyhow (Nor
 name = "no-anyhow-dnssec"
 scope = "styx-dnssec"
 deny = ["anyhow", "anyhow::**"]
-message = "library crates return a crate-owned thiserror enum, never anyhow (Norm 3). ValidationError is the one error type at this crate's boundary"
+message = "library crates return a crate-owned thiserror enum, never anyhow (Norm 3). styx-dnssec reports failures as a ValidationOutcome and its own thiserror enums (DenialError, ChainSourceError, TrustAnchorError)"

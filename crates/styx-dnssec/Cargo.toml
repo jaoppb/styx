@@ -19,7 +19,6 @@ tracing.workspace = true
 [dev-dependencies]
 styx-core = { path = "../styx-core", features = ["test-support"] }
 styx-testkit = { path = "../styx-testkit" }
-tokio.workspace = true
 
 [lints]
 workspace = true

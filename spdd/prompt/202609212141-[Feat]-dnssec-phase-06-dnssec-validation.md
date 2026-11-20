@@ -73,16 +73,17 @@ class PullChainSource {
 
 class TrustAnchorSource {
     <<trait>>
-    +anchors() Result~Vec~TrustAnchor~, TrustAnchorError~
+    +anchors() TrustAnchors
 }
 
 class PinnedRootAnchor {
-    +anchors() Result~Vec~TrustAnchor~, TrustAnchorError~
+    +anchors() TrustAnchors
 }
 
 class FileTrustAnchor {
     +path: PathBuf
-    +anchors() Result~Vec~TrustAnchor~, TrustAnchorError~
+    +load_from_path(path) Result~FileTrustAnchor, TrustAnchorError~
+    +anchors() TrustAnchors
 }
 
 class TrustAnchor {
@@ -114,9 +115,8 @@ class MaterialOrigin {
 }
 
 class Validator~C~ {
-    +clock: Arc~C~
-    +policy: ValidationPolicy
-    +validate(msg: Message, src: S, anchors: A) ValidationOutcome
+    +new(clock: C, policy: ValidationPolicy, anchors: TrustAnchors) Validator
+    +validate(msg: Message, src: S) ValidationOutcome
 }
 
 class ValidationOutcome {
@@ -156,7 +156,6 @@ class FailureMode {
 
 class ValidationPolicy {
     +failure_mode: FailureMode
-    +algorithms: AlgorithmSet
     +nsec3_max_iterations: Nsec3IterationsCap
     +max_zone_cuts: u8
 }
@@ -167,18 +166,10 @@ class Nsec3IterationsCap {
     +value() u16
 }
 
-class AlgorithmSet {
-    -supported_sig: BTreeSet~SigAlgorithm~
-    -supported_digest: BTreeSet~DigestAlgorithm~
-    +classify_sig(a: SigAlgorithm) AlgorithmSupport
-    +classify_digest(d: DigestAlgorithm) AlgorithmSupport
-}
-
 class AlgorithmSupport {
     <<enumeration>>
     Supported
-    UnknownTreatAsInsecure
-    Refused
+    Unsupported
 }
 
 class DenialProof {
@@ -247,10 +238,8 @@ Validator --> ChainSource : consumes
 Validator --> TrustAnchorSource : consumes
 Validator --> Clock : reads time from
 Validator "1" *-- "1" ValidationPolicy : configured by
-ValidationPolicy --> AlgorithmSet : holds
 ValidationPolicy --> FailureMode : holds
 ValidationPolicy "1" *-- "1" Nsec3IterationsCap : holds
-AlgorithmSet --> AlgorithmSupport : classifies into
 Validator --> ValidationOutcome : produces
 ValidationOutcome --> ValidationVerdict : carries
 ValidationOutcome --> VerdictReason : carries
@@ -571,20 +560,25 @@ attacker-facing NSEC3 primitives — see Norm 14.
    - An unsupported algorithm yields `Insecure`, never `Bogus`. A chain we cannot read
      is not a chain we have caught lying.
 
-#### 6a.3 — Define `AlgorithmSet` and enumerate the algorithm set
+#### 6a.3 — Enumerate the algorithm set
 
 1. Responsibility: make the accepted algorithms an explicit, closed, reviewable set.
 2. Methods:
-   - `classify_sig(SigAlgorithm) -> AlgorithmSupport`
-   - `classify_digest(DigestAlgorithm) -> AlgorithmSupport`
-   - `AlgorithmSupport`: `Supported | UnknownTreatAsInsecure | Refused`.
+   - `DnssecAlgorithm::support() -> AlgorithmSupport` and
+     `DigestType::support() -> AlgorithmSupport`, defined next to the signature
+     dispatch and the digest computation, so a supported algorithm always has a
+     primitive.
+   - `AlgorithmSupport`: `Supported | Unsupported`.
 3. Logic:
    - Enumerate the supported signing algorithms and digest algorithms explicitly in
-     code. Do not accept "anything we happen to have a primitive for".
-   - `UnknownTreatAsInsecure` → the zone is Insecure, with reason
-     `UnsupportedAlgorithm`.
-   - `Refused` → reserved for algorithms that must never validate (deprecated/broken);
-     a chain resting on one is `Bogus`.
+     code. Do not accept "anything we happen to have a primitive for": SHA-1 digests are
+     computed but unsupported (RFC 8624).
+   - A DS RRset in which no record is supported (unknown, or deprecated by RFC 8624:
+     RSA/MD5, DSA, the SHA-1 algorithms 5 and 7, SHA-1 digests) makes the child
+     Insecure, with reason `UnsupportedAlgorithm` (RFC 4035 §5.2, RFC 6840 §5.2). The DS
+     RRset is already authenticated by the parent, so this opens no downgrade.
+     *(Amended in the PR #131 review: deprecated algorithms were `Refused` and ended
+     Bogus, and algorithms 5 and 7 were classified differently.)*
 4. Constraint: the enumeration must be exactly the set the `rootcanary.org` corpus in
    6d exercises. If those disagree, one of the two is wrong and it must be resolved
    before 6d passes.
@@ -592,7 +586,9 @@ attacker-facing NSEC3 primitives — see Norm 14.
 #### 6a.4 — Define `TrustAnchorSource` and `TrustAnchor`
 
 1. Responsibility: supply the root of every chain.
-2. Trait: `TrustAnchorSource::anchors() -> Result<Vec<TrustAnchor>, TrustAnchorError>`.
+2. Trait: `TrustAnchorSource::anchors() -> TrustAnchors`, a never-empty set. Loading
+   can fail (a missing or malformed file) when the adapter is built; the validator gets
+   the anchors once, at startup, through `Validator::new`, not on every query.
 3. `TrustAnchor { owner, key_tag, algorithm, digest_type, digest }`.
 4. Constraints:
    - The trait lives in `styx_dnssec::domain::ports`.
