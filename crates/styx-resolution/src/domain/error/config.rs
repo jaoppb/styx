@@ -37,4 +37,17 @@ pub enum ConfigError {
     /// A recursor canary question does not require full root descent.
     #[error("recursor canary must test full root descent")]
     CanaryNotDescending,
+
+    /// A recursor pool member sets a key the recursor never reads; its recursion settings
+    /// live in `[recursion.members.<name>]`.
+    #[error(
+        "upstream member `{member}` is a recursor, which ignores `{key}`; \
+         set it under [recursion.members.{member}] instead"
+    )]
+    RecursorMemberKey {
+        /// The pool member's name.
+        member: String,
+        /// The rejected key.
+        key: &'static str,
+    },
 }

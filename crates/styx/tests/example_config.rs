@@ -2,8 +2,7 @@
 //! server, supervisor and upstream tables and `styx-recursion` takes `[recursion]`. Only
 //! the composition root may name both, so only it can prove the whole file parses.
 
-use styx_core::UpstreamKind;
-use styx_recursion::application::config::RecursionConfig;
+use styx_recursion::application::config::RecursionSection;
 use styx_resolution::ServerConfig;
 use styx_testkit::ExampleDocument;
 
@@ -14,18 +13,18 @@ const EXAMPLE_CONFIG: &str = include_str!(concat!(
 
 struct Parsed {
     server: ServerConfig,
-    recursion: Option<RecursionConfig>,
+    recursion: RecursionSection,
 }
 
 fn parse_through_both(text: &str) -> Result<Parsed, String> {
     Ok(Parsed {
         server: ServerConfig::from_toml_str(text).map_err(|error| error.to_string())?,
-        recursion: RecursionConfig::from_toml_str(text).map_err(|error| error.to_string())?,
+        recursion: RecursionSection::from_toml_str(text).map_err(|error| error.to_string())?,
     })
 }
 
 /// What is wrong with `text` as a whole config file, or `None` when both parsers accept it
-/// and it still configures a recursor member together with its `[recursion]` section.
+/// and it still configures a recursor member whose merged recursion settings are valid.
 fn problem_with(text: &str) -> Option<String> {
     let parsed = match parse_through_both(text) {
         Ok(parsed) => parsed,
@@ -34,17 +33,15 @@ fn problem_with(text: &str) -> Option<String> {
     let Some(pool) = parsed.server.upstream else {
         return Some("the example configures no pool".to_owned());
     };
-    let has_recursor = pool
-        .members
-        .iter()
-        .any(|member| member.kind == UpstreamKind::Recursor);
-    if !has_recursor {
+    let recursors = pool.recursor_names();
+    if recursors.is_empty() {
         return Some("the example keeps no recursor member".to_owned());
     }
     parsed
         .recursion
-        .is_none()
-        .then(|| "a recursor member needs the [recursion] section".to_owned())
+        .validate(&recursors)
+        .err()
+        .map(|error| error.to_string())
 }
 
 #[test]
