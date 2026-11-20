@@ -627,12 +627,16 @@ from the UI.**
 defaults every recursor member shares; a `[recursion.members.<name>]` table, named after a
 recursor member of the pool, overrides any of its keys for that member alone. Each key
 resolves member override → `[recursion]` → the built-in constant. The overrides live under
-`[recursion]`, not on the pool member, so `styx-resolution`'s member schema never names a
-recursion setting. Both tables reject unknown keys, and an override table that names no
-recursor of the pool is a startup error, so a typo cannot fall back to a default in
-silence. Validation runs on each merged result, with the member's name in the error: a
-zero limit or no `root_hints` anywhere. The shared section is optional: a member that names
-its own `root_hints` needs none.
+`[recursion]`, not on the pool member. The pool member schema still accepts
+`udp_timeout_ms`, `tcp_timeout_ms` and `edns_buffer` for a forwarder, so on a member with
+`kind = "recursor"` those three keys are a startup error that points at
+`[recursion.members.<name>]`, rather than a second per-member setting the recursor would
+ignore. Both tables reject unknown keys, and an override table that names no recursor of
+the pool is a startup error, so a typo cannot fall back to a default in silence.
+`[recursion]` is validated on its own when the file is parsed, so a bad shared value fails
+even if every member overrides it; validation then runs again on each merged result, with
+the member's name in the error: a zero limit or no `root_hints` anywhere. The shared
+section is optional: a member that names its own `root_hints` needs none.
 
 ### 8. Errors and observability
 
@@ -1164,7 +1168,8 @@ first.**
    adapter boundary.
 3. **Root hints**: loaded from a path in the **TOML file** (file owns infrastructure) —
    the only source; there is no compiled-in copy. The path is part of each recursor
-   member's merged settings (Approach §7), and the file is loaded once per member. A
+   member's merged settings (Approach §7), and each distinct path is loaded once and
+   shared by every member that names it. A
    missing or unparseable file is a `ConfigError` at construction, and the recursor is not
    built. Priming is **lazy and non-blocking** (`application/priming.rs`): the recursor
    is constructed from hints alone and serves at once; the first descent's prerequisite
@@ -1180,7 +1185,8 @@ first.**
 
 1. **Responsibility**: run descents, and be an ordinary pool member. Each recursor member
    is its own `Recursor` with its own infrastructure cache, built from that member's
-   merged settings (Approach §7); two recursors share nothing but the diagnostics store.
+   merged settings (Approach §7); two recursors share only the diagnostics store, the
+   clock, and the parsed root hints of a path they both name.
 2. **Core method**: `resolve(&self, question: &Question) -> Result<Message, RecursionError>`,
    the inherent descent driver. The `Upstream` implementation wraps it, converting a
    `RecursionError` to an `UpstreamError` at that boundary.

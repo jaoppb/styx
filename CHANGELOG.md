@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `udp_timeout_ms`, `tcp_timeout_ms` and `edns_buffer` on an
+  `[[upstream.members]]` entry with `kind = "recursor"` are now a startup error. The
+  recursor never read them; set its timeouts under `[recursion]` or
+  `[recursion.members.<name>]`.
 - **Breaking:** the default `query_timeout_secs` is now 5 (it was 2). A dead upstream can
   take up to 5 seconds to answer SERVFAIL, and graceful shutdown can wait up to 5
   seconds. The deadline still has to exceed every pool member's own timeout.

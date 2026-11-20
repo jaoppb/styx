@@ -45,7 +45,9 @@ query_timeout_secs = 5
 strategy = "ordered_failover"
 
 # The iterative recursor. `addr` is required by the pool schema but unused for a
-# recursor: it finds its servers by walking down from the root.
+# recursor: it finds its servers by walking down from the root. A recursor member takes
+# no udp_timeout_ms, tcp_timeout_ms or edns_buffer here; set its timeouts under
+# [recursion] or [recursion.members.<name>] below.
 [[upstream.members]]
 name = "recursor"
 kind = "recursor"
