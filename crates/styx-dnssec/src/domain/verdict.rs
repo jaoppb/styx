@@ -27,6 +27,9 @@ pub enum VerdictReason {
     ProvenUnsignedDelegation,
     /// Non-existence of the queried name or type was cryptographically proven via NSEC or NSEC3.
     ProvenDenialOfExistence,
+    /// The denial rests on an NSEC3 Opt-Out span, which may hide an unsigned delegation,
+    /// so it cannot be Secure (RFC 5155 §9.2).
+    Nsec3OptOut,
     /// No trust anchor path or missing intermediate zone cut material.
     NoPathToAnchor,
     /// Chain descent exceeded the configured maximum number of zone cuts.
@@ -125,7 +128,9 @@ impl From<DenialError> for ValidationOutcome {
             DenialError::UnsupportedHashAlgorithm(_) => {
                 Self::insecure(VerdictReason::UnsupportedAlgorithm)
             }
-            _ => Self::bogus(VerdictReason::DenialProofIncomplete),
+            DenialError::DenialProofIncomplete | DenialError::NotCovered | DenialError::Name(_) => {
+                Self::bogus(VerdictReason::DenialProofIncomplete)
+            }
         }
     }
 }

@@ -30,7 +30,8 @@ fn root_source(root_key: &ZoneKey) -> InMemoryChainSource {
 
 #[test]
 fn test_pinned_root_anchor_contents() {
-    let anchors = PinnedRootAnchor::new().anchors().unwrap();
+    let pinned = PinnedRootAnchor::new().anchors();
+    let anchors = pinned.as_slice();
     assert_eq!(anchors.len(), 2);
 
     let ksk_2017 = anchors
@@ -64,13 +65,13 @@ async fn test_ed25519_positive_chain_validation() {
     let root_key = ZoneKey::generate(&Name::root());
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
 
-    let validator = Validator::new(clock(), ValidationPolicy::default());
+    let validator = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
     let outcome = validator
-        .validate(
-            &signed_root_answer(&root_key),
-            &root_source(&root_key),
-            &anchors,
-        )
+        .validate(&signed_root_answer(&root_key), &root_source(&root_key))
         .await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
@@ -82,13 +83,13 @@ async fn test_expired_signature_fails() {
     let root_key = ZoneKey::generate(&Name::root());
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
 
-    let validator = Validator::new(clock_at(1_700_000_500), ValidationPolicy::default());
+    let validator = Validator::new(
+        clock_at(1_700_000_500),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
     let outcome = validator
-        .validate(
-            &signed_root_answer(&root_key),
-            &root_source(&root_key),
-            &anchors,
-        )
+        .validate(&signed_root_answer(&root_key), &root_source(&root_key))
         .await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
@@ -108,13 +109,13 @@ async fn test_ds_dnskey_mismatch_fails() {
     );
     let anchors = StaticAnchorSource::new(vec![wrong_digest]);
 
-    let validator = Validator::new(clock(), ValidationPolicy::default());
+    let validator = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
     let outcome = validator
-        .validate(
-            &signed_root_answer(&root_key),
-            &root_source(&root_key),
-            &anchors,
-        )
+        .validate(&signed_root_answer(&root_key), &root_source(&root_key))
         .await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
@@ -126,13 +127,13 @@ async fn test_future_signature_not_yet_valid_fails() {
     let root_key = ZoneKey::generate(&Name::root());
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
 
-    let validator = Validator::new(clock_at(1_600_000_000), ValidationPolicy::default());
+    let validator = Validator::new(
+        clock_at(1_600_000_000),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
     let outcome = validator
-        .validate(
-            &signed_root_answer(&root_key),
-            &root_source(&root_key),
-            &anchors,
-        )
+        .validate(&signed_root_answer(&root_key), &root_source(&root_key))
         .await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
@@ -153,14 +154,13 @@ async fn test_unrelated_signed_answer_is_rejected_as_bogus() {
         .push(example_key.sign(std::slice::from_ref(&answer)));
     message.answers.push(answer);
 
-    let validator = Validator::new(clock(), ValidationPolicy::default());
-    let outcome = validator
-        .validate(
-            &message,
-            &source,
-            &StaticAnchorSource::new(vec![root_key.anchor()]),
-        )
-        .await;
+    let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
+    let validator = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
+    let outcome = validator.validate(&message, &source).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
 }
@@ -177,14 +177,13 @@ async fn test_wrong_qtype_signed_answer_is_rejected_as_bogus() {
         .push(root_key.sign(std::slice::from_ref(&wrong_type)));
     message.answers.push(wrong_type);
 
-    let validator = Validator::new(clock(), ValidationPolicy::default());
-    let outcome = validator
-        .validate(
-            &message,
-            &root_source(&root_key),
-            &StaticAnchorSource::new(vec![root_key.anchor()]),
-        )
-        .await;
+    let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
+    let validator = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
+    let outcome = validator.validate(&message, &root_source(&root_key)).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
 }
@@ -212,9 +211,13 @@ async fn test_cname_loop_is_rejected_as_bogus() {
     message.answers.push(c2);
 
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
-    let outcome = Validator::new(clock(), ValidationPolicy::default())
-        .validate(&message, &source, &anchors)
-        .await;
+    let outcome = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    )
+    .validate(&message, &source)
+    .await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
 }
@@ -242,12 +245,13 @@ async fn test_cname_chain_and_smuggled_record_validation() {
     message.answers.push(target_a);
 
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
-    let validator = Validator::new(clock(), ValidationPolicy::default());
+    let validator = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
     assert_eq!(
-        validator
-            .validate(&message, &source, &anchors)
-            .await
-            .verdict,
+        validator.validate(&message, &source).await.verdict,
         ValidationVerdict::Secure
     );
 
@@ -258,10 +262,7 @@ async fn test_cname_chain_and_smuggled_record_validation() {
         .push(example_key.sign(std::slice::from_ref(&smuggled)));
     message.answers.push(smuggled);
     assert_eq!(
-        validator
-            .validate(&message, &source, &anchors)
-            .await
-            .verdict,
+        validator.validate(&message, &source).await.verdict,
         ValidationVerdict::Bogus
     );
 }
@@ -282,23 +283,25 @@ async fn test_wildcard_answer_requires_signed_denial_proof() {
     message.answers.push(answer);
 
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
-    let validator = Validator::new(clock(), ValidationPolicy::default());
+    let validator = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
     // Without authority NSEC proving sub.wild.example. (and wild.example.) do not exist -> Bogus.
     assert_eq!(
-        validator
-            .validate(&message, &source, &anchors)
-            .await
-            .verdict,
+        validator.validate(&message, &source).await.verdict,
         ValidationVerdict::Bogus
     );
 
-    // With signed NSEC from example. covering sub.wild.example. and closest encloser example. -> Secure.
+    // With the signed apex NSEC (NS and SOA) covering sub.wild.example., whose closest
+    // encloser is example. -> Secure.
     let nsec = record(
         &name("example."),
         RecordType::NSEC,
         RData::Nsec(NsecRdata::new(
             name("z.example."),
-            TypeBitmap::new(vec![0x00, 0x01, 0x20]),
+            TypeBitmap::new(vec![0x00, 0x01, 0x22]),
         )),
     );
     message
@@ -307,10 +310,7 @@ async fn test_wildcard_answer_requires_signed_denial_proof() {
     message.authorities.push(nsec);
 
     assert_eq!(
-        validator
-            .validate(&message, &source, &anchors)
-            .await
-            .verdict,
+        validator.validate(&message, &source).await.verdict,
         ValidationVerdict::Secure
     );
 }

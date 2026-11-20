@@ -1,15 +1,18 @@
 //! Integration tests for NSEC and NSEC3 denial-of-existence proofs (Sub-phases 6b and 6c).
 
+// The helpers below sit outside `#[test]` functions, where clippy's allowances stop.
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 mod support;
 
 use styx_dnssec::domain::denial::{
-    nsec_covers_name, Nsec3Flags, Nsec3Params, Nsec3Proof, NsecProof,
+    nsec_covers_name, DenialProof, DenialStrength, Nsec3Flags, Nsec3Params, Nsec3Proof,
 };
 use styx_dnssec::domain::error::DenialError;
 use styx_dnssec::domain::nsec3::{base32hex_decode, hash_nsec3_name};
 use styx_dnssec::{Nsec3HashAlgorithm, Nsec3IterationsCap};
 use styx_proto::domain::rdata::{Nsec3Rdata, NsecRdata, TypeBitmap};
-use styx_proto::{Name, RData, RecordClass, RecordType, ResourceRecord, Ttl};
+use styx_proto::{Name, RData, RecordClass, RecordType, ResourceRecord, ResponseCode, Ttl};
 use support::base32hex_encode;
 
 #[test]
@@ -26,6 +29,13 @@ fn test_nsec_coverage_normal_span_and_apex_wrap() {
     // Apex wrap-around: z -> b covers a, but does not cover z itself
     assert!(nsec_covers_name(&z, &b, &a));
     assert!(!nsec_covers_name(&z, &b, &z));
+}
+
+fn nsec_rr_next(record: &ResourceRecord) -> &Name {
+    match record.rdata {
+        RData::Nsec(ref nsec) => nsec.next_domain(),
+        _ => panic!("not an NSEC"),
+    }
 }
 
 #[test]
@@ -45,19 +55,21 @@ fn test_nsec_nodata_and_name_error() {
         RData::Nsec(nsec_rdata),
     );
 
-    let proof = NsecProof::new(vec![nsec_rr]);
+    let zone = Name::from_ascii("example.com.").unwrap();
+    let cap = Nsec3IterationsCap::DEFAULT;
+    let proof = DenialProof::from_records(&[&nsec_rr]).unwrap();
 
-    // Name does not exist covers qname
-    assert!(proof.prove_name_does_not_exist(&qname).is_ok());
+    // The NSEC spans qname.
+    assert!(nsec_covers_name(&owner, nsec_rr_next(&nsec_rr), &qname));
 
     // Type does not exist for AAAA at host.example.com
     assert!(proof
-        .prove_type_does_not_exist(&owner, RecordType::AAAA)
+        .verify(&zone, &owner, RecordType::AAAA, ResponseCode::NOERROR, cap)
         .is_ok());
 
     // Type A exists at host.example.com -> fails NODATA proof
     assert_eq!(
-        proof.prove_type_does_not_exist(&owner, RecordType::A),
+        proof.verify(&zone, &owner, RecordType::A, ResponseCode::NOERROR, cap),
         Err(DenialError::NotCovered)
     );
 }
@@ -163,8 +175,78 @@ fn test_nsec3_opt_out_unsigned_delegation() {
     let proof = Nsec3Proof::from_records(&[&rr]).unwrap();
     assert!(proof.opt_out_applies());
 
-    // DS absence is verified under opt-out span
+    // An opt-out span alone is not a DS-absence proof: RFC 5155 §8.6 also needs the
+    // closest provable encloser, and nothing here matches one.
+    assert!(proof.prove_ds_absence(&zone, &child, cap).is_err());
+}
+
+/// The apex NSEC3 alone in the zone: it matches the apex and, as the only NSEC3, covers
+/// every other hash, with `flags` as given.
+fn lone_apex_nsec3(zone: &Name, salt: &[u8], flags: u8) -> ResourceRecord {
+    let params = Nsec3Params::new(
+        Nsec3HashAlgorithm::SHA1,
+        Nsec3Flags::new(flags),
+        1,
+        salt.to_vec(),
+    );
+    let apex_hash = hash_nsec3_name(zone, &params, Nsec3IterationsCap::DEFAULT).unwrap();
+    let owner = Name::from_ascii(&format!("{}.{zone}", base32hex_encode(&apex_hash))).unwrap();
+    ResourceRecord::new(
+        owner,
+        RecordType::NSEC3,
+        RecordClass::In,
+        Ttl::from_secs(300),
+        RData::Nsec3(Nsec3Rdata::new(
+            1,
+            flags,
+            1,
+            salt.to_vec(),
+            apex_hash,
+            // NS and SOA: the apex, not a delegation.
+            TypeBitmap::new(vec![0x00, 0x01, 0x22]),
+        )),
+    )
+}
+
+#[test]
+fn test_nsec3_opt_out_ds_absence_needs_the_closest_encloser_and_an_opt_out_cover() {
+    let cap = Nsec3IterationsCap::DEFAULT;
+    let salt = [0x11, 0x22];
+    let zone = Name::from_ascii("example.com.").unwrap();
+    let child = Name::from_ascii("unsigned.example.com.").unwrap();
+
+    let opt_out = lone_apex_nsec3(&zone, &salt, 1);
+    let proof = Nsec3Proof::from_records(&[&opt_out]).unwrap();
     assert!(proof.prove_ds_absence(&zone, &child, cap).is_ok());
+
+    let strict = lone_apex_nsec3(&zone, &salt, 0);
+    let proof = Nsec3Proof::from_records(&[&strict]).unwrap();
+    assert_eq!(
+        proof.prove_ds_absence(&zone, &child, cap),
+        Err(DenialError::NotCovered),
+        "without Opt-Out the covered next closer proves no delegation exists"
+    );
+}
+
+#[test]
+fn test_nsec3_nxdomain_over_an_opt_out_span_is_not_proven() {
+    let cap = Nsec3IterationsCap::DEFAULT;
+    let salt = [0x11, 0x22];
+    let zone = Name::from_ascii("example.com.").unwrap();
+    let qname = Name::from_ascii("missing.example.com.").unwrap();
+
+    let strict = Nsec3Proof::from_records(&[&lone_apex_nsec3(&zone, &salt, 0)]).unwrap();
+    assert_eq!(
+        strict.prove_name_does_not_exist(&zone, &qname, cap),
+        Ok(DenialStrength::Proven)
+    );
+
+    // RFC 5155 §9.2: the next closer name may be an unsigned delegation, so no AD.
+    let opt_out = Nsec3Proof::from_records(&[&lone_apex_nsec3(&zone, &salt, 1)]).unwrap();
+    assert_eq!(
+        opt_out.prove_name_does_not_exist(&zone, &qname, cap),
+        Ok(DenialStrength::OptOut)
+    );
 }
 
 #[test]
@@ -285,6 +367,14 @@ fn test_from_records_rejects_conflicting_nsec3_parameters() {
     assert_eq!(err, DenialError::DenialProofIncomplete);
 }
 
+/// Whether the lone NSEC `record` proves no DS at its owner, under the owner's parent.
+fn ds_absence(record: &ResourceRecord) -> Result<(), DenialError> {
+    let zone = &record.owner;
+    DenialProof::from_records(&[record])
+        .unwrap()
+        .prove_ds_absence(&zone.parent().unwrap(), zone, Nsec3IterationsCap::DEFAULT)
+}
+
 #[test]
 fn test_nsec_prove_ds_absence_requires_ns_and_forbids_ds_and_soa() {
     let zone = Name::from_ascii("child.example.com.").unwrap();
@@ -301,10 +391,7 @@ fn test_nsec_prove_ds_absence_requires_ns_and_forbids_ds_and_soa() {
             TypeBitmap::new(vec![0x00, 0x01, 0x40]),
         )),
     );
-    assert_eq!(
-        NsecProof::new(vec![a_only]).prove_ds_absence(&zone),
-        Err(DenialError::NotCovered)
-    );
+    assert_eq!(ds_absence(&a_only), Err(DenialError::NotCovered));
 
     // 2. NS bit set (0x20 in byte 0), but also SOA set (0x02 in byte 0) -> zone apex, not cut
     let ns_and_soa = ResourceRecord::new(
@@ -317,10 +404,7 @@ fn test_nsec_prove_ds_absence_requires_ns_and_forbids_ds_and_soa() {
             TypeBitmap::new(vec![0x00, 0x01, 0x22]),
         )),
     );
-    assert_eq!(
-        NsecProof::new(vec![ns_and_soa]).prove_ds_absence(&zone),
-        Err(DenialError::NotCovered)
-    );
+    assert_eq!(ds_absence(&ns_and_soa), Err(DenialError::NotCovered));
 
     // 3. NS bit set (0x20) and DS bit set (type 43: byte 5, bit 3 = 0x10)
     let ns_and_ds = vec![0x00, 0x06, 0x20, 0x00, 0x00, 0x00, 0x00, 0x10];
@@ -331,10 +415,7 @@ fn test_nsec_prove_ds_absence_requires_ns_and_forbids_ds_and_soa() {
         Ttl::from_secs(300),
         RData::Nsec(NsecRdata::new(next.clone(), TypeBitmap::new(ns_and_ds))),
     );
-    assert_eq!(
-        NsecProof::new(vec![ns_and_ds_rr]).prove_ds_absence(&zone),
-        Err(DenialError::NotCovered)
-    );
+    assert_eq!(ds_absence(&ns_and_ds_rr), Err(DenialError::NotCovered));
 
     // 4. Proper delegation: NS bit set, no DS, no SOA
     let delegation_nsec = ResourceRecord::new(
@@ -347,9 +428,7 @@ fn test_nsec_prove_ds_absence_requires_ns_and_forbids_ds_and_soa() {
             TypeBitmap::new(vec![0x00, 0x01, 0x20]),
         )),
     );
-    assert!(NsecProof::new(vec![delegation_nsec])
-        .prove_ds_absence(&zone)
-        .is_ok());
+    assert!(ds_absence(&delegation_nsec).is_ok());
 }
 
 #[test]

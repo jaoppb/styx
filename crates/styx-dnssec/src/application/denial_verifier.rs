@@ -4,18 +4,16 @@ use styx_core::Clock;
 use styx_proto::{Message, Name, RData, RecordType, ResourceRecord};
 
 use crate::application::authenticator::Authenticator;
-use crate::domain::denial::DenialProof;
+use crate::domain::denial::{DenialProof, DenialStrength};
 use crate::domain::verdict::{ValidationOutcome, VerdictReason};
 
-/// Verifies the denial-of-existence proof in `message`'s authority section.
-pub(crate) fn verify_denial_proofs<C: Clock>(
+/// The NSEC or NSEC3 records of `message`'s authority section, authenticated against
+/// `keys` as they stand (never through a wildcard RRSIG) and assembled into one proof.
+pub(crate) fn authenticated_denial_proof<C: Clock>(
     authenticator: &Authenticator<C>,
-    signer_zone: &Name,
-    qname: &Name,
-    qtype: RecordType,
     message: &Message,
-    active_keys: &[ResourceRecord],
-) -> ValidationOutcome {
+    keys: &[ResourceRecord],
+) -> Result<DenialProof, ValidationOutcome> {
     let mut denial_records = Vec::new();
     let mut signatures = Vec::new();
     for record in &message.authorities {
@@ -25,30 +23,51 @@ pub(crate) fn verify_denial_proofs<C: Clock>(
             _ => {}
         }
     }
-
     if denial_records.is_empty() {
-        return ValidationOutcome::bogus(VerdictReason::DenialProofIncomplete);
+        return Err(ValidationOutcome::bogus(
+            VerdictReason::DenialProofIncomplete,
+        ));
     }
-    if !authenticator.records_signed_by_any(
-        denial_records.iter().copied(),
-        signatures.iter().copied(),
-        active_keys,
-    ) {
-        return ValidationOutcome::bogus(VerdictReason::NoValidRrsig);
-    }
+    authenticator
+        .authenticate_unexpanded(
+            denial_records.iter().copied(),
+            signatures.iter().copied(),
+            keys,
+        )
+        .map_err(ValidationOutcome::bogus)?;
+    DenialProof::from_records(&denial_records).map_err(|error| {
+        tracing::warn!(%error, "failed to construct denial proof from records");
+        ValidationOutcome::from(error)
+    })
+}
 
-    let proof = match DenialProof::from_records(&denial_records) {
+/// The outcome a verified denial ends with: Secure when proven outright, Insecure when
+/// it rests on an NSEC3 Opt-Out span.
+pub(crate) fn denial_outcome(strength: DenialStrength) -> ValidationOutcome {
+    match strength {
+        DenialStrength::Proven => ValidationOutcome::secure(VerdictReason::ProvenDenialOfExistence),
+        DenialStrength::OptOut => ValidationOutcome::insecure(VerdictReason::Nsec3OptOut),
+    }
+}
+
+/// Verifies the denial-of-existence proof in `message`'s authority section for
+/// (`qname`, `qtype`) within `signer_zone`.
+pub(crate) fn verify_denial_proofs<C: Clock>(
+    authenticator: &Authenticator<C>,
+    signer_zone: &Name,
+    qname: &Name,
+    qtype: RecordType,
+    message: &Message,
+    active_keys: &[ResourceRecord],
+) -> ValidationOutcome {
+    let proof = match authenticated_denial_proof(authenticator, message, active_keys) {
         Ok(proof) => proof,
-        Err(error) => {
-            tracing::warn!(%error, "failed to construct denial proof from records");
-            return ValidationOutcome::from(error);
-        }
+        Err(outcome) => return outcome,
     };
-
     let rcode = message.header.rcode;
     let cap = authenticator.policy().nsec3_max_iterations;
     match proof.verify(signer_zone, qname, qtype, rcode, cap) {
-        Ok(()) => ValidationOutcome::secure(VerdictReason::ProvenDenialOfExistence),
+        Ok(strength) => denial_outcome(strength),
         Err(error) => {
             tracing::warn!(%error, %qname, ?qtype, ?rcode, "denial of existence verification failed");
             ValidationOutcome::from(error)

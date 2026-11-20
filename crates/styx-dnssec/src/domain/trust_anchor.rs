@@ -3,6 +3,7 @@
 use styx_proto::domain::rdata::DsRdata;
 use styx_proto::Name;
 
+use crate::domain::error::TrustAnchorError;
 use crate::domain::policy::{DigestType, DnssecAlgorithm};
 
 /// A cryptographic trust anchor establishing the root of a DNSSEC chain of trust.
@@ -53,5 +54,45 @@ impl TrustAnchor {
     #[must_use]
     pub fn digest(&self) -> &[u8] {
         self.ds.digest()
+    }
+}
+
+/// The configured trust anchors: never empty, loaded once at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustAnchors {
+    anchors: Vec<TrustAnchor>,
+}
+
+impl TrustAnchors {
+    /// A set holding `first`.
+    #[must_use]
+    pub fn new(first: TrustAnchor) -> Self {
+        Self {
+            anchors: vec![first],
+        }
+    }
+
+    /// This set with `anchor` added, as during a rollover where old and new both count.
+    #[must_use]
+    pub fn with(mut self, anchor: TrustAnchor) -> Self {
+        self.anchors.push(anchor);
+        self
+    }
+
+    /// Wraps a loaded list.
+    ///
+    /// # Errors
+    /// Returns [`TrustAnchorError::Empty`] for an empty list.
+    pub fn from_vec(anchors: Vec<TrustAnchor>) -> Result<Self, TrustAnchorError> {
+        if anchors.is_empty() {
+            return Err(TrustAnchorError::Empty);
+        }
+        Ok(Self { anchors })
+    }
+
+    /// Every anchor in the set.
+    #[must_use]
+    pub fn as_slice(&self) -> &[TrustAnchor] {
+        &self.anchors
     }
 }

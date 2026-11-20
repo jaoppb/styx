@@ -3,7 +3,7 @@
 
 mod support;
 
-use styx_dnssec::domain::denial::{DenialProof, Nsec3Flags, Nsec3Params, Nsec3Proof, NsecProof};
+use styx_dnssec::domain::denial::{DenialProof, Nsec3Flags, Nsec3Params, Nsec3Proof};
 use styx_dnssec::domain::error::DenialError;
 use styx_dnssec::domain::nsec3::{base32hex_decode, hash_nsec3_name};
 use styx_dnssec::{Nsec3HashAlgorithm, Nsec3IterationsCap};
@@ -74,10 +74,6 @@ fn test_nsec_multilabel_nxdomain_rejects_existing_wildcard_at_closest_encloser()
             ResponseCode::NXDOMAIN,
             Nsec3IterationsCap::DEFAULT,
         )
-        .is_ok());
-
-    assert!(NsecProof::new(vec![valid_nsec])
-        .prove_no_wildcard(&zone)
         .is_ok());
 }
 

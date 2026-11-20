@@ -4,36 +4,39 @@ use styx_core::Clock;
 use styx_proto::{Message, Name, Question, RData, RecordType, ResourceRecord};
 
 use crate::application::authenticator::{Authenticator, WildcardClaim};
-use crate::application::denial_verifier::verify_denial_proofs;
-use crate::application::descent::{walk_chain_descent, Descent};
-use crate::domain::denial::DenialProof;
+use crate::application::denial_verifier::{
+    authenticated_denial_proof, denial_outcome, verify_denial_proofs,
+};
+use crate::application::descent::{signer_search_name, walk_chain_descent, Descent};
+use crate::domain::answer_chain::{AnswerChain, ChainEnd, ChainLink};
+use crate::domain::denial::DenialStrength;
 use crate::domain::policy::ValidationPolicy;
-use crate::domain::ports::{ChainSource, TrustAnchorSource};
-use crate::domain::verdict::{ValidationOutcome, VerdictReason};
-
-const MAX_CNAME_HOPS: usize = 8;
+use crate::domain::ports::ChainSource;
+use crate::domain::trust_anchor::TrustAnchors;
+use crate::domain::verdict::{ValidationOutcome, ValidationVerdict, VerdictReason};
 
 /// Pure DNSSEC validator orchestrating chain-of-trust verification.
 #[derive(Debug)]
 pub struct Validator<C: Clock> {
     authenticator: Authenticator<C>,
+    anchors: TrustAnchors,
 }
 
 impl<C: Clock> Validator<C> {
-    /// Constructs a new [`Validator`].
+    /// Constructs a new [`Validator`] over the trust anchors loaded at startup.
     #[must_use]
-    pub fn new(clock: C, policy: ValidationPolicy) -> Self {
+    pub fn new(clock: C, policy: ValidationPolicy, anchors: TrustAnchors) -> Self {
         Self {
             authenticator: Authenticator::new(clock, policy),
+            anchors,
         }
     }
 
     /// Evaluates a DNS message and returns a [`ValidationOutcome`].
-    pub async fn validate<S: ChainSource, A: TrustAnchorSource>(
+    pub async fn validate<S: ChainSource>(
         &self,
         message: &Message,
         chain_source: &S,
-        anchor_source: &A,
     ) -> ValidationOutcome {
         let Some(question) = message.questions.first() else {
             return ValidationOutcome::indeterminate(VerdictReason::NoPathToAnchor);
@@ -46,9 +49,7 @@ impl<C: Clock> Validator<C> {
         );
         let _guard = span.enter();
 
-        let outcome = self
-            .validate_inner(message, question, chain_source, anchor_source)
-            .await;
+        let outcome = self.validate_inner(message, question, chain_source).await;
 
         tracing::info!(
             verdict = ?outcome.verdict,
@@ -59,80 +60,99 @@ impl<C: Clock> Validator<C> {
         outcome
     }
 
-    async fn validate_inner<S: ChainSource, A: TrustAnchorSource>(
+    /// Validates every link of the answer chain in the zone that signs it, then the
+    /// denial at the end of a chain that dangles. The weakest outcome wins.
+    async fn validate_inner<S: ChainSource>(
         &self,
         message: &Message,
         question: &Question,
         chain_source: &S,
-        anchor_source: &A,
     ) -> ValidationOutcome {
-        let anchors = match anchor_source.anchors() {
-            Ok(anchors) if !anchors.is_empty() => anchors,
-            Ok(_) => {
-                tracing::warn!("trust anchor set is empty");
-                return ValidationOutcome::indeterminate(VerdictReason::NoPathToAnchor);
-            }
-            Err(error) => {
-                tracing::warn!(%error, "failed to load trust anchors");
-                return ValidationOutcome::indeterminate(VerdictReason::TrustAnchorUnavailable);
-            }
+        let Some(chain) = AnswerChain::follow(question, &message.answers) else {
+            return ValidationOutcome::bogus(VerdictReason::NoValidRrsig);
         };
-
-        match walk_chain_descent(&self.authenticator, &question.qname, chain_source, &anchors).await
-        {
-            Ok(Descent::Secure { zone, keys }) => {
-                if message.answers.is_empty() {
-                    verify_denial_proofs(
-                        &self.authenticator,
-                        &zone,
-                        &question.qname,
-                        question.qtype,
-                        message,
-                        &keys,
-                    )
-                } else {
-                    self.verify_answer_rrsets(&zone, question, message, &keys)
-                }
+        let mut combined = ValidationOutcome::secure(VerdictReason::AnchorMatched);
+        // Secure is the identity of `weakest`, so the first real outcome replaces it.
+        for link in chain.links() {
+            let outcome = self.verify_link(link, message, chain_source).await;
+            combined = weakest(combined, outcome);
+            if combined.verdict == ValidationVerdict::Bogus {
+                return combined;
             }
-            Ok(Descent::Ended(terminal_outcome)) => terminal_outcome,
-            Err(descent_failure) => descent_failure,
         }
+        if let ChainEnd::Dangling(target) = chain.end() {
+            let outcome = self
+                .verify_absence(target, question.qtype, message, chain_source)
+                .await;
+            combined = weakest(combined, outcome);
+        }
+        combined
     }
 
-    /// Verifies answer RRsets against the authenticated DNSKEYs, binds every answer RRset
-    /// to the question (directly or along a CNAME chain), and validates authority denial
-    /// proofs when an RRset was synthesized from a wildcard.
-    fn verify_answer_rrsets(
+    /// Verifies one link's records against the keys of the zone that signs them.
+    async fn verify_link<S: ChainSource>(
         &self,
-        zone: &Name,
-        question: &Question,
+        link: &ChainLink<'_>,
         message: &Message,
-        dnskeys: &[ResourceRecord],
+        chain_source: &S,
     ) -> ValidationOutcome {
-        let (signatures, data_records): (Vec<&ResourceRecord>, Vec<&ResourceRecord>) = message
+        let rtype = link
+            .records()
+            .first()
+            .map_or(RecordType::ANY, |record| record.rtype);
+        let search = signer_search_name(link.owner(), rtype);
+        let (zone, keys) = match self.descend(&search, chain_source).await {
+            Ok(secure) => secure,
+            Err(outcome) => return outcome,
+        };
+        let signatures = message
             .answers
             .iter()
-            .partition(|record| matches!(record.rdata, RData::Rrsig(_)));
-
-        let wildcard_claims = match self.authenticator.authenticate_rrsets(
-            data_records.iter().copied(),
-            signatures.iter().copied(),
-            dnskeys,
+            .filter(|record| matches!(record.rdata, RData::Rrsig(_)));
+        let claims = match self.authenticator.authenticate_rrsets(
+            link.records().iter().copied(),
+            signatures,
+            &keys,
         ) {
             Ok(claims) => claims,
             Err(reason) => return ValidationOutcome::bogus(reason),
         };
-
-        if !answers_match_question(question, &data_records) {
-            return ValidationOutcome::bogus(VerdictReason::NoValidRrsig);
+        match self.verify_wildcard_claims(&zone, &claims, message, &keys) {
+            Ok(DenialStrength::Proven) => ValidationOutcome::secure(VerdictReason::AnchorMatched),
+            Ok(DenialStrength::OptOut) => denial_outcome(DenialStrength::OptOut),
+            Err(outcome) => outcome,
         }
+    }
 
-        if let Err(outcome) = self.verify_wildcard_claims(zone, &wildcard_claims, message, dnskeys)
-        {
-            return outcome;
+    /// Verifies that `target` holds no `qtype` data: the denial the response carries,
+    /// checked in the zone that would sign that data.
+    async fn verify_absence<S: ChainSource>(
+        &self,
+        target: &Name,
+        qtype: RecordType,
+        message: &Message,
+        chain_source: &S,
+    ) -> ValidationOutcome {
+        let search = signer_search_name(target, qtype);
+        match self.descend(&search, chain_source).await {
+            Ok((zone, keys)) => {
+                verify_denial_proofs(&self.authenticator, &zone, target, qtype, message, &keys)
+            }
+            Err(outcome) => outcome,
         }
+    }
 
-        ValidationOutcome::secure(VerdictReason::AnchorMatched)
+    /// The authenticated zone and keys enclosing `name`, or the outcome that ended the
+    /// descent before it got there (an unsigned delegation, a failure).
+    async fn descend<S: ChainSource>(
+        &self,
+        name: &Name,
+        chain_source: &S,
+    ) -> Result<(Name, Vec<ResourceRecord>), ValidationOutcome> {
+        match walk_chain_descent(&self.authenticator, name, chain_source, &self.anchors).await? {
+            Descent::Secure { zone, keys } => Ok((zone, keys)),
+            Descent::Ended(outcome) => Err(outcome),
+        }
     }
 
     fn verify_wildcard_claims(
@@ -141,83 +161,40 @@ impl<C: Clock> Validator<C> {
         claims: &[WildcardClaim],
         message: &Message,
         dnskeys: &[ResourceRecord],
-    ) -> Result<(), ValidationOutcome> {
+    ) -> Result<DenialStrength, ValidationOutcome> {
         if claims.is_empty() {
-            return Ok(());
+            return Ok(DenialStrength::Proven);
         }
-        let mut denial_records = Vec::new();
-        let mut signatures = Vec::new();
-        for record in &message.authorities {
-            match record.rdata {
-                RData::Nsec(_) | RData::Nsec3(_) => denial_records.push(record),
-                RData::Rrsig(_) => signatures.push(record),
-                _ => {}
-            }
-        }
-        if denial_records.is_empty() {
-            return Err(ValidationOutcome::bogus(
-                VerdictReason::DenialProofIncomplete,
-            ));
-        }
-        if !self.authenticator.records_signed_by_any(
-            denial_records.iter().copied(),
-            signatures.iter().copied(),
-            dnskeys,
-        ) {
-            return Err(ValidationOutcome::bogus(VerdictReason::NoValidRrsig));
-        }
-        let proof = DenialProof::from_records(&denial_records).map_err(ValidationOutcome::from)?;
+        let proof = authenticated_denial_proof(&self.authenticator, message, dnskeys)?;
         let cap = self.authenticator.policy().nsec3_max_iterations;
+        let mut strength = DenialStrength::Proven;
         for claim in claims {
-            proof
+            let claimed = proof
                 .verify_wildcard_expansion(zone, &claim.owner, claim.sig_labels, cap)
                 .map_err(ValidationOutcome::from)?;
+            if claimed == DenialStrength::OptOut {
+                strength = DenialStrength::OptOut;
+            }
         }
-        Ok(())
+        Ok(strength)
     }
 }
 
-fn answers_match_question(question: &Question, data_records: &[&ResourceRecord]) -> bool {
-    let mut current_target = question.qname.to_canonical();
-    let mut visited_owners = Vec::new();
-    let mut matched_count = 0usize;
-
-    for _ in 0..=MAX_CNAME_HOPS {
-        if visited_owners.contains(&current_target) {
-            return false;
+/// The weaker of two outcomes: Bogus, then Indeterminate, then Insecure, then Secure.
+/// A chain is only as strong as its weakest link. On a tie the later outcome wins, so a
+/// response that is nothing but a proven denial reports that proof as its reason.
+fn weakest(left: ValidationOutcome, right: ValidationOutcome) -> ValidationOutcome {
+    const fn rank(verdict: ValidationVerdict) -> u8 {
+        match verdict {
+            ValidationVerdict::Secure => 0,
+            ValidationVerdict::Insecure => 1,
+            ValidationVerdict::Indeterminate => 2,
+            ValidationVerdict::Bogus => 3,
         }
-        let terminal_count = data_records
-            .iter()
-            .filter(|record| {
-                record.rclass == question.qclass
-                    && record.owner.eq_ignore_case(&current_target)
-                    && (question.qtype == RecordType::ANY || record.rtype == question.qtype)
-            })
-            .count();
-        if terminal_count > 0 {
-            matched_count = matched_count.saturating_add(terminal_count);
-            break;
-        }
-        if question.qtype == RecordType::CNAME {
-            break;
-        }
-        let cnames: Vec<&Name> = data_records
-            .iter()
-            .filter(|record| {
-                record.rclass == question.qclass && record.owner.eq_ignore_case(&current_target)
-            })
-            .filter_map(|record| match record.rdata {
-                RData::Cname(ref next) => Some(next),
-                _ => None,
-            })
-            .collect();
-        let [next_target] = cnames.as_slice() else {
-            break;
-        };
-        matched_count = matched_count.saturating_add(1);
-        visited_owners.push(current_target);
-        current_target = next_target.to_canonical();
     }
-
-    matched_count > 0 && matched_count == data_records.len()
+    if rank(right.verdict) >= rank(left.verdict) {
+        right
+    } else {
+        left
+    }
 }

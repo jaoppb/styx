@@ -26,6 +26,15 @@ pub enum TrustAnchorError {
     /// Empty trust anchor set.
     #[error("no trust anchors configured")]
     Empty,
+
+    /// A line of the anchor file could not be read as a DS-form anchor.
+    #[error("trust anchor file line {line}: {reason}")]
+    Malformed {
+        /// The 1-based line number.
+        line: usize,
+        /// What is wrong with it.
+        reason: String,
+    },
 }
 
 /// Errors occurring during denial-of-existence proof verification.

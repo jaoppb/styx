@@ -2,13 +2,13 @@
 
 use styx_core::Clock;
 use styx_proto::domain::rdata::DsRdata;
-use styx_proto::{Name, RData, ResourceRecord};
+use styx_proto::{Name, RData, RecordType, ResourceRecord};
 
 use crate::application::authenticator::Authenticator;
 use crate::domain::chain::{Delegation, ZoneCutMaterial};
 use crate::domain::denial::DenialProof;
 use crate::domain::ports::ChainSource;
-use crate::domain::trust_anchor::TrustAnchor;
+use crate::domain::trust_anchor::{TrustAnchor, TrustAnchors};
 use crate::domain::verdict::{ValidationOutcome, ValidationVerdict, VerdictReason};
 
 /// The outcome of walking a chain of trust down to a target zone.
@@ -43,7 +43,8 @@ struct AnchoredZone {
 impl AnchoredZone {
     /// The deepest anchored zone that encloses `qname`, with every anchor configured
     /// for it, so that a rollover's old and new anchors both count.
-    fn closest(qname: &Name, anchors: &[TrustAnchor]) -> Option<Self> {
+    fn closest(qname: &Name, anchors: &TrustAnchors) -> Option<Self> {
+        let anchors = anchors.as_slice();
         let zone = anchors
             .iter()
             .map(TrustAnchor::owner)
@@ -59,13 +60,25 @@ impl AnchoredZone {
     }
 }
 
+/// The name whose zone signs an RRset of `rtype` owned by `owner`: the owner itself,
+/// except for DS, which is the parent side of a cut and so is signed by the zone above
+/// it (RFC 4035 §2.4, §5.2). The root has no parent and answers its own DS questions.
+pub(crate) fn signer_search_name(owner: &Name, rtype: RecordType) -> Name {
+    if rtype == RecordType::DS {
+        if let Some(parent) = owner.parent() {
+            return parent;
+        }
+    }
+    owner.clone()
+}
+
 /// Walks zone cuts from the closest trust anchor down to `qname` and returns the
 /// authenticated zone and DNSKEYs or the terminal outcome that ended descent early.
 pub(crate) async fn walk_chain_descent<C: Clock, S: ChainSource>(
     authenticator: &Authenticator<C>,
     qname: &Name,
     chain_source: &S,
-    anchors: &[TrustAnchor],
+    anchors: &TrustAnchors,
 ) -> Result<Descent, ValidationOutcome> {
     let anchored = AnchoredZone::closest(qname, anchors)
         .ok_or_else(|| ValidationOutcome::indeterminate(VerdictReason::NoPathToAnchor))?;
@@ -82,6 +95,12 @@ pub(crate) async fn walk_chain_descent<C: Clock, S: ChainSource>(
     let mut cuts_crossed = 0u8;
     while let Some(next_zone) = find_next_zone_cut(qname, &current_zone) {
         let material = fetch_material(chain_source, &next_zone).await?;
+        if !material.zone.eq_ignore_case(&next_zone) {
+            tracing::warn!(requested = %next_zone, described = %material.zone, "chain material describes another name");
+            return Err(ValidationOutcome::indeterminate(
+                VerdictReason::ChainMaterialUnavailable,
+            ));
+        }
         match step_into_cut(authenticator, &authoritative_zone, &material, &keys)? {
             CutStep::NotACut => {}
             CutStep::Child(child_keys) => {
@@ -129,9 +148,9 @@ fn step_into_cut<C: Clock>(
             VerdictReason::UnexpectedZoneApex,
         )),
         Delegation::Signed { ref ds, ref dnskey } => {
-            if !authenticator.records_signed_by_any(&ds.records, &ds.signatures, parent_keys) {
-                return Err(ValidationOutcome::bogus(VerdictReason::NoValidRrsig));
-            }
+            authenticator
+                .authenticate_unexpanded(&ds.records, &ds.signatures, parent_keys)
+                .map_err(ValidationOutcome::bogus)?;
             let vouchers = ds_records_at(&material.zone, &ds.records);
             authenticator
                 .authenticate_keys(&material.zone, dnskey, &vouchers)
@@ -179,9 +198,9 @@ fn verify_ds_denial<C: Clock>(
     signatures: &[ResourceRecord],
     parent_keys: &[ResourceRecord],
 ) -> Result<(), ValidationOutcome> {
-    if !authenticator.records_signed_by_any(proof.records(), signatures, parent_keys) {
-        return Err(ValidationOutcome::bogus(VerdictReason::NoValidRrsig));
-    }
+    authenticator
+        .authenticate_unexpanded(proof.records(), signatures, parent_keys)
+        .map_err(ValidationOutcome::bogus)?;
     proof
         .prove_ds_absence(
             parent_zone,

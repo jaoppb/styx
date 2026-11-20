@@ -14,15 +14,16 @@ pub mod infrastructure;
 pub use application::validator::Validator;
 pub use domain::chain::{Delegation, SignedRrset, ZoneCutMaterial};
 pub use domain::denial::{
-    ClosestEncloserProof, DenialProof, Nsec3Flags, Nsec3Params, Nsec3Proof, NsecProof,
+    ClosestEncloserProof, DenialProof, DenialStrength, Nsec3Flags, Nsec3Params, Nsec3Proof,
+    NsecProof,
 };
 pub use domain::error::{ChainSourceError, DenialError, TrustAnchorError};
 pub use domain::policy::{
-    AlgorithmSet, AlgorithmSupport, DigestType, DnssecAlgorithm, FailureMode, Nsec3HashAlgorithm,
+    AlgorithmSupport, DigestType, DnssecAlgorithm, FailureMode, Nsec3HashAlgorithm,
     Nsec3IterationsCap, ValidationPolicy,
 };
 pub use domain::ports::{ChainSource, TrustAnchorSource};
-pub use domain::trust_anchor::TrustAnchor;
+pub use domain::trust_anchor::{TrustAnchor, TrustAnchors};
 pub use domain::verdict::{ValidationOutcome, ValidationVerdict, VerdictReason};
 pub use infrastructure::chain_source::InMemoryChainSource;
 pub use infrastructure::trust_anchor::{FileTrustAnchor, PinnedRootAnchor};

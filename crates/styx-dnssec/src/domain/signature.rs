@@ -6,7 +6,7 @@ use styx_proto::domain::rdata::{DnskeyRdata, DsRdata, RrsigRdata};
 use styx_proto::{Name, ResourceRecord};
 
 use crate::domain::canonical::build_canonical_signed_data;
-use crate::domain::policy::{AlgorithmSet, AlgorithmSupport, DigestType, DnssecAlgorithm};
+use crate::domain::policy::{AlgorithmSupport, DigestType, DnssecAlgorithm};
 use crate::domain::verdict::VerdictReason;
 
 /// Splits an RFC 3110 RSA public key into its exponent and modulus.
@@ -69,8 +69,47 @@ fn verify_ed25519_signature(public_key: &[u8], signed_data: &[u8], signature: &[
             .is_ok()
 }
 
-/// Dispatches to the primitive for `algorithm`. Only reached for an algorithm the
-/// policy classified as supported, so an algorithm without a primitive here fails.
+impl DnssecAlgorithm {
+    /// Whether [`verify_crypto_signature`] has a primitive for this algorithm. Kept next
+    /// to that dispatch so the two cannot drift.
+    #[must_use]
+    pub const fn support(self) -> AlgorithmSupport {
+        match self {
+            Self::RSASHA256 | Self::ECDSAP256SHA256 | Self::ED25519 => AlgorithmSupport::Supported,
+            _ => AlgorithmSupport::Unsupported,
+        }
+    }
+}
+
+impl DigestType {
+    /// Whether [`compute_dnskey_digest`] computes this digest for a DS match. SHA-1 is
+    /// computed but deprecated for DS (RFC 8624 §3.3), so it is not supported.
+    #[must_use]
+    pub const fn support(self) -> AlgorithmSupport {
+        match self {
+            Self::SHA256 | Self::SHA384 => AlgorithmSupport::Supported,
+            _ => AlgorithmSupport::Unsupported,
+        }
+    }
+}
+
+/// The DNSKEY flag marking a zone key (RFC 4034 §2.1.1).
+const ZONE_KEY_FLAG: u16 = 0x0100;
+/// The DNSKEY flag marking a revoked key (RFC 5011 §2.1).
+const REVOKE_FLAG: u16 = 0x0080;
+/// The only DNSKEY protocol value (RFC 4034 §2.1.2).
+const DNSSEC_PROTOCOL: u8 = 3;
+
+/// Whether `dnskey` may verify data at all: a zone key, not revoked, protocol 3
+/// (RFC 4035 §5.3.1, RFC 5011 §2.1).
+fn may_sign_data(dnskey: &DnskeyRdata) -> bool {
+    dnskey.flags() & ZONE_KEY_FLAG != 0
+        && dnskey.flags() & REVOKE_FLAG == 0
+        && dnskey.protocol() == DNSSEC_PROTOCOL
+}
+
+/// Dispatches to the primitive for `algorithm`; [`DnssecAlgorithm::support`] lists the
+/// algorithms that have one.
 fn verify_crypto_signature(
     algorithm: DnssecAlgorithm,
     public_key: &[u8],
@@ -125,9 +164,8 @@ pub fn verify_rrsig_record<C: Clock>(
     dnskey: &DnskeyRdata,
     dnskey_owner: &Name,
     clock: &C,
-    algorithms: &AlgorithmSet,
 ) -> Result<(), VerdictReason> {
-    if rrset.is_empty() {
+    if rrset.is_empty() || !may_sign_data(dnskey) {
         return Err(VerdictReason::NoValidRrsig);
     }
     if rrsig.key_tag() != dnskey.key_tag()
@@ -142,12 +180,8 @@ pub fn verify_rrsig_record<C: Clock>(
         return Err(VerdictReason::NoValidRrsig);
     }
     let sig_algorithm = DnssecAlgorithm::new(rrsig.algorithm());
-    match algorithms.classify_sig(sig_algorithm) {
-        AlgorithmSupport::Supported => {}
-        AlgorithmSupport::UnknownTreatAsInsecure => {
-            return Err(VerdictReason::UnsupportedAlgorithm)
-        }
-        AlgorithmSupport::Refused => return Err(VerdictReason::NoValidRrsig),
+    if sig_algorithm.support() == AlgorithmSupport::Unsupported {
+        return Err(VerdictReason::UnsupportedAlgorithm);
     }
     check_validity_window(rrsig, clock)?;
 
@@ -282,7 +316,6 @@ mod tests {
     #[test]
     fn verify_rrsig_record_rejects_type_covered_mismatch() {
         let clock = clock_at(100);
-        let algorithms = AlgorithmSet::new();
         let owner = Name::from_ascii("example.com.").unwrap();
         let signer = owner.clone();
         let dnskey = DnskeyRdata::new(256, 3, DnssecAlgorithm::ED25519.value(), vec![0; 32]);
@@ -311,7 +344,6 @@ mod tests {
             &dnskey,
             &Name::from_ascii("example.com.").unwrap(),
             &clock,
-            &algorithms,
         );
         assert_eq!(result, Err(VerdictReason::NoValidRrsig));
     }
@@ -319,7 +351,6 @@ mod tests {
     #[test]
     fn verify_rrsig_record_rejects_owner_not_subdomain_of_signer() {
         let clock = clock_at(100);
-        let algorithms = AlgorithmSet::new();
         let signer = Name::from_ascii("example.com.").unwrap();
         let other_owner = Name::from_ascii("other.org.").unwrap();
         let dnskey = DnskeyRdata::new(256, 3, DnssecAlgorithm::ED25519.value(), vec![0; 32]);
@@ -342,14 +373,13 @@ mod tests {
             styx_proto::RData::A(std::net::Ipv4Addr::new(1, 2, 3, 4)),
         );
         let records = [&record];
-        let result = verify_rrsig_record(&rrsig, &records, &dnskey, &signer, &clock, &algorithms);
+        let result = verify_rrsig_record(&rrsig, &records, &dnskey, &signer, &clock);
         assert_eq!(result, Err(VerdictReason::NoValidRrsig));
     }
 
     #[test]
     fn verify_rrsig_record_rejects_signer_name_mismatch_with_dnskey_owner() {
         let clock = clock_at(100);
-        let algorithms = AlgorithmSet::new();
         let signer = Name::from_ascii("example.com.").unwrap();
         let dnskey_owner = Name::from_ascii("other.com.").unwrap();
         let dnskey = DnskeyRdata::new(256, 3, DnssecAlgorithm::ED25519.value(), vec![0; 32]);
@@ -372,14 +402,7 @@ mod tests {
             styx_proto::RData::A(std::net::Ipv4Addr::new(1, 2, 3, 4)),
         );
         let records = [&record];
-        let result = verify_rrsig_record(
-            &rrsig,
-            &records,
-            &dnskey,
-            &dnskey_owner,
-            &clock,
-            &algorithms,
-        );
+        let result = verify_rrsig_record(&rrsig, &records, &dnskey, &dnskey_owner, &clock);
         assert_eq!(result, Err(VerdictReason::NoValidRrsig));
     }
 }

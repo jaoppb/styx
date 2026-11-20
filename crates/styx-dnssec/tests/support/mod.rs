@@ -13,10 +13,10 @@ use styx_core::test_util::TestClock;
 use styx_dnssec::domain::canonical::build_canonical_signed_data;
 use styx_dnssec::domain::signature::compute_dnskey_digest;
 use styx_dnssec::{
-    Delegation, DigestType, SignedRrset, TrustAnchor, TrustAnchorError, TrustAnchorSource,
+    Delegation, DigestType, SignedRrset, TrustAnchor, TrustAnchorSource, TrustAnchors,
     ZoneCutMaterial,
 };
-use styx_proto::domain::rdata::{DnskeyRdata, DsRdata, RrsigRdata};
+use styx_proto::domain::rdata::{DnskeyRdata, DsRdata, NsecRdata, RrsigRdata, TypeBitmap};
 use styx_proto::{
     Header, Message, Name, Opcode, Question, RData, RecordClass, RecordType, ResourceRecord, Ttl,
 };
@@ -55,6 +55,32 @@ pub fn record(owner: &Name, rtype: RecordType, rdata: RData) -> ResourceRecord {
         RecordClass::In,
         Ttl::from_secs(300),
         rdata,
+    )
+}
+
+/// A window-0 type bitmap listing `types`, every one of which is below 256.
+pub fn bitmap(types: &[RecordType]) -> TypeBitmap {
+    let mut octets = [0u8; 32];
+    for rtype in types {
+        let value = usize::from(rtype.value());
+        let slot = octets.get_mut(value >> 3).expect("window-0 type");
+        *slot |= 0x80 >> (value & 7);
+    }
+    let last = octets
+        .iter()
+        .rposition(|&octet| octet != 0)
+        .expect("at least one type");
+    let used = octets.get(..=last).expect("in range");
+    let mut windows = vec![0, u8::try_from(used.len()).expect("at most 32")];
+    windows.extend_from_slice(used);
+    TypeBitmap::new(windows)
+}
+
+pub fn nsec(owner: &Name, next: &Name, types: &[RecordType]) -> ResourceRecord {
+    record(
+        owner,
+        RecordType::NSEC,
+        RData::Nsec(NsecRdata::new(next.clone(), bitmap(types))),
     )
 }
 
@@ -222,17 +248,19 @@ impl ZoneKey {
 }
 
 pub struct StaticAnchorSource {
-    pub anchors: Vec<TrustAnchor>,
+    pub anchors: TrustAnchors,
 }
 
 impl StaticAnchorSource {
     pub fn new(anchors: Vec<TrustAnchor>) -> Self {
-        Self { anchors }
+        Self {
+            anchors: TrustAnchors::from_vec(anchors).expect("at least one anchor"),
+        }
     }
 }
 
 impl TrustAnchorSource for StaticAnchorSource {
-    fn anchors(&self) -> Result<Vec<TrustAnchor>, TrustAnchorError> {
-        Ok(self.anchors.clone())
+    fn anchors(&self) -> TrustAnchors {
+        self.anchors.clone()
     }
 }

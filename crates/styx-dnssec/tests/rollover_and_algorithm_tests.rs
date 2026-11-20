@@ -33,8 +33,12 @@ async fn test_multi_key_rollover_validates_with_any_valid_signature() {
     message.answers.push(answer);
 
     let anchors = StaticAnchorSource::new(vec![active.anchor()]);
-    let validator = Validator::new(clock(), ValidationPolicy::default());
-    let outcome = validator.validate(&message, &source, &anchors).await;
+    let validator = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
+    let outcome = validator.validate(&message, &source).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
     assert_eq!(outcome.reason, VerdictReason::AnchorMatched);
@@ -74,8 +78,12 @@ async fn test_unsupported_nsec3_hash_algorithm_yields_insecure() {
     message.authorities.push(nsec3_record);
 
     let anchors = StaticAnchorSource::new(vec![active.anchor()]);
-    let validator = Validator::new(clock(), ValidationPolicy::default());
-    let outcome = validator.validate(&message, &source, &anchors).await;
+    let validator = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
+    let outcome = validator.validate(&message, &source).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Insecure);
     assert_eq!(outcome.reason, VerdictReason::UnsupportedAlgorithm);

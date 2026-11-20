@@ -6,8 +6,9 @@ use data_encoding::BASE32_DNSSEC;
 use styx_proto::domain::rdata::Nsec3Rdata;
 use styx_proto::{Name, RData, RecordType, ResourceRecord};
 
-use crate::domain::denial::{ClosestEncloserProof, Nsec3Flags, Nsec3Params};
+use crate::domain::denial::{ClosestEncloserProof, DenialStrength, Nsec3Flags, Nsec3Params};
 use crate::domain::error::DenialError;
+use crate::domain::node_types::OwnerTypes;
 use crate::domain::policy::{Nsec3HashAlgorithm, Nsec3IterationsCap};
 
 /// Decodes base32hex (RFC 5155) bytes into a binary digest, rejecting invalid
@@ -86,12 +87,6 @@ fn is_nsec3_in_zone(record: &ResourceRecord, signer_zone: &Name) -> bool {
             .is_some_and(|parent| parent.eq_ignore_case(signer_zone))
 }
 
-fn is_delegation_or_dname(nsec3: &Nsec3Rdata) -> bool {
-    let is_delegation =
-        nsec3.types().contains(RecordType::NS) && !nsec3.types().contains(RecordType::SOA);
-    is_delegation || nsec3.types().contains(RecordType::DNAME)
-}
-
 fn find_matching_nsec3<'a>(
     records: &'a [ResourceRecord],
     target_hash: &[u8],
@@ -105,34 +100,78 @@ fn find_matching_nsec3<'a>(
     })
 }
 
-/// Verifies whether `target_hash` is covered by any NSEC3 in `records`.
-fn is_hash_covered(records: &[ResourceRecord], target_hash: &[u8]) -> bool {
-    records.iter().any(|record| {
+/// The NSEC3 records in `records` that cover `target_hash`.
+fn covering_nsec3s<'a>(
+    records: &'a [ResourceRecord],
+    target_hash: &'a [u8],
+) -> impl Iterator<Item = &'a Nsec3Rdata> {
+    records.iter().filter_map(move |record| {
         let RData::Nsec3(ref nsec3) = record.rdata else {
-            return false;
+            return None;
         };
-        let Some(owner_hash) = extract_owner_hash(record) else {
-            return false;
-        };
-        nsec3_covers_hash(&owner_hash, nsec3.next_hashed_owner(), target_hash)
+        let owner_hash = extract_owner_hash(record)?;
+        nsec3_covers_hash(&owner_hash, nsec3.next_hashed_owner(), target_hash).then_some(nsec3)
     })
 }
 
+/// Whether any NSEC3 in `records` covers `target_hash`.
+fn is_hash_covered(records: &[ResourceRecord], target_hash: &[u8]) -> bool {
+    covering_nsec3s(records, target_hash).next().is_some()
+}
+
+/// How the next closer name is covered, which decides whether a denial built on it can
+/// be Secure (RFC 5155 §9.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NextCloserCover {
+    /// Covered, and no covering NSEC3 has Opt-Out set.
+    Strict,
+    /// A covering NSEC3 has Opt-Out set: an unsigned delegation may exist there.
+    OptOut,
+}
+
+impl NextCloserCover {
+    fn of(records: &[ResourceRecord], target_hash: &[u8]) -> Option<Self> {
+        let mut cover = None;
+        for nsec3 in covering_nsec3s(records, target_hash) {
+            if nsec3.opt_out() {
+                return Some(Self::OptOut);
+            }
+            cover = Some(Self::Strict);
+        }
+        cover
+    }
+
+    const fn strength(self) -> DenialStrength {
+        match self {
+            Self::Strict => DenialStrength::Proven,
+            Self::OptOut => DenialStrength::OptOut,
+        }
+    }
+}
+
+/// A closest provable encloser proof: the encloser and its legs, and how the next
+/// closer name is covered.
+struct EncloserProof {
+    legs: ClosestEncloserProof,
+    cover: NextCloserCover,
+}
+
+/// Whether the NSEC3 matching `target_hash`, owned by `name`, proves `qtype` absent.
+/// `Ok(false)` when no NSEC3 matches.
 fn nsec3_matches_nodata(
     records: &[ResourceRecord],
+    name: &Name,
     target_hash: &[u8],
     qtype: RecordType,
 ) -> Result<bool, DenialError> {
     let Some(nsec3) = find_matching_nsec3(records, target_hash) else {
         return Ok(false);
     };
-    let is_delegation = qtype != RecordType::DS
-        && nsec3.types().contains(RecordType::NS)
-        && !nsec3.types().contains(RecordType::SOA);
-    if nsec3.types().contains(qtype) || nsec3.types().contains(RecordType::CNAME) || is_delegation {
-        return Err(DenialError::NotCovered);
+    if OwnerTypes::new(name, nsec3.types()).denies(qtype) {
+        Ok(true)
+    } else {
+        Err(DenialError::NotCovered)
     }
-    Ok(true)
 }
 
 /// NSEC3-based hashed proof of non-existence (RFC 5155).
@@ -222,7 +261,7 @@ impl Nsec3Proof {
             let Some(nsec3) = find_matching_nsec3(&self.records, &hash) else {
                 continue;
             };
-            if is_delegation_or_dname(nsec3) {
+            if OwnerTypes::new(&candidate, nsec3.types()).ends_authority() {
                 return Err(DenialError::DenialProofIncomplete);
             }
             return Ok(candidate);
@@ -239,16 +278,19 @@ impl Nsec3Proof {
         signer_zone: &Name,
         qname: &Name,
         cap: Nsec3IterationsCap,
-    ) -> Result<(), DenialError> {
-        let legs = self.closest_encloser_legs(signer_zone, qname, cap)?;
-        let wildcard_hash = hash_nsec3_name(legs.wildcard(), &self.params, cap)?;
+    ) -> Result<DenialStrength, DenialError> {
+        let proof = self.closest_encloser_legs(signer_zone, qname, cap)?;
+        let wildcard_hash = hash_nsec3_name(proof.legs.wildcard(), &self.params, cap)?;
         if !is_hash_covered(&self.records, &wildcard_hash) {
             return Err(DenialError::DenialProofIncomplete);
         }
-        Ok(())
+        Ok(proof.cover.strength())
     }
 
-    /// Verifies an NSEC3 proof of absent DS record at delegation (RFC 5155 §7.2.7).
+    /// Verifies an NSEC3 proof that no DS exists at the delegation `zone`: either the
+    /// NSEC3 matching `zone` lists NS without DS or SOA (RFC 5155 §8.6), or a closest
+    /// provable encloser proof for `zone` whose next closer name is covered by an Opt-Out
+    /// NSEC3, so `zone` may be an unsigned delegation (RFC 5155 §8.6, §6).
     ///
     /// # Errors
     /// Returns [`DenialError`] if proof fails or records fall outside `signer_zone`.
@@ -263,24 +305,17 @@ impl Nsec3Proof {
             return Err(DenialError::NotCovered);
         }
         let zone_hash = hash_nsec3_name(zone, &self.params, cap)?;
-        for record in &self.records {
-            let RData::Nsec3(ref nsec3) = record.rdata else {
-                continue;
+        if let Some(nsec3) = find_matching_nsec3(&self.records, &zone_hash) {
+            return if OwnerTypes::new(zone, nsec3.types()).is_unsigned_delegation() {
+                Ok(())
+            } else {
+                Err(DenialError::NotCovered)
             };
-            let Some(owner_hash) = extract_owner_hash(record) else {
-                continue;
-            };
-            let matches_exact_without_ds = owner_hash == zone_hash
-                && nsec3.types().contains(RecordType::NS)
-                && !nsec3.types().contains(RecordType::DS)
-                && !nsec3.types().contains(RecordType::SOA);
-            let opt_out_covers = nsec3.opt_out()
-                && nsec3_covers_hash(&owner_hash, nsec3.next_hashed_owner(), &zone_hash);
-            if matches_exact_without_ds || opt_out_covers {
-                return Ok(());
-            }
         }
-        Err(DenialError::NotCovered)
+        match self.closest_encloser_legs(signer_zone, zone, cap)?.cover {
+            NextCloserCover::OptOut => Ok(()),
+            NextCloserCover::Strict => Err(DenialError::NotCovered),
+        }
     }
 
     /// Verifies an NSEC3 NODATA proof (RFC 5155 §7.2.3, §7.2.4, §8.4).
@@ -293,20 +328,26 @@ impl Nsec3Proof {
         qname: &Name,
         qtype: RecordType,
         cap: Nsec3IterationsCap,
-    ) -> Result<(), DenialError> {
+    ) -> Result<DenialStrength, DenialError> {
         self.validate_zone_records(signer_zone)?;
         if !qname.is_subdomain_of(signer_zone) {
             return Err(DenialError::NotCovered);
         }
         let qname_hash = hash_nsec3_name(qname, &self.params, cap)?;
-        if nsec3_matches_nodata(&self.records, &qname_hash, qtype)? {
-            return Ok(());
+        if nsec3_matches_nodata(&self.records, qname, &qname_hash, qtype)? {
+            return Ok(DenialStrength::Proven);
         }
 
-        let legs = self.closest_encloser_legs(signer_zone, qname, cap)?;
-        let wildcard_hash = hash_nsec3_name(legs.wildcard(), &self.params, cap)?;
-        if nsec3_matches_nodata(&self.records, &wildcard_hash, qtype)? {
-            return Ok(());
+        let proof = self.closest_encloser_legs(signer_zone, qname, cap)?;
+        // RFC 5155 §8.6: a DS NODATA with no matching NSEC3 holds only as an opt-out
+        // span, which proves nothing Secure.
+        if qtype == RecordType::DS && proof.cover == NextCloserCover::OptOut {
+            return Ok(DenialStrength::OptOut);
+        }
+        let wildcard = proof.legs.wildcard();
+        let wildcard_hash = hash_nsec3_name(wildcard, &self.params, cap)?;
+        if nsec3_matches_nodata(&self.records, wildcard, &wildcard_hash, qtype)? {
+            return Ok(proof.cover.strength());
         }
 
         Err(DenialError::NotCovered)
@@ -322,7 +363,7 @@ impl Nsec3Proof {
         owner: &Name,
         signature_labels: u8,
         cap: Nsec3IterationsCap,
-    ) -> Result<(), DenialError> {
+    ) -> Result<DenialStrength, DenialError> {
         self.validate_zone_records(signer_zone)?;
         if !owner.is_subdomain_of(signer_zone) {
             return Err(DenialError::NotCovered);
@@ -335,16 +376,15 @@ impl Nsec3Proof {
         }
         let ce_hash = hash_nsec3_name(&closest_encloser, &self.params, cap)?;
         if let Some(ce_nsec3) = find_matching_nsec3(&self.records, &ce_hash) {
-            if is_delegation_or_dname(ce_nsec3) {
+            if OwnerTypes::new(&closest_encloser, ce_nsec3.types()).ends_authority() {
                 return Err(DenialError::DenialProofIncomplete);
             }
         }
         let legs = ClosestEncloserProof::new(owner, closest_encloser)?;
         let next_closer_hash = hash_nsec3_name(legs.next_closer(), &self.params, cap)?;
-        if !is_hash_covered(&self.records, &next_closer_hash) {
-            return Err(DenialError::DenialProofIncomplete);
-        }
-        Ok(())
+        NextCloserCover::of(&self.records, &next_closer_hash)
+            .map(NextCloserCover::strength)
+            .ok_or(DenialError::DenialProofIncomplete)
     }
 
     fn validate_zone_records(&self, signer_zone: &Name) -> Result<(), DenialError> {
@@ -364,13 +404,12 @@ impl Nsec3Proof {
         signer_zone: &Name,
         qname: &Name,
         cap: Nsec3IterationsCap,
-    ) -> Result<ClosestEncloserProof, DenialError> {
+    ) -> Result<EncloserProof, DenialError> {
         let closest_encloser = self.find_closest_encloser(signer_zone, qname, cap)?;
         let legs = ClosestEncloserProof::new(qname, closest_encloser)?;
         let next_closer_hash = hash_nsec3_name(legs.next_closer(), &self.params, cap)?;
-        if !is_hash_covered(&self.records, &next_closer_hash) {
-            return Err(DenialError::DenialProofIncomplete);
-        }
-        Ok(legs)
+        let cover = NextCloserCover::of(&self.records, &next_closer_hash)
+            .ok_or(DenialError::DenialProofIncomplete)?;
+        Ok(EncloserProof { legs, cover })
     }
 }

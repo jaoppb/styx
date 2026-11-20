@@ -1,9 +1,12 @@
 //! Chain-of-trust holes found in review: each test feeds the validator material a
 //! hostile or broken chain source could supply, and asserts it is not trusted.
 
+// The helpers below sit outside `#[test]` functions, where clippy's allowances stop.
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 mod support;
 
-use styx_dnssec::domain::denial::{DenialProof, NsecProof};
+use styx_dnssec::domain::denial::DenialProof;
 use styx_dnssec::{
     ChainSource, ChainSourceError, Delegation, InMemoryChainSource, SignedRrset, ValidationPolicy,
     ValidationVerdict, Validator, VerdictReason, ZoneCutMaterial,
@@ -53,9 +56,13 @@ impl Chain {
         source: &S,
     ) -> (ValidationVerdict, VerdictReason) {
         let anchors = StaticAnchorSource::new(vec![self.root.anchor()]);
-        let outcome = Validator::new(clock(), ValidationPolicy::default())
-            .validate(message, source, &anchors)
-            .await;
+        let outcome = Validator::new(
+            clock(),
+            ValidationPolicy::default(),
+            anchors.anchors.clone(),
+        )
+        .validate(message, source)
+        .await;
         (outcome.verdict, outcome.reason)
     }
 }
@@ -73,10 +80,7 @@ fn ds_absence_proof(zone: &Name) -> (DenialProof, Vec<ResourceRecord>) {
             TypeBitmap::new(NS_ONLY.to_vec()),
         )),
     );
-    (
-        DenialProof::Nsec(NsecProof::new(vec![nsec.clone()])),
-        vec![nsec],
-    )
+    (DenialProof::from_records(&[&nsec]).unwrap(), vec![nsec])
 }
 
 #[tokio::test]
@@ -171,7 +175,7 @@ async fn a_parent_signed_invalid_proof_of_ds_absence_is_bogus() {
             TypeBitmap::new(vec![0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10]),
         )),
     );
-    let ds_denial = DenialProof::Nsec(NsecProof::new(vec![nsec.clone()]));
+    let ds_denial = DenialProof::from_records(&[&nsec]).unwrap();
     chain.source.insert_cut(delegation_cut(
         &zone,
         Delegation::Unsigned {
@@ -234,9 +238,13 @@ async fn a_trust_anchor_below_the_root_starts_the_descent() {
     source.insert_cut(chain.example.signed_cut(&chain.root));
     let anchors = StaticAnchorSource::new(vec![chain.example.anchor()]);
 
-    let outcome = Validator::new(clock(), ValidationPolicy::default())
-        .validate(&chain.www_answer(), &source, &anchors)
-        .await;
+    let outcome = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    )
+    .validate(&chain.www_answer(), &source)
+    .await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
     assert_eq!(outcome.reason, VerdictReason::AnchorMatched);
@@ -318,8 +326,12 @@ async fn a_ds_rrset_using_only_unknown_algorithms_is_insecure() {
     );
 }
 
+/// SHA-1 DS digests and the SHA-1 signing algorithms are deprecated (RFC 8624), so a
+/// child vouched for only by them cannot be validated. The DS RRset itself is signed by
+/// the parent, so treating the child as unsigned opens no downgrade: Insecure, not Bogus
+/// (RFC 4035 §5.2, RFC 6840 §5.2).
 #[tokio::test]
-async fn a_ds_rrset_using_only_the_refused_sha1_digest_is_bogus() {
+async fn a_ds_rrset_using_only_deprecated_sha1_is_insecure() {
     let chain = Chain::new();
     chain
         .source
@@ -329,8 +341,37 @@ async fn a_ds_rrset_using_only_the_refused_sha1_digest_is_bogus() {
 
     assert_eq!(
         verdict,
-        (ValidationVerdict::Bogus, VerdictReason::DsDnskeyMismatch)
+        (
+            ValidationVerdict::Insecure,
+            VerdictReason::UnsupportedAlgorithm
+        )
     );
+}
+
+#[tokio::test]
+async fn deprecated_algorithms_5_and_7_are_treated_alike() {
+    for algorithm in [5, 7] {
+        let chain = Chain::new();
+        let real = chain.example.ds(support::DIGEST_SHA256);
+        let deprecated = DsRdata::new(
+            real.key_tag(),
+            algorithm,
+            real.digest_type(),
+            real.digest().to_vec(),
+        );
+        chain.source.insert_cut(cut_with_ds(&chain, deprecated));
+
+        let verdict = chain.validate(&chain.www_answer(), &chain.source).await;
+
+        assert_eq!(
+            verdict,
+            (
+                ValidationVerdict::Insecure,
+                VerdictReason::UnsupportedAlgorithm
+            ),
+            "algorithm {algorithm}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -378,8 +419,8 @@ async fn exceeding_max_zone_cuts_reports_distinct_verdict_reason() {
         ..ValidationPolicy::default()
     };
     let anchors = StaticAnchorSource::new(vec![chain.root.anchor()]);
-    let outcome = Validator::new(clock(), policy)
-        .validate(&chain.www_answer(), &chain.source, &anchors)
+    let outcome = Validator::new(clock(), policy, anchors.anchors.clone())
+        .validate(&chain.www_answer(), &chain.source)
         .await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Indeterminate);

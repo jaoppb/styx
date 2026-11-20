@@ -38,7 +38,11 @@ impl<C: Clock> Authenticator<C> {
     /// trust anchor is a DS record nobody signed — and returns the authenticated keys.
     ///
     /// The error is the outcome the whole validation ends with: `Insecure` when no
-    /// voucher uses an algorithm the policy supports (RFC 4035 §5.2), `Bogus` otherwise.
+    /// voucher uses a supported algorithm (RFC 4035 §5.2), `Bogus` otherwise.
+    ///
+    /// Every key a voucher matches is tried, not only the first: during a KSK rollover
+    /// the RRset carries a published key that does not sign yet, or no longer signs, and
+    /// any matched key that signs is enough (RFC 4035 §5.2).
     pub(crate) fn authenticate_keys(
         &self,
         zone: &Name,
@@ -46,27 +50,41 @@ impl<C: Clock> Authenticator<C> {
         vouchers: &[DsRdata],
     ) -> Result<Vec<ResourceRecord>, ValidationOutcome> {
         let usable = self.usable_vouchers(vouchers)?;
-        let key = find_vouched_key(zone, &dnskey.records, &usable)
-            .ok_or_else(|| ValidationOutcome::bogus(VerdictReason::DsDnskeyMismatch))?;
+        let mut vouched = vouched_keys(zone, &dnskey.records, &usable).peekable();
+        if vouched.peek().is_none() {
+            return Err(ValidationOutcome::bogus(VerdictReason::DsDnskeyMismatch));
+        }
         let records: Vec<&ResourceRecord> = dnskey.records.iter().collect();
         let signatures: Vec<&ResourceRecord> = dnskey.signatures.iter().collect();
-        if self
-            .verify_rrset_with_key(&records, &signatures, key, zone)
-            .is_err()
-        {
-            return Err(ValidationOutcome::bogus(VerdictReason::NoValidRrsig));
+        let signs = vouched.any(|key| {
+            self.verify_rrset_with_key(&records, &signatures, key, zone)
+                .is_ok()
+        });
+        if signs {
+            Ok(dnskey.records.clone())
+        } else {
+            Err(ValidationOutcome::bogus(VerdictReason::NoValidRrsig))
         }
-        Ok(dnskey.records.clone())
     }
 
-    /// Whether every RRset in `records` carries a valid RRSIG from one of `keys`.
-    pub(crate) fn records_signed_by_any<'a, 'b>(
+    /// Verifies that every RRset in `records` carries a valid RRSIG from one of `keys`
+    /// that covers it as it stands, not as an expansion of a wildcard.
+    ///
+    /// Denial records and DS RRsets must never come from a wildcard: an RRSIG over
+    /// `*.example. NSEC` would otherwise vouch for the same NSEC moved to any owner
+    /// (RFC 4035 §5.3.4, §5.4).
+    pub(crate) fn authenticate_unexpanded<'a, 'b>(
         &self,
         records: impl IntoIterator<Item = &'a ResourceRecord>,
         signatures: impl IntoIterator<Item = &'b ResourceRecord>,
         keys: &[ResourceRecord],
-    ) -> bool {
-        self.authenticate_rrsets(records, signatures, keys).is_ok()
+    ) -> Result<(), VerdictReason> {
+        let claims = self.authenticate_rrsets(records, signatures, keys)?;
+        if claims.is_empty() {
+            Ok(())
+        } else {
+            Err(VerdictReason::NoValidRrsig)
+        }
     }
 
     /// Verifies every RRset in `records` against `keys`, returning any wildcard synthesis
@@ -115,7 +133,7 @@ impl<C: Clock> Authenticator<C> {
             let Some(first) = rrset.first() else {
                 return Err(VerdictReason::NoValidRrsig);
             };
-            if usize::from(labels) == first.owner.label_count() {
+            if !is_expansion(&first.owner, labels) {
                 return Ok(None);
             }
             wildcard_labels = Some(labels);
@@ -134,16 +152,7 @@ impl<C: Clock> Authenticator<C> {
             let RData::Rrsig(ref rrsig) = signature.rdata else {
                 continue;
             };
-            if verify_rrsig_record(
-                rrsig,
-                rrset,
-                dnskey,
-                dnskey_owner,
-                &self.clock,
-                &self.policy.algorithms,
-            )
-            .is_ok()
-            {
+            if verify_rrsig_record(rrsig, rrset, dnskey, dnskey_owner, &self.clock).is_ok() {
                 return Ok(rrsig.labels());
             }
         }
@@ -154,47 +163,55 @@ impl<C: Clock> Authenticator<C> {
         &self,
         vouchers: &'a [DsRdata],
     ) -> Result<Vec<&'a DsRdata>, ValidationOutcome> {
-        let mut usable = Vec::new();
-        let mut any_unknown = false;
-        for ds in vouchers {
-            let support = AlgorithmSupport::combine(
-                self.policy
-                    .algorithms
-                    .classify_sig(DnssecAlgorithm::new(ds.algorithm())),
-                self.policy
-                    .algorithms
-                    .classify_digest(DigestType::new(ds.digest_type())),
-            );
-            match support {
-                AlgorithmSupport::Supported => usable.push(ds),
-                AlgorithmSupport::UnknownTreatAsInsecure => any_unknown = true,
-                AlgorithmSupport::Refused => {}
-            }
-        }
-        if !usable.is_empty() {
-            return Ok(usable);
-        }
-        if any_unknown {
+        let usable: Vec<&DsRdata> = vouchers
+            .iter()
+            .filter(|ds| {
+                AlgorithmSupport::both(
+                    DnssecAlgorithm::new(ds.algorithm()).support(),
+                    DigestType::new(ds.digest_type()).support(),
+                ) == AlgorithmSupport::Supported
+            })
+            .collect();
+        if usable.is_empty() {
+            // The DS RRset is already authenticated by the parent, so treating the child
+            // as unsigned opens no downgrade an attacker could forge (RFC 6840 §5.2).
             return Err(ValidationOutcome::insecure(
                 VerdictReason::UnsupportedAlgorithm,
             ));
         }
-        Err(ValidationOutcome::bogus(VerdictReason::DsDnskeyMismatch))
+        Ok(usable)
     }
 }
 
-fn find_vouched_key<'a>(
-    zone: &Name,
+/// Every DNSKEY in `dnskeys` that one of `vouchers` matches.
+fn vouched_keys<'a>(
+    zone: &'a Name,
     dnskeys: &'a [ResourceRecord],
-    vouchers: &[&DsRdata],
-) -> Option<&'a DnskeyRdata> {
-    dnskeys.iter().find_map(|record| match record.rdata {
+    vouchers: &'a [&DsRdata],
+) -> impl Iterator<Item = &'a DnskeyRdata> {
+    dnskeys.iter().filter_map(move |record| match record.rdata {
         RData::Dnskey(ref key) => vouchers
             .iter()
             .any(|ds| check_single_ds_linkage(zone, ds, key))
             .then_some(key),
         _ => None,
     })
+}
+
+/// Whether an RRSIG with `labels` labels over `owner` covers a wildcard expansion.
+/// A literal `*` owner has one label more than its RRSIG's count but is not an
+/// expansion (RFC 4035 §5.3.2).
+fn is_expansion(owner: &Name, labels: u8) -> bool {
+    let labels = usize::from(labels);
+    let owner_labels = owner.label_count();
+    if labels >= owner_labels {
+        return false;
+    }
+    let literal_wildcard = owner
+        .labels()
+        .next()
+        .is_some_and(|first| first.as_bytes() == b"*");
+    !(literal_wildcard && labels.checked_add(1) == Some(owner_labels))
 }
 
 fn group_into_rrsets<'a>(

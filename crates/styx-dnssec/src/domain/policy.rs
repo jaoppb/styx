@@ -1,6 +1,5 @@
 //! Validation policy: failure mode, accepted algorithms and resource caps.
 
-use std::collections::BTreeSet;
 use std::fmt;
 
 /// DNSSEC signature algorithm identifier (RFC 4034, RFC 8624).
@@ -8,7 +7,7 @@ use std::fmt;
 pub struct DnssecAlgorithm(u8);
 
 impl DnssecAlgorithm {
-    /// RSA/MD5 (RFC 3110, deprecated/refused per RFC 8624).
+    /// RSA/MD5 (RFC 3110, deprecated per RFC 8624).
     pub const RSAMD5: Self = Self(1);
     /// DSA/SHA-1 (RFC 3755, deprecated/refused per RFC 8624).
     pub const DSA: Self = Self(3);
@@ -141,91 +140,27 @@ impl Default for Nsec3IterationsCap {
     }
 }
 
-/// Support status of a cryptographic algorithm.
+/// Whether the validator can check signatures or digests made with an algorithm.
+///
+/// Decided by `support()` on [`DnssecAlgorithm`] and [`DigestType`], next to the
+/// primitives that implement them, so a supported algorithm always has a primitive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlgorithmSupport {
-    /// Cryptographic algorithm is supported and safe to evaluate.
+    /// A primitive exists and the algorithm is safe to rely on.
     Supported,
-    /// Unknown or unrecognised algorithm; zone is treated as Insecure.
-    UnknownTreatAsInsecure,
-    /// Broken or deprecated algorithm; zone is refused as Bogus.
-    Refused,
+    /// Unknown, or deprecated by RFC 8624 (RSA/MD5, DSA, the SHA-1 algorithms): a zone
+    /// vouched for only by such algorithms is Insecure (RFC 4035 §5.2, RFC 6840 §5.2).
+    Unsupported,
 }
 
 impl AlgorithmSupport {
-    /// Combines signature algorithm support and digest algorithm support into a
-    /// composite support classification for DS vouchers.
-    ///
-    /// Supported only if both are supported; Refused if either is refused;
-    /// otherwise UnknownTreatAsInsecure.
+    /// A DS record is usable only when both its key algorithm and its digest are.
     #[must_use]
-    pub const fn combine(sig: Self, digest: Self) -> Self {
-        match (sig, digest) {
+    pub const fn both(signature: Self, digest: Self) -> Self {
+        match (signature, digest) {
             (Self::Supported, Self::Supported) => Self::Supported,
-            (Self::Refused, _) | (_, Self::Refused) => Self::Refused,
-            _ => Self::UnknownTreatAsInsecure,
+            _ => Self::Unsupported,
         }
-    }
-}
-
-/// Explicit set of cryptographic algorithms recognised by the validator.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AlgorithmSet {
-    supported_sig: BTreeSet<DnssecAlgorithm>,
-    supported_digest: BTreeSet<DigestType>,
-}
-
-impl AlgorithmSet {
-    /// Creates a new [`AlgorithmSet`] with default supported algorithms.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            supported_sig: [
-                DnssecAlgorithm::RSASHA256,
-                DnssecAlgorithm::ECDSAP256SHA256,
-                DnssecAlgorithm::ED25519,
-            ]
-            .into_iter()
-            .collect(),
-            supported_digest: [DigestType::SHA256, DigestType::SHA384]
-                .into_iter()
-                .collect(),
-        }
-    }
-
-    /// Classifies a DNSSEC signature algorithm.
-    #[must_use]
-    pub fn classify_sig(&self, algorithm: DnssecAlgorithm) -> AlgorithmSupport {
-        if self.supported_sig.contains(&algorithm) {
-            return AlgorithmSupport::Supported;
-        }
-        match algorithm {
-            // Deprecated algorithms (RFC 8624)
-            DnssecAlgorithm::RSAMD5
-            | DnssecAlgorithm::DSA
-            | DnssecAlgorithm::DSA_NSEC3_SHA1
-            | DnssecAlgorithm::RSASHA1_NSEC3_SHA1 => AlgorithmSupport::Refused,
-            _ => AlgorithmSupport::UnknownTreatAsInsecure,
-        }
-    }
-
-    /// Classifies a DS digest algorithm.
-    #[must_use]
-    pub fn classify_digest(&self, digest_type: DigestType) -> AlgorithmSupport {
-        if self.supported_digest.contains(&digest_type) {
-            return AlgorithmSupport::Supported;
-        }
-        match digest_type {
-            // SHA-1 (RFC 4034) is deprecated for DNSSEC DS records (RFC 8624)
-            DigestType::SHA1 => AlgorithmSupport::Refused,
-            _ => AlgorithmSupport::UnknownTreatAsInsecure,
-        }
-    }
-}
-
-impl Default for AlgorithmSet {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -234,8 +169,6 @@ impl Default for AlgorithmSet {
 pub struct ValidationPolicy {
     /// Enforcement behavior on validation failures.
     pub failure_mode: FailureMode,
-    /// Permitted cryptographic algorithms.
-    pub algorithms: AlgorithmSet,
     /// Iteration cap for NSEC3 records.
     pub nsec3_max_iterations: Nsec3IterationsCap,
     /// Maximum zone cuts to traverse during descent.
@@ -247,13 +180,11 @@ impl ValidationPolicy {
     #[must_use]
     pub fn new(
         failure_mode: FailureMode,
-        algorithms: AlgorithmSet,
         nsec3_max_iterations: Nsec3IterationsCap,
         max_zone_cuts: u8,
     ) -> Self {
         Self {
             failure_mode,
-            algorithms,
             nsec3_max_iterations,
             max_zone_cuts,
         }
@@ -264,7 +195,6 @@ impl Default for ValidationPolicy {
     fn default() -> Self {
         Self {
             failure_mode: FailureMode::default(),
-            algorithms: AlgorithmSet::new(),
             nsec3_max_iterations: Nsec3IterationsCap::DEFAULT,
             max_zone_cuts: 10,
         }

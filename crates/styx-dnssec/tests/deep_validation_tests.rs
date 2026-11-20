@@ -30,12 +30,14 @@ async fn test_multi_record_rrset_validation_succeeds() {
     let mut message = query(&Name::root(), RecordType::A);
     message.answers.push(root_key.sign(&rrset));
     message.answers.extend(rrset);
-
-    let validator = Validator::new(clock(), ValidationPolicy::default());
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
-    let outcome = validator
-        .validate(&message, &root_only(&root_key), &anchors)
-        .await;
+
+    let validator = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
+    let outcome = validator.validate(&message, &root_only(&root_key)).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
     assert_eq!(outcome.reason, VerdictReason::AnchorMatched);
@@ -55,10 +57,14 @@ async fn test_multi_level_descent_and_subdomain_hostname() {
         .answers
         .push(example_key.sign(std::slice::from_ref(&answer)));
     message.answers.push(answer);
-
-    let validator = Validator::new(clock(), ValidationPolicy::default());
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
-    let outcome = validator.validate(&message, &source, &anchors).await;
+
+    let validator = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
+    let outcome = validator.validate(&message, &source).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
     assert_eq!(outcome.reason, VerdictReason::AnchorMatched);
@@ -91,12 +97,14 @@ async fn test_nsec3_nodata_verification() {
         .authorities
         .push(root_key.sign(std::slice::from_ref(&nsec3)));
     message.authorities.push(nsec3);
-
-    let validator = Validator::new(clock(), ValidationPolicy::default());
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
-    let outcome = validator
-        .validate(&message, &root_only(&root_key), &anchors)
-        .await;
+
+    let validator = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
+    let outcome = validator.validate(&message, &root_only(&root_key)).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
     assert_eq!(outcome.reason, VerdictReason::ProvenDenialOfExistence);
@@ -115,12 +123,14 @@ async fn test_unsigned_denial_rejected_as_bogus() {
     let mut message = query(&name("nonexistent.example."), RecordType::A);
     message.header.rcode = ResponseCode::NXDOMAIN;
     message.authorities.push(nsec);
-
-    let validator = Validator::new(clock(), ValidationPolicy::default());
     let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
-    let outcome = validator
-        .validate(&message, &root_only(&root_key), &anchors)
-        .await;
+
+    let validator = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    );
+    let outcome = validator.validate(&message, &root_only(&root_key)).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
     assert_eq!(outcome.reason, VerdictReason::NoValidRrsig);

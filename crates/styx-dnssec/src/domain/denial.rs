@@ -6,6 +6,7 @@ use styx_proto::application::canonical::canonical_name_cmp;
 use styx_proto::{Name, RData, RecordType, ResourceRecord, ResponseCode};
 
 use crate::domain::error::DenialError;
+pub use crate::domain::nsec::NsecProof;
 pub use crate::domain::nsec3::Nsec3Proof;
 use crate::domain::policy::{Nsec3HashAlgorithm, Nsec3IterationsCap};
 
@@ -168,212 +169,14 @@ pub fn nsec_covers_name(owner: &Name, next: &Name, qname: &Name) -> bool {
     }
 }
 
-fn nsec_closest_encloser(qname: &Name, owner: &Name, next: &Name) -> Name {
-    let left = longest_common_ancestor(qname, owner);
-    let right = longest_common_ancestor(qname, next);
-    if left.label_count() >= right.label_count() {
-        left
-    } else {
-        right
-    }
-}
-
-/// NSEC-based proof of non-existence (RFC 4035 §5.4).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NsecProof {
-    /// NSEC records constituting the proof.
-    pub records: Vec<ResourceRecord>,
-}
-
-impl NsecProof {
-    /// Constructs a new [`NsecProof`].
-    #[must_use]
-    pub fn new(records: Vec<ResourceRecord>) -> Self {
-        Self { records }
-    }
-
-    /// Proves that `qname` does not exist in the zone.
-    ///
-    /// # Errors
-    /// Returns [`DenialError::NotCovered`] if no NSEC covers `qname`.
-    pub fn prove_name_does_not_exist(&self, qname: &Name) -> Result<(), DenialError> {
-        let covered = self.records.iter().any(|record| match record.rdata {
-            RData::Nsec(ref nsec) => nsec_covers_name(&record.owner, nsec.next_domain(), qname),
-            _ => false,
-        });
-        if covered {
-            Ok(())
-        } else {
-            Err(DenialError::NotCovered)
-        }
-    }
-
-    /// Proves that `qtype` does not exist at `qname` (NODATA proof).
-    ///
-    /// # Errors
-    /// Returns [`DenialError::NotCovered`] if record is absent, contains `qtype`,
-    /// contains `CNAME`, or represents a delegation cut for non-DS queries.
-    pub fn prove_type_does_not_exist(
-        &self,
-        qname: &Name,
-        qtype: RecordType,
-    ) -> Result<(), DenialError> {
-        for record in &self.records {
-            if &record.owner != qname {
-                continue;
-            }
-            let RData::Nsec(ref nsec) = record.rdata else {
-                continue;
-            };
-            let is_delegation = qtype != RecordType::DS
-                && nsec.types().contains(RecordType::NS)
-                && !nsec.types().contains(RecordType::SOA);
-            if nsec.types().contains(qtype)
-                || nsec.types().contains(RecordType::CNAME)
-                || is_delegation
-            {
-                return Err(DenialError::NotCovered);
-            }
-            return Ok(());
-        }
-        Err(DenialError::NotCovered)
-    }
-
-    /// Proves NODATA within `signer_zone`.
-    ///
-    /// # Errors
-    /// Returns [`DenialError`] if `qname` or the proof records fall outside `signer_zone`
-    /// or NODATA proof fails.
-    pub fn prove_nodata_in_zone(
-        &self,
-        signer_zone: &Name,
-        qname: &Name,
-        qtype: RecordType,
-    ) -> Result<(), DenialError> {
-        if !qname.is_subdomain_of(signer_zone) || !self.all_in_zone(signer_zone) {
-            return Err(DenialError::NotCovered);
-        }
-        self.prove_type_does_not_exist(qname, qtype)
-    }
-
-    /// Proves that no wildcard exists at `*.<closest_encloser>`.
-    ///
-    /// # Errors
-    /// Returns [`DenialError::DenialProofIncomplete`] if wildcard coverage is missing.
-    pub fn prove_no_wildcard(&self, closest_encloser: &Name) -> Result<(), DenialError> {
-        let wildcard_name = closest_encloser
-            .with_wildcard()
-            .map_err(|_| DenialError::DenialProofIncomplete)?;
-        self.prove_name_does_not_exist(&wildcard_name)
-            .map_err(|_| DenialError::DenialProofIncomplete)
-    }
-
-    /// Proves NXDOMAIN within `signer_zone`, deriving the closest encloser from a
-    /// covering NSEC and checking that no wildcard exists at that closest encloser.
-    ///
-    /// # Errors
-    /// Returns [`DenialError`] if coverage, zone membership, or wildcard denial fails.
-    pub fn prove_nxdomain(&self, signer_zone: &Name, qname: &Name) -> Result<(), DenialError> {
-        if !qname.is_subdomain_of(signer_zone) || !self.all_in_zone(signer_zone) {
-            return Err(DenialError::NotCovered);
-        }
-        let encloser = self
-            .covering_enclosers(qname)
-            .into_iter()
-            .find(|encloser| {
-                encloser.is_subdomain_of(signer_zone) && !self.is_delegation_or_dname(encloser)
-            })
-            .ok_or(DenialError::NotCovered)?;
-        let legs = ClosestEncloserProof::new(qname, encloser)?;
-        self.prove_no_wildcard(legs.closest_encloser())
-    }
-
-    /// Proves that no closer name than `sig_labels` exists for a wildcard-synthesized answer.
-    ///
-    /// # Errors
-    /// Returns [`DenialError`] if `owner` is not covered within `signer_zone` or a closer
-    /// non-terminal exists below `sig_labels`.
-    pub fn prove_wildcard_expansion(
-        &self,
-        signer_zone: &Name,
-        owner: &Name,
-        signature_labels: u8,
-    ) -> Result<(), DenialError> {
-        if !owner.is_subdomain_of(signer_zone) || !self.all_in_zone(signer_zone) {
-            return Err(DenialError::NotCovered);
-        }
-        let max_encloser_labels = usize::from(signature_labels);
-        let covered = self.covering_enclosers(owner).into_iter().any(|encloser| {
-            encloser.is_subdomain_of(signer_zone) && encloser.label_count() <= max_encloser_labels
-        });
-        if covered {
-            Ok(())
-        } else {
-            Err(DenialError::DenialProofIncomplete)
-        }
-    }
-
-    /// Proves that the DS record is absent at `zone` (unsigned delegation).
-    ///
-    /// # Errors
-    /// Returns [`DenialError::NotCovered`] if proof fails.
-    pub fn prove_ds_absence(&self, zone: &Name) -> Result<(), DenialError> {
-        for record in &self.records {
-            if &record.owner != zone {
-                continue;
-            }
-            let RData::Nsec(ref nsec) = record.rdata else {
-                continue;
-            };
-            if nsec.types().contains(RecordType::NS)
-                && !nsec.types().contains(RecordType::DS)
-                && !nsec.types().contains(RecordType::SOA)
-            {
-                return Ok(());
-            }
-        }
-        Err(DenialError::NotCovered)
-    }
-
-    fn all_in_zone(&self, signer_zone: &Name) -> bool {
-        !self.records.is_empty()
-            && self
-                .records
-                .iter()
-                .all(|record| record.owner.is_subdomain_of(signer_zone))
-    }
-
-    fn covering_enclosers(&self, qname: &Name) -> Vec<Name> {
-        self.records
-            .iter()
-            .filter_map(|record| match record.rdata {
-                RData::Nsec(ref nsec)
-                    if nsec_covers_name(&record.owner, nsec.next_domain(), qname) =>
-                {
-                    Some(nsec_closest_encloser(
-                        qname,
-                        &record.owner,
-                        nsec.next_domain(),
-                    ))
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn is_delegation_or_dname(&self, name: &Name) -> bool {
-        self.records.iter().any(|record| {
-            let RData::Nsec(ref nsec) = record.rdata else {
-                return false;
-            };
-            if !record.owner.eq_ignore_case(name) {
-                return false;
-            }
-            let is_delegation =
-                nsec.types().contains(RecordType::NS) && !nsec.types().contains(RecordType::SOA);
-            is_delegation || nsec.types().contains(RecordType::DNAME)
-        })
-    }
+/// How strongly a verified denial holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DenialStrength {
+    /// The records prove the denial outright.
+    Proven,
+    /// The NSEC3 covering the next closer name has Opt-Out set, so an unsigned delegation
+    /// may exist there: the denial cannot be Secure (RFC 5155 §9.2).
+    OptOut,
 }
 
 /// Top-level denial proof container.
@@ -414,7 +217,7 @@ impl DenialProof {
     #[must_use]
     pub fn records(&self) -> &[ResourceRecord] {
         match self {
-            Self::Nsec(proof) => &proof.records,
+            Self::Nsec(proof) => proof.records(),
             Self::Nsec3(proof) => proof.records(),
         }
     }
@@ -430,12 +233,14 @@ impl DenialProof {
         qtype: RecordType,
         rcode: ResponseCode,
         cap: Nsec3IterationsCap,
-    ) -> Result<(), DenialError> {
+    ) -> Result<DenialStrength, DenialError> {
         match (self, rcode) {
-            (Self::Nsec(proof), ResponseCode::NXDOMAIN) => proof.prove_nxdomain(signer_zone, qname),
-            (Self::Nsec(proof), ResponseCode::NOERROR) => {
-                proof.prove_nodata_in_zone(signer_zone, qname, qtype)
-            }
+            (Self::Nsec(proof), ResponseCode::NXDOMAIN) => proof
+                .prove_nxdomain(signer_zone, qname)
+                .map(|()| DenialStrength::Proven),
+            (Self::Nsec(proof), ResponseCode::NOERROR) => proof
+                .prove_nodata(signer_zone, qname, qtype)
+                .map(|()| DenialStrength::Proven),
             (Self::Nsec3(proof), ResponseCode::NXDOMAIN) => {
                 proof.prove_name_does_not_exist(signer_zone, qname, cap)
             }
@@ -456,11 +261,11 @@ impl DenialProof {
         owner: &Name,
         signature_labels: u8,
         cap: Nsec3IterationsCap,
-    ) -> Result<(), DenialError> {
+    ) -> Result<DenialStrength, DenialError> {
         match self {
-            Self::Nsec(proof) => {
-                proof.prove_wildcard_expansion(signer_zone, owner, signature_labels)
-            }
+            Self::Nsec(proof) => proof
+                .prove_wildcard_expansion(signer_zone, owner, signature_labels)
+                .map(|()| DenialStrength::Proven),
             Self::Nsec3(proof) => {
                 proof.prove_wildcard_expansion(signer_zone, owner, signature_labels, cap)
             }
@@ -478,12 +283,7 @@ impl DenialProof {
         cap: Nsec3IterationsCap,
     ) -> Result<(), DenialError> {
         match self {
-            Self::Nsec(proof) => {
-                if !zone.is_subdomain_of(signer_zone) || !proof.all_in_zone(signer_zone) {
-                    return Err(DenialError::NotCovered);
-                }
-                proof.prove_ds_absence(zone)
-            }
+            Self::Nsec(proof) => proof.prove_ds_absence(signer_zone, zone),
             Self::Nsec3(proof) => proof.prove_ds_absence(signer_zone, zone, cap),
         }
     }
