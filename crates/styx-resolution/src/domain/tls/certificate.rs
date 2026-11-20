@@ -280,6 +280,14 @@ pub trait OperatorCertificateLoader: Send + Sync + 'static {
         cert_path: &Path,
         key_path: &Path,
     ) -> impl Future<Output = Result<ServingIdentity, CertificateError>> + Send;
+
+    /// Reads only the certificate file and derives its leaf's pin. The private key is
+    /// never opened, so an operator who may read the certificate but not the key can
+    /// still print the public pin.
+    fn load_pin(
+        &self,
+        cert_path: &Path,
+    ) -> impl Future<Output = Result<SpkiPin, CertificateError>> + Send;
 }
 
 /// Startup port: the self-signed directory, read and written.

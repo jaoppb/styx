@@ -68,6 +68,12 @@ impl OperatorCertificateLoader for FakeLoader {
                 reason: "not found".into(),
             })
     }
+
+    async fn load_pin(&self, cert_path: &Path) -> Result<SpkiPin, CertificateError> {
+        self.load(cert_path, cert_path)
+            .await
+            .map(|identity| identity.pin())
+    }
 }
 
 /// A self-signed directory that may already hold material, and records generations.

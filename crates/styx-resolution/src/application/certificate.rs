@@ -51,16 +51,15 @@ where
         &self,
         config: &TlsConfig,
     ) -> Result<Option<SpkiPin>, CertificateError> {
-        let identity = match config.certificate_source() {
-            CertificateSource::OperatorSupplied {
-                cert_path,
-                key_path,
-            } => Some(self.reader.load(cert_path, key_path).await?),
-            CertificateSource::SelfSigned { .. } => {
-                self.store.load_existing(config.self_signed_dir()).await?
+        match config.certificate_source() {
+            CertificateSource::OperatorSupplied { cert_path, .. } => {
+                Ok(Some(self.reader.load_pin(cert_path).await?))
             }
-        };
-        Ok(identity.map(|identity| identity.pin()))
+            CertificateSource::SelfSigned { .. } => {
+                let existing = self.store.load_existing(config.self_signed_dir()).await?;
+                Ok(existing.map(|identity| identity.pin()))
+            }
+        }
     }
 
     /// Logs the pin: at info level, with the plain-words caveat, only on the boot that

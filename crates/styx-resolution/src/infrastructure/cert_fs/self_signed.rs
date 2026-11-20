@@ -148,7 +148,9 @@ async fn create_dir(dir: &Path) -> Result<(), CertificateError> {
 }
 
 /// Writes both files to temporary paths in `dir`, syncs them, and renames them into place
-/// with the certificate last so a failure never leaves a half-written pair on disk.
+/// with the certificate last. A failure styx sees removes what it wrote, temporary files
+/// included. A crash between the two renames can still leave the key without its
+/// certificate; the next boot refuses that as incomplete material rather than reusing it.
 async fn persist_pair(
     dir: &Path,
     cert_path: &Path,
@@ -157,9 +159,13 @@ async fn persist_pair(
     key_bytes: &[u8],
 ) -> Result<(), CertificateError> {
     let (temp_key, temp_cert) = temp_paths(dir);
-    write_new(&temp_key, key_bytes, 0o600).await?;
+    if let Err(err) = write_new(&temp_key, key_bytes, 0o600).await {
+        remove_quietly(&temp_key).await;
+        return Err(err);
+    }
     if let Err(err) = write_new(&temp_cert, cert_bytes, 0o644).await {
         remove_quietly(&temp_key).await;
+        remove_quietly(&temp_cert).await;
         return Err(err);
     }
     if let Err(err) = rename_file(&temp_key, key_path).await {

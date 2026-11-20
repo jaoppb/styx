@@ -139,9 +139,32 @@ async fn missing_and_malformed_operator_files_name_the_file_at_fault() {
     let fixture = TestCertificate::valid();
     let reader = FilesystemCertificateReader::new();
 
+    let (present_cert, present_key) = scratch
+        .write_pair(&fixture.cert_pem, &fixture.key_pem)
+        .await;
     let missing = scratch.path("absent.pem");
-    let error = reader.load(&missing, &missing).await.unwrap_err();
-    assert!(error.to_string().contains("absent.pem"), "{error}");
+    for (cert, key, at_fault) in [
+        (&missing, &present_key, &missing),
+        (&present_cert, &missing, &missing),
+    ] {
+        let error = reader.load(cert, key).await.unwrap_err();
+        assert!(
+            matches!(error, CertificateError::PathUnreadable { ref path, .. } if path == at_fault),
+            "{error}"
+        );
+    }
+
+    let (cert, key) = scratch
+        .write_pair(
+            "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+            &fixture.key_pem,
+        )
+        .await;
+    let error = reader.load(&cert, &key).await.unwrap_err();
+    assert!(
+        matches!(error, CertificateError::MalformedCertificate { ref path, .. } if *path == cert),
+        "a leaf rustls cannot read is the certificate's fault, not the key's: {error}"
+    );
 
     let (cert, key) = scratch
         .write_pair("not a certificate", &fixture.key_pem)
@@ -186,4 +209,19 @@ async fn failed_cert_persist_leaves_no_orphan_key_behind() {
         let name = name.to_string_lossy();
         assert!(!name.ends_with(".tmp"), "leftover temp file: {name}");
     }
+}
+
+#[tokio::test]
+async fn the_pin_is_read_from_the_certificate_alone() {
+    let scratch = Scratch::new();
+    let fixture = TestCertificate::valid();
+    let reader = FilesystemCertificateReader::new();
+    let (cert, key) = scratch
+        .write_pair(&fixture.cert_pem, &fixture.key_pem)
+        .await;
+    let served = reader.load(&cert, &key).await.unwrap();
+
+    tokio::fs::remove_file(&key).await.unwrap();
+    let pin = reader.load_pin(&cert).await.unwrap();
+    assert_eq!(pin, served.pin(), "no key file is needed to print the pin");
 }

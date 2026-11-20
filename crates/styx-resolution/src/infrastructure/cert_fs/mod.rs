@@ -52,6 +52,17 @@ impl OperatorCertificateLoader for FilesystemCertificateReader {
         };
         pair.identity(CertificateOrigin::OperatorSupplied, false)
     }
+
+    async fn load_pin(&self, cert_path: &Path) -> Result<SpkiPin, CertificateError> {
+        let cert_pem = read_file(cert_path).await?;
+        let chain = parse_chain(cert_path, &cert_pem)?;
+        let leaf = chain
+            .first()
+            .ok_or_else(|| CertificateError::NoCertificateInFile {
+                path: cert_path.to_path_buf(),
+            })?;
+        Ok(leaf_facts(cert_path, leaf)?.pin)
+    }
 }
 
 /// A certificate file and its key file, both read into memory.
@@ -91,18 +102,7 @@ impl PemPair<'_> {
     }
 
     fn chain(&self) -> Result<Vec<CertificateDer<'static>>, CertificateError> {
-        let chain = CertificateDer::pem_slice_iter(&self.cert_pem)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| CertificateError::MalformedCertificate {
-                path: self.cert_path.to_path_buf(),
-                reason: error.to_string(),
-            })?;
-        if chain.is_empty() {
-            return Err(CertificateError::NoCertificateInFile {
-                path: self.cert_path.to_path_buf(),
-            });
-        }
-        Ok(chain)
+        parse_chain(self.cert_path, &self.cert_pem)
     }
 
     fn key(&self) -> Result<PrivateKeyDer<'static>, CertificateError> {
@@ -115,26 +115,55 @@ impl PemPair<'_> {
     }
 
     /// Refuses a key that is not the leaf's, so a mismatch is one startup message rather
-    /// than a handshake failure on every connection.
+    /// than a handshake failure on every connection. The key is loaded on its own first,
+    /// so a failure names the file at fault: the key file when rustls cannot use the key,
+    /// the certificate file when it cannot read the leaf.
     fn check_key_matches(
         &self,
         chain: &[CertificateDer<'static>],
         key: PrivateKeyDer<'static>,
     ) -> Result<(), CertificateError> {
-        match CertifiedKey::from_der(chain.to_vec(), key, &default_provider()) {
-            Ok(_) => Ok(()),
+        let signing_key = default_provider()
+            .key_provider
+            .load_private_key(key)
+            .map_err(|error| CertificateError::MalformedKey {
+                path: self.key_path.to_path_buf(),
+                reason: error.to_string(),
+            })?;
+        match CertifiedKey::new(chain.to_vec(), signing_key).keys_match() {
+            // rustls cannot compare every key type; like `CertifiedKey::from_der`, an
+            // unknown answer is not a mismatch.
+            Ok(()) | Err(TlsLibraryError::InconsistentKeys(InconsistentKeys::Unknown)) => Ok(()),
             Err(TlsLibraryError::InconsistentKeys(InconsistentKeys::KeyMismatch)) => {
                 Err(CertificateError::KeyMismatch {
                     cert_path: self.cert_path.to_path_buf(),
                     key_path: self.key_path.to_path_buf(),
                 })
             }
-            Err(error) => Err(CertificateError::MalformedKey {
-                path: self.key_path.to_path_buf(),
+            Err(error) => Err(CertificateError::MalformedCertificate {
+                path: self.cert_path.to_path_buf(),
                 reason: error.to_string(),
             }),
         }
     }
+}
+
+fn parse_chain(
+    cert_path: &Path,
+    cert_pem: &[u8],
+) -> Result<Vec<CertificateDer<'static>>, CertificateError> {
+    let chain = CertificateDer::pem_slice_iter(cert_pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| CertificateError::MalformedCertificate {
+            path: cert_path.to_path_buf(),
+            reason: error.to_string(),
+        })?;
+    if chain.is_empty() {
+        return Err(CertificateError::NoCertificateInFile {
+            path: cert_path.to_path_buf(),
+        });
+    }
+    Ok(chain)
 }
 
 async fn read_file(path: &Path) -> Result<Vec<u8>, CertificateError> {
