@@ -16,7 +16,14 @@ const EXAMPLE: &str = include_str!(concat!(
 
 const SCHEMA: &[SchemaTable] = &[SchemaTable {
     header: "[cache]",
-    keys: &["max_entries", "max_bytes", "shards"],
+    keys: &[
+        "max_entries",
+        "max_bytes",
+        "shards",
+        "ttl_floor_secs",
+        "ttl_ceiling_secs",
+        "negative_ttl_ceiling_secs",
+    ],
 }];
 
 fn cache_fields(raw: &RawCache) {
@@ -24,6 +31,9 @@ fn cache_fields(raw: &RawCache) {
         max_entries: _,
         max_bytes: _,
         shards: _,
+        ttl_floor_secs: _,
+        ttl_ceiling_secs: _,
+        negative_ttl_ceiling_secs: _,
     } = raw;
 }
 

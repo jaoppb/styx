@@ -76,8 +76,7 @@ fn byte_budget() -> HeapBytes {
 fn entry_bound_holds_across_all_shards() {
     let clock = Arc::new(TestClock::new());
     let capacity = CacheCapacity::new(BOUND, HeapBytes::new(UNBOUNDED));
-    let cache = ShardedAnswerCache::new(Arc::clone(&clock), capacity, TtlPolicy::default(), SHARDS)
-        .expect("cache");
+    let cache = ShardedAnswerCache::new(Arc::clone(&clock), capacity, SHARDS).expect("cache");
 
     for index in 0..ADMISSIONS {
         admit_host(&cache, &clock, index);
@@ -93,13 +92,8 @@ fn byte_bound_holds_across_all_shards() {
     let clock = Arc::new(TestClock::new());
     let budget = byte_budget();
     let capacity = CacheCapacity::new(UNBOUNDED, budget);
-    let cache = ShardedAnswerCache::new(
-        Arc::clone(&clock),
-        capacity,
-        TtlPolicy::default(),
-        BYTE_TEST_SHARDS,
-    )
-    .expect("cache");
+    let cache =
+        ShardedAnswerCache::new(Arc::clone(&clock), capacity, BYTE_TEST_SHARDS).expect("cache");
 
     for index in 0..BYTE_TEST_ADMISSIONS {
         admit_sized(&cache, &clock, &format!("h{index:05}.test."), BULKY);
@@ -125,8 +119,7 @@ fn admit_batch<C: Clock>(cache: &ShardedAnswerCache<C>, clock: &TestClock, threa
 fn entry_bound_holds_under_concurrent_admission() {
     let clock = Arc::new(TestClock::new());
     let capacity = CacheCapacity::new(BOUND, HeapBytes::new(UNBOUNDED));
-    let cache = ShardedAnswerCache::new(Arc::clone(&clock), capacity, TtlPolicy::default(), SHARDS)
-        .expect("cache");
+    let cache = ShardedAnswerCache::new(Arc::clone(&clock), capacity, SHARDS).expect("cache");
 
     std::thread::scope(|scope| {
         for thread in 0..THREADS {
@@ -148,7 +141,6 @@ fn new_rejects_a_budget_that_cannot_be_split() {
         ShardedAnswerCache::new(
             Arc::clone(&clock),
             CacheCapacity::new(entries, HeapBytes::new(bytes)),
-            TtlPolicy::default(),
             shards,
         )
         .err()
@@ -172,7 +164,7 @@ fn new_rejects_a_budget_that_cannot_be_split() {
 
 fn one_shard_at_the_floor(clock: &Arc<TestClock>) -> ShardedAnswerCache<TestClock> {
     let capacity = CacheCapacity::new(10, HeapBytes::new(MIN_SHARD_BYTES));
-    ShardedAnswerCache::new(Arc::clone(clock), capacity, TtlPolicy::default(), 1).expect("cache")
+    ShardedAnswerCache::new(Arc::clone(clock), capacity, 1).expect("cache")
 }
 
 #[test]
@@ -235,8 +227,7 @@ fn the_ring_never_holds_more_slots_than_the_entry_share() {
 fn eviction_still_makes_room_when_every_entry_was_recently_hit() {
     let clock = Arc::new(TestClock::new());
     let capacity = CacheCapacity::new(3, HeapBytes::new(1 << 20));
-    let cache = ShardedAnswerCache::new(Arc::clone(&clock), capacity, TtlPolicy::default(), 1)
-        .expect("cache");
+    let cache = ShardedAnswerCache::new(Arc::clone(&clock), capacity, 1).expect("cache");
     for index in 0..3 {
         admit_host(&cache, &clock, index);
     }

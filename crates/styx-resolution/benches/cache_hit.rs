@@ -81,13 +81,8 @@ fn filled(per_shard: usize) -> (ShardedAnswerCache<TestClock>, Vec<CacheKey>) {
     let clock = Arc::new(TestClock::new());
     let total = per_shard.saturating_mul(DEFAULT_SHARDS);
     let capacity = CacheCapacity::new(total.saturating_mul(2), HeapBytes::new(usize::MAX));
-    let cache = ShardedAnswerCache::new(
-        Arc::clone(&clock),
-        capacity,
-        TtlPolicy::default(),
-        DEFAULT_SHARDS,
-    )
-    .expect("cache");
+    let cache =
+        ShardedAnswerCache::new(Arc::clone(&clock), capacity, DEFAULT_SHARDS).expect("cache");
     for index in 0..total {
         admit(&cache, &clock, index);
     }
@@ -147,8 +142,7 @@ fn read_large_while_writing(
 fn bench_contended(c: &mut Criterion) {
     let clock = Arc::new(TestClock::new());
     let capacity = CacheCapacity::new(CONTENDED_ENTRIES, HeapBytes::new(CONTENDED_BYTES));
-    let cache = ShardedAnswerCache::new(Arc::clone(&clock), capacity, TtlPolicy::default(), 1)
-        .expect("cache");
+    let cache = ShardedAnswerCache::new(Arc::clone(&clock), capacity, 1).expect("cache");
     admit_sized(&cache, &clock, 0, LARGE_ANSWER_RECORDS);
     let hot = CacheKey::from_question(&question(0)).expect("key");
 
