@@ -12,6 +12,9 @@ use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
+use crate::domain::request::Transport;
+use crate::infrastructure::doh::DohListener;
+use crate::infrastructure::dot::DotListener;
 use crate::infrastructure::tcp::TcpListener;
 use crate::infrastructure::udp::UdpListener;
 
@@ -110,7 +113,7 @@ impl SupervisorBackoff {
 
 /// Trait implemented by transport listeners managed by a supervisor loop.
 pub trait SupervisedListener: Send + 'static {
-    /// Returns human-readable transport name for logging (e.g. "UDP" or "TCP").
+    /// The transport's [`Transport::name`], for logging.
     fn transport_name(&self) -> &'static str;
 
     /// Runs the listener until cancelled or a fatal error occurs.
@@ -130,7 +133,7 @@ where
     S: Sleeper + Send + Sync + 'static,
 {
     fn transport_name(&self) -> &'static str {
-        "UDP"
+        Transport::Udp.name()
     }
 
     fn run(
@@ -151,7 +154,49 @@ where
     S: Sleeper + Send + Sync + 'static,
 {
     fn transport_name(&self) -> &'static str {
-        "TCP"
+        Transport::Tcp.name()
+    }
+
+    fn run(
+        &self,
+        cancel: CancellationToken,
+    ) -> impl std::future::Future<Output = Result<(), ListenerError>> + Send {
+        self.run(cancel)
+    }
+}
+
+impl<L, F, O, C, T, S> SupervisedListener for DotListener<L, F, O, C, T, S>
+where
+    L: LocalRecords + Send + Sync + 'static,
+    F: FilterPolicy + Send + Sync + 'static,
+    O: QueryObserver + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    T: TerminalHandler + Send + Sync + 'static,
+    S: Sleeper + Send + Sync + 'static,
+{
+    fn transport_name(&self) -> &'static str {
+        Transport::Dot.name()
+    }
+
+    fn run(
+        &self,
+        cancel: CancellationToken,
+    ) -> impl std::future::Future<Output = Result<(), ListenerError>> + Send {
+        self.run(cancel)
+    }
+}
+
+impl<L, F, O, C, T, S> SupervisedListener for DohListener<L, F, O, C, T, S>
+where
+    L: LocalRecords + Send + Sync + 'static,
+    F: FilterPolicy + Send + Sync + 'static,
+    O: QueryObserver + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    T: TerminalHandler + Send + Sync + 'static,
+    S: Sleeper + Send + Sync + 'static,
+{
+    fn transport_name(&self) -> &'static str {
+        Transport::Doh.name()
     }
 
     fn run(

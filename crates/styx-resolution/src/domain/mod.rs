@@ -25,6 +25,7 @@ pub mod probe;
 pub mod refused;
 pub mod request;
 pub mod selection;
+pub mod tls;
 pub mod weight;
 
 pub use answer::{
