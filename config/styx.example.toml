@@ -102,7 +102,9 @@ addr = "9.9.9.9:53"
 # shards = 32
 # Every admitted answer's TTL is raised to the floor and cut to the ceiling; a negative
 # answer (NXDOMAIN, NODATA) is cut to its own ceiling instead. The floor must not exceed
-# the ceiling.
+# the ceiling. A ceiling of 0 turns caching off for what it bounds: an answer whose TTL
+# ends up 0 is served but never stored, so `negative_ttl_ceiling_secs = 0` disables
+# negative caching.
 # ttl_floor_secs = 5
 # ttl_ceiling_secs = 86400
 # negative_ttl_ceiling_secs = 300
