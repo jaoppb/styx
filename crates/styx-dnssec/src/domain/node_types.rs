@@ -45,13 +45,17 @@ impl<'a> OwnerTypes<'a> {
     /// of a cut, so a DS denial must not come from a zone apex (SOA present), which is
     /// the child's own NSEC: only the root has no parent to ask (RFC 4035 §3.1.4.1,
     /// RFC 5155 §8.6). Any other type below a delegation belongs to the child, so a
-    /// delegation proves nothing about it.
+    /// delegation proves nothing about it. Meta-type `ANY` is denied only when the bitmap
+    /// contains no types at all (e.g., an NSEC3 empty non-terminal).
     pub(crate) fn denies(&self, qtype: RecordType) -> bool {
         if self.has(qtype) || self.has(RecordType::CNAME) {
             return false;
         }
         if qtype == RecordType::DS {
             return !self.has(RecordType::SOA) || self.owner.is_root();
+        }
+        if qtype == RecordType::ANY {
+            return self.types.windows().is_empty();
         }
         !self.is_delegation()
     }
@@ -94,5 +98,15 @@ mod tests {
         assert!(!types.denies(RecordType::A));
         assert!(types.is_unsigned_delegation());
         assert!(types.ends_authority());
+    }
+
+    #[test]
+    fn any_is_denied_only_when_bitmap_is_empty() {
+        let owner = Name::from_ascii("www.example.").unwrap();
+        let non_empty = bitmap(&[RecordType::A, RecordType::RRSIG, RecordType::NSEC]);
+        assert!(!OwnerTypes::new(&owner, &non_empty).denies(RecordType::ANY));
+
+        let empty = TypeBitmap::new(Vec::new());
+        assert!(OwnerTypes::new(&owner, &empty).denies(RecordType::ANY));
     }
 }

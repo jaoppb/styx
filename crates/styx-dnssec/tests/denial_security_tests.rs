@@ -276,3 +276,78 @@ async fn test_validator_returns_bogus_for_over_cap_nsec3_proof() {
     assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
     assert_eq!(outcome.reason, VerdictReason::Nsec3IterationsExceeded);
 }
+
+#[tokio::test]
+async fn test_any_query_with_non_empty_nsec_bitmap_is_bogus() {
+    let root_key = ZoneKey::generate(&Name::root());
+    let example_key = ZoneKey::generate(&support::name("example."));
+    let source = InMemoryChainSource::new();
+    source.insert_cut(root_key.apex_cut());
+    source.insert_cut(example_key.signed_cut(&root_key));
+
+    let www = support::name("www.example.");
+    source.record_not_a_cut(www.clone());
+    let nsec = support::nsec(
+        &www,
+        &support::name("z.example."),
+        &[RecordType::A, RecordType::RRSIG, RecordType::NSEC],
+    );
+    let mut message = query(&www, RecordType::ANY);
+    message
+        .authorities
+        .push(example_key.sign(std::slice::from_ref(&nsec)));
+    message.authorities.push(nsec);
+
+    let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
+    let outcome = Validator::new(clock(), ValidationPolicy::default(), anchors.anchors())
+        .validate(&message, &source)
+        .await;
+
+    assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
+    assert_eq!(outcome.reason, VerdictReason::DenialProofIncomplete);
+}
+
+#[tokio::test]
+async fn test_any_query_at_nsec3_empty_non_terminal_is_secure() {
+    let root_key = ZoneKey::generate(&Name::root());
+    let example = support::name("example.");
+    let example_key = ZoneKey::generate(&example);
+    let source = InMemoryChainSource::new();
+    source.insert_cut(root_key.apex_cut());
+    source.insert_cut(example_key.signed_cut(&root_key));
+
+    let ent = support::name("ent.example.");
+    source.record_not_a_cut(ent.clone());
+    let salt = vec![0xAA];
+    let params = Nsec3Params::new(Nsec3HashAlgorithm::SHA1, 0, salt.clone());
+    let ent_hash = hash_nsec3_name(&ent, &params, Nsec3IterationsCap::DEFAULT).unwrap();
+    let nsec3_owner = support::name(&format!("{}.example.", base32hex_encode(&ent_hash)));
+    source.record_not_a_cut(nsec3_owner.clone());
+    let nsec3 = ResourceRecord::new(
+        nsec3_owner,
+        RecordType::NSEC3,
+        RecordClass::In,
+        Ttl::from_secs(300),
+        RData::Nsec3(Nsec3Rdata::new(
+            1,
+            0,
+            0,
+            salt,
+            ent_hash,
+            TypeBitmap::new(Vec::new()),
+        )),
+    );
+    let mut message = query(&ent, RecordType::ANY);
+    message
+        .authorities
+        .push(example_key.sign(std::slice::from_ref(&nsec3)));
+    message.authorities.push(nsec3);
+
+    let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
+    let outcome = Validator::new(clock(), ValidationPolicy::default(), anchors.anchors())
+        .validate(&message, &source)
+        .await;
+
+    assert_eq!(outcome.verdict, ValidationVerdict::Secure);
+    assert_eq!(outcome.reason, VerdictReason::ProvenDenialOfExistence);
+}
