@@ -17,6 +17,7 @@ mod upstream;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{bail, Context};
 use styx_core::{SystemClock, SystemSleeper, UpstreamId, UpstreamKind};
@@ -69,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
         .context("missing [upstream] configuration")?;
 
     let clock = Arc::new(SystemClock::new());
-    let recursion = RecursionWiring::load(recursion, pool_config).await?;
+    let recursion = RecursionWiring::load(recursion, pool_config, config.query_timeout).await?;
     let pool = build_pool(pool_config, &recursion, &clock)?;
     let pipeline = build_pipeline(pool.clone(), clock.clone(), &config, cache)?;
 
@@ -111,15 +112,26 @@ struct RecursionWiring {
 }
 
 impl RecursionWiring {
-    /// Validates every recursor's merged settings before touching disk, then loads each
-    /// distinct root-hints file once. A missing or unparseable file is a startup error,
-    /// like any other invalid configuration: failing loudly beats a pool that silently
-    /// lost its recursor.
-    async fn load(section: RecursionSection, pool_config: &PoolConfig) -> anyhow::Result<Self> {
+    /// Validates every recursor's merged settings and per-query timeouts before touching
+    /// disk, then canonicalises paths and loads each distinct root-hints file once. A
+    /// missing or unparseable file is a startup error, like any other invalid
+    /// configuration: failing loudly beats a pool that silently lost its recursor.
+    async fn load(
+        section: RecursionSection,
+        pool_config: &PoolConfig,
+        query_timeout: Duration,
+    ) -> anyhow::Result<Self> {
         let recursors = pool_config.recursor_names();
-        let configs = section.validate(&recursors)?;
+        let mut configs = section.validate(&recursors)?;
+        check_recursor_deadlines(&configs, query_timeout)?;
         let mut hints = HashMap::new();
-        for (name, config) in &configs {
+        for (name, config) in &mut configs {
+            let canonical = tokio::fs::canonicalize(&config.root_hints)
+                .await
+                .with_context(|| {
+                    format!("failed to load root hints for recursor member '{name}'")
+                })?;
+            config.root_hints = canonical;
             if hints.contains_key(&config.root_hints) {
                 continue;
             }
@@ -164,6 +176,26 @@ impl RecursionWiring {
             },
         ))
     }
+}
+
+fn check_recursor_deadlines(
+    configs: &BTreeMap<String, RecursionConfig>,
+    query_timeout: Duration,
+) -> anyhow::Result<()> {
+    for (name, config) in configs {
+        let member_timeout = config.udp_timeout.max(config.tcp_timeout);
+        if member_timeout >= query_timeout {
+            bail!(
+                "query_timeout ({}ms) must exceed recursor member `{name}`'s longest \
+                 per-query timeout ({}ms); raise query_timeout_secs or lower \
+                 udp_timeout_ms / tcp_timeout_ms under [recursion] or \
+                 [recursion.members.{name}]",
+                query_timeout.as_millis(),
+                member_timeout.as_millis()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn build_upstream(

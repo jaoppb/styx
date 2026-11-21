@@ -8,7 +8,14 @@
 
 use std::time::Duration;
 
-use styx_recursion::application::config::{RecursionConfig, RecursionSection};
+use styx_recursion::application::config::{
+    InfraCapacity, RecursionConfig, RecursionSection, DEFAULT_MAX_SERVERS, DEFAULT_TCP_TIMEOUT,
+    DEFAULT_UDP_TIMEOUT,
+};
+use styx_recursion::application::recursor::RecursorSettings;
+use styx_recursion::domain::budget::{
+    DescentLimits, DEFAULT_MAX_CNAME_CHAIN, DEFAULT_MAX_DEPTH, DEFAULT_MAX_OUTBOUND_QUERIES,
+};
 use styx_recursion::domain::error::{ConfigError, MemberConfigError};
 use styx_resolution::ServerConfig;
 
@@ -51,7 +58,11 @@ fn recursors(recursion: &str) -> Result<Vec<RecursionConfig>, ConfigError> {
     let mut configs = section.validate(&names)?;
     Ok(names
         .iter()
-        .filter_map(|name| configs.remove(*name))
+        .map(|name| {
+            configs
+                .remove(*name)
+                .expect("validated recursor missing from map")
+        })
         .collect())
 }
 
@@ -61,10 +72,12 @@ fn two_recursors_with_different_overrides_get_their_own_settings() {
         "{SHARED}
 [recursion.members.recursor-v4]
 use_ipv6 = false
+max_delegations = 500
 
 [recursion.members.recursor-tight]
 max_outbound_queries = 16
 udp_timeout_ms = 300
+tcp_timeout_ms = 2000
 "
     ))
     .expect("both members resolve");
@@ -72,20 +85,46 @@ udp_timeout_ms = 300
     let [v4, tight] = configs.as_slice() else {
         panic!("expected two recursors, got {configs:?}");
     };
-    assert!(!v4.settings().use_ipv6);
-    assert_eq!(v4.settings().limits.max_outbound_queries(), 64);
-    assert_eq!(v4.udp_timeout, Duration::from_millis(800));
+    let shared_wall_clock = Duration::from_secs(3);
+    assert_eq!(
+        v4.settings(),
+        RecursorSettings {
+            limits: DescentLimits::new(
+                DEFAULT_MAX_DEPTH,
+                DEFAULT_MAX_OUTBOUND_QUERIES,
+                DEFAULT_MAX_CNAME_CHAIN,
+                shared_wall_clock,
+            )
+            .expect("valid limits"),
+            use_ipv6: false,
+        }
+    );
+    assert_eq!(v4.udp_timeout, DEFAULT_UDP_TIMEOUT);
+    assert_eq!(v4.tcp_timeout, DEFAULT_TCP_TIMEOUT);
+    assert_eq!(
+        v4.capacity,
+        InfraCapacity {
+            max_delegations: 500,
+            max_servers: DEFAULT_MAX_SERVERS,
+        }
+    );
 
-    assert!(tight.settings().use_ipv6);
-    assert_eq!(tight.settings().limits.max_outbound_queries(), 16);
+    assert_eq!(
+        tight.settings(),
+        RecursorSettings {
+            limits: DescentLimits::new(
+                DEFAULT_MAX_DEPTH,
+                16,
+                DEFAULT_MAX_CNAME_CHAIN,
+                shared_wall_clock,
+            )
+            .expect("valid limits"),
+            use_ipv6: true,
+        }
+    );
     assert_eq!(tight.udp_timeout, Duration::from_millis(300));
-
-    for config in [v4, tight] {
-        assert_eq!(
-            config.settings().limits.wall_clock(),
-            Duration::from_secs(3)
-        );
-    }
+    assert_eq!(tight.tcp_timeout, Duration::from_millis(2000));
+    assert_eq!(tight.capacity, InfraCapacity::default());
 }
 
 #[test]
