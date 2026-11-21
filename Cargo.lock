@@ -1478,6 +1478,7 @@ dependencies = [
  "hyper-util",
  "rcgen",
  "ring",
+ "rustix",
  "rustls",
  "serde",
  "socket2",
