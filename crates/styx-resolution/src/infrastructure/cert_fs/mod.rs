@@ -44,12 +44,7 @@ impl OperatorCertificateLoader for FilesystemCertificateReader {
         cert_path: &Path,
         key_path: &Path,
     ) -> Result<ServingIdentity, CertificateError> {
-        let pair = PemPair {
-            cert_path,
-            cert_pem: read_file(cert_path).await?,
-            key_path,
-            key_pem: read_file(key_path).await?,
-        };
+        let pair = PemPair::read(cert_path, key_path).await?;
         pair.identity(CertificateOrigin::OperatorSupplied, false)
     }
 
@@ -73,7 +68,31 @@ struct PemPair<'a> {
     key_pem: Vec<u8>,
 }
 
-impl PemPair<'_> {
+impl<'a> PemPair<'a> {
+    async fn read(cert_path: &'a Path, key_path: &'a Path) -> Result<Self, CertificateError> {
+        let cert_pem = read_file(cert_path).await?;
+        let key_pem = read_file(key_path).await?;
+        Ok(Self {
+            cert_path,
+            cert_pem,
+            key_path,
+            key_pem,
+        })
+    }
+
+    async fn read_cert_with_key(
+        cert_path: &'a Path,
+        key_path: &'a Path,
+        key_pem: Vec<u8>,
+    ) -> Result<Self, CertificateError> {
+        Ok(Self {
+            cert_path,
+            cert_pem: read_file(cert_path).await?,
+            key_path,
+            key_pem,
+        })
+    }
+
     /// Parses both files, checks the key against the leaf, and assembles the identity.
     fn identity(
         &self,

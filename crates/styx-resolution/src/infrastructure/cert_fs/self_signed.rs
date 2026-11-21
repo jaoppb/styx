@@ -14,7 +14,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::domain::error::CertificateError;
 use crate::domain::tls::{CertificateOrigin, SelfSignedStore, ServingIdentity};
-use crate::infrastructure::cert_fs::{read_file, PemPair};
+use crate::infrastructure::cert_fs::PemPair;
 
 /// File name of the persisted self-signed certificate.
 pub const SELF_SIGNED_CERT_FILE: &str = "cert.pem";
@@ -51,13 +51,9 @@ impl SelfSignedStore for SelfSignedGenerator {
             (false, true) => return Err(incomplete(key_path, cert_path)),
             (true, true) => {}
         }
-        check_owner_only(&key_path).await?;
-        let pair = PemPair {
-            cert_path: &cert_path,
-            cert_pem: read_file(&cert_path).await?,
-            key_path: &key_path,
-            key_pem: read_file(&key_path).await?,
-        };
+        check_dir_safe(dir)?;
+        let key_pem = read_owner_only(&key_path).await?;
+        let pair = PemPair::read_cert_with_key(&cert_path, &key_path, key_pem).await?;
         pair.identity(CertificateOrigin::SelfSigned, false)
             .map(Some)
     }
@@ -144,7 +140,8 @@ async fn create_dir(dir: &Path) -> Result<(), CertificateError> {
         .map_err(|error| CertificateError::PersistFailed {
             path: dir.to_path_buf(),
             reason: error.to_string(),
-        })
+        })?;
+    check_dir_safe(dir)
 }
 
 /// Writes both files to temporary paths in `dir`, syncs them, and renames them into place
@@ -159,26 +156,25 @@ async fn persist_pair(
     key_bytes: &[u8],
 ) -> Result<(), CertificateError> {
     let (temp_key, temp_cert) = temp_paths(dir);
-    if let Err(err) = write_new(&temp_key, key_bytes, 0o600).await {
-        remove_quietly(&temp_key).await;
-        return Err(err);
+    let mut cert_renamed = false;
+    let outcome = async {
+        write_new(&temp_key, key_bytes, 0o600).await?;
+        write_new(&temp_cert, cert_bytes, 0o644).await?;
+        rename_file(&temp_key, key_path).await?;
+        rename_file(&temp_cert, cert_path).await?;
+        cert_renamed = true;
+        sync_dir(dir).await
     }
-    if let Err(err) = write_new(&temp_cert, cert_bytes, 0o644).await {
+    .await;
+    if let Err(err) = outcome {
         remove_quietly(&temp_key).await;
         remove_quietly(&temp_cert).await;
+        if !cert_renamed {
+            remove_quietly(key_path).await;
+        }
         return Err(err);
     }
-    if let Err(err) = rename_file(&temp_key, key_path).await {
-        remove_quietly(&temp_key).await;
-        remove_quietly(&temp_cert).await;
-        return Err(err);
-    }
-    if let Err(err) = rename_file(&temp_cert, cert_path).await {
-        remove_quietly(key_path).await;
-        remove_quietly(&temp_cert).await;
-        return Err(err);
-    }
-    sync_dir(dir).await
+    Ok(())
 }
 
 fn temp_paths(dir: &Path) -> (PathBuf, PathBuf) {
@@ -245,25 +241,74 @@ async fn write_new(path: &Path, contents: &[u8], mode: u32) -> Result<(), Certif
 }
 
 #[cfg(unix)]
-async fn check_owner_only(key_path: &Path) -> Result<(), CertificateError> {
-    use std::os::unix::fs::PermissionsExt;
+fn check_dir_safe(dir: &Path) -> Result<(), CertificateError> {
+    use rustix::fs::{fstat, open, Mode, OFlags};
 
-    let metadata =
-        tokio::fs::metadata(key_path)
-            .await
-            .map_err(|error| CertificateError::PathUnreadable {
-                path: key_path.to_path_buf(),
-                reason: error.to_string(),
-            })?;
-    if metadata.permissions().mode() & 0o077 != 0 {
-        return Err(CertificateError::InsecurePermissions {
-            path: key_path.to_path_buf(),
+    let owned = open(
+        dir,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| CertificateError::PathUnreadable {
+        path: dir.to_path_buf(),
+        reason: error.to_string(),
+    })?;
+    let stat = fstat(&owned).map_err(|error| CertificateError::PathUnreadable {
+        path: dir.to_path_buf(),
+        reason: error.to_string(),
+    })?;
+    let euid = rustix::process::geteuid().as_raw();
+    let mode = Mode::from_raw_mode(stat.st_mode);
+    if stat.st_uid != euid || mode.intersects(Mode::WGRP | Mode::WOTH) {
+        return Err(CertificateError::InsecureDirectory {
+            path: dir.to_path_buf(),
         });
     }
     Ok(())
 }
 
 #[cfg(not(unix))]
-async fn check_owner_only(_key_path: &Path) -> Result<(), CertificateError> {
+fn check_dir_safe(_dir: &Path) -> Result<(), CertificateError> {
     Ok(())
+}
+
+#[cfg(unix)]
+async fn read_owner_only(key_path: &Path) -> Result<Vec<u8>, CertificateError> {
+    use rustix::fs::{fstat, open, Mode, OFlags};
+    use tokio::io::AsyncReadExt;
+
+    let owned = open(
+        key_path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| CertificateError::PathUnreadable {
+        path: key_path.to_path_buf(),
+        reason: error.to_string(),
+    })?;
+    let stat = fstat(&owned).map_err(|error| CertificateError::PathUnreadable {
+        path: key_path.to_path_buf(),
+        reason: error.to_string(),
+    })?;
+    let euid = rustix::process::geteuid().as_raw();
+    let mode = Mode::from_raw_mode(stat.st_mode);
+    if stat.st_uid != euid || mode.intersects(Mode::RWXG | Mode::RWXO) {
+        return Err(CertificateError::InsecurePermissions {
+            path: key_path.to_path_buf(),
+        });
+    }
+    let mut file = tokio::fs::File::from_std(std::fs::File::from(owned));
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .await
+        .map_err(|error| CertificateError::PathUnreadable {
+            path: key_path.to_path_buf(),
+            reason: error.to_string(),
+        })?;
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+async fn read_owner_only(key_path: &Path) -> Result<Vec<u8>, CertificateError> {
+    crate::infrastructure::cert_fs::read_file(key_path).await
 }

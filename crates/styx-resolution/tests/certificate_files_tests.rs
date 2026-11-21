@@ -75,6 +75,59 @@ async fn the_key_is_written_owner_only_and_refused_once_readable_by_others() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_key_and_a_writable_directory_are_refused() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = Scratch::new();
+    let store = SelfSignedGenerator::new();
+    store
+        .generate(scratch.dir(), &names(), fixture_now())
+        .await
+        .unwrap();
+
+    // A symlinked key is refused by O_NOFOLLOW instead of reading the target.
+    let key_path = scratch.path(SELF_SIGNED_KEY_FILE);
+    let target_key = scratch.path("real-key.pem");
+    tokio::fs::rename(&key_path, &target_key).await.unwrap();
+    tokio::fs::symlink(&target_key, &key_path).await.unwrap();
+    let symlink_error = store.load_existing(scratch.dir()).await.unwrap_err();
+    assert!(
+        matches!(symlink_error, CertificateError::PathUnreadable { ref path, .. } if *path == key_path),
+        "{symlink_error}"
+    );
+
+    // Restore a regular key file, then make the directory group-writable.
+    tokio::fs::remove_file(&key_path).await.unwrap();
+    tokio::fs::rename(&target_key, &key_path).await.unwrap();
+    tokio::fs::set_permissions(scratch.dir(), std::fs::Permissions::from_mode(0o770))
+        .await
+        .unwrap();
+    let dir_load_error = store.load_existing(scratch.dir()).await.unwrap_err();
+    assert!(
+        matches!(dir_load_error, CertificateError::InsecureDirectory { ref path } if *path == scratch.dir()),
+        "{dir_load_error}"
+    );
+
+    let fresh_dir = scratch.path("writable");
+    tokio::fs::create_dir_all(&fresh_dir).await.unwrap();
+    tokio::fs::set_permissions(&fresh_dir, std::fs::Permissions::from_mode(0o777))
+        .await
+        .unwrap();
+    let dir_gen_error = store
+        .generate(&fresh_dir, &names(), fixture_now())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(dir_gen_error, CertificateError::InsecureDirectory { ref path } if *path == fresh_dir),
+        "{dir_gen_error}"
+    );
+    // Restore permissions so temp cleanup can remove the directory cleanly.
+    let _ = tokio::fs::set_permissions(scratch.dir(), std::fs::Permissions::from_mode(0o700)).await;
+    let _ = tokio::fs::set_permissions(&fresh_dir, std::fs::Permissions::from_mode(0o700)).await;
+}
+
 #[tokio::test]
 async fn half_of_the_self_signed_pair_is_an_error() {
     let scratch = Scratch::new();

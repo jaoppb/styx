@@ -29,6 +29,9 @@ hyper.workspace = true
 hyper-util.workspace = true
 http-body-util.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 styx-core = { path = "../styx-core", features = ["test-support"] }
 hickory-proto.workspace = true

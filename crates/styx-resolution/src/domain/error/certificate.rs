@@ -80,10 +80,17 @@ pub enum CertificateError {
         missing: PathBuf,
     },
 
-    /// A persisted private key is readable by group or others.
+    /// A persisted private key is readable by group or others, or owned by another user.
     #[error("{path} is readable by group or others; restrict it to the owner (chmod 600)")]
     InsecurePermissions {
         /// The key file.
+        path: PathBuf,
+    },
+
+    /// The self-signed directory is writable by group or others, or owned by another user.
+    #[error("{path} is writable by group or others, or owned by another user; restrict it to the owner (chmod 700)")]
+    InsecureDirectory {
+        /// The directory at fault.
         path: PathBuf,
     },
 
