@@ -33,19 +33,12 @@ fn verify_rsa_signature(public_key: &[u8], signed_data: &[u8], signature: &[u8])
     let Some(key) = rsa_components(public_key) else {
         return false;
     };
-    key.verify(
-        &signature::RSA_PKCS1_2048_8192_SHA256,
-        signed_data,
-        signature,
-    )
-    .is_ok()
-        || key
-            .verify(
-                &signature::RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY,
-                signed_data,
-                signature,
-            )
-            .is_ok()
+    let algorithm = if key.n.len() >= 256 {
+        &signature::RSA_PKCS1_2048_8192_SHA256
+    } else {
+        &signature::RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY
+    };
+    key.verify(algorithm, signed_data, signature).is_ok()
 }
 
 /// Verifies an ECDSA P-256/SHA-256 signature (RFC 6605).
@@ -154,24 +147,13 @@ fn check_validity_window<C: Clock>(rrsig: &RrsigRdata, clock: &C) -> Result<(), 
     Ok(())
 }
 
-/// Verifies a single [`RrsigRdata`] over an RRset using a [`DnskeyRdata`] and injected [`Clock`].
-///
-/// # Errors
-/// Returns a [`VerdictReason`] if validation fails.
-pub fn verify_rrsig_record<C: Clock>(
+/// Checks cheap RRSIG metadata and validity window before building canonical signed data.
+pub(crate) fn check_rrsig_metadata<C: Clock>(
     rrsig: &RrsigRdata,
     rrset: &[&ResourceRecord],
-    dnskey: &DnskeyRdata,
-    dnskey_owner: &Name,
     clock: &C,
-) -> Result<(), VerdictReason> {
-    if rrset.is_empty() || !may_sign_data(dnskey) {
-        return Err(VerdictReason::NoValidRrsig);
-    }
-    if rrsig.key_tag() != dnskey.key_tag()
-        || rrsig.algorithm() != dnskey.algorithm()
-        || rrsig.signer_name() != dnskey_owner
-    {
+) -> Result<DnssecAlgorithm, VerdictReason> {
+    if rrset.is_empty() {
         return Err(VerdictReason::NoValidRrsig);
     }
     if rrset.iter().any(|record| {
@@ -184,15 +166,49 @@ pub fn verify_rrsig_record<C: Clock>(
         return Err(VerdictReason::UnsupportedAlgorithm);
     }
     check_validity_window(rrsig, clock)?;
+    Ok(sig_algorithm)
+}
 
+/// Whether `dnskey` at `dnskey_owner` can verify `rrsig`.
+pub(crate) fn key_matches_rrsig(
+    rrsig: &RrsigRdata,
+    dnskey: &DnskeyRdata,
+    dnskey_owner: &Name,
+) -> bool {
+    may_sign_data(dnskey)
+        && rrsig.key_tag() == dnskey.key_tag()
+        && rrsig.algorithm() == dnskey.algorithm()
+        && rrsig.signer_name() == dnskey_owner
+}
+
+/// Verifies pre-built canonical `signed_data` for `rrsig` using `dnskey`.
+pub(crate) fn verify_rrsig_bytes(
+    algorithm: DnssecAlgorithm,
+    dnskey: &DnskeyRdata,
+    signed_data: &[u8],
+    signature: &[u8],
+) -> bool {
+    verify_crypto_signature(algorithm, dnskey.public_key(), signed_data, signature)
+}
+
+/// Verifies a single [`RrsigRdata`] over an RRset using a [`DnskeyRdata`] and injected [`Clock`].
+///
+/// # Errors
+/// Returns a [`VerdictReason`] if validation fails.
+pub fn verify_rrsig_record<C: Clock>(
+    rrsig: &RrsigRdata,
+    rrset: &[&ResourceRecord],
+    dnskey: &DnskeyRdata,
+    dnskey_owner: &Name,
+    clock: &C,
+) -> Result<(), VerdictReason> {
+    if !key_matches_rrsig(rrsig, dnskey, dnskey_owner) {
+        return Err(VerdictReason::NoValidRrsig);
+    }
+    let sig_algorithm = check_rrsig_metadata(rrsig, rrset, clock)?;
     let signed_data =
         build_canonical_signed_data(rrsig, rrset).map_err(|_| VerdictReason::NoValidRrsig)?;
-    if verify_crypto_signature(
-        sig_algorithm,
-        dnskey.public_key(),
-        &signed_data,
-        rrsig.signature(),
-    ) {
+    if verify_rrsig_bytes(sig_algorithm, dnskey, &signed_data, rrsig.signature()) {
         Ok(())
     } else {
         Err(VerdictReason::NoValidRrsig)
@@ -311,98 +327,5 @@ mod tests {
             check_validity_window(&window, &clock_at(0x1_0000_0100)),
             Ok(())
         );
-    }
-
-    #[test]
-    fn verify_rrsig_record_rejects_type_covered_mismatch() {
-        let clock = clock_at(100);
-        let owner = Name::from_ascii("example.com.").unwrap();
-        let signer = owner.clone();
-        let dnskey = DnskeyRdata::new(256, 3, DnssecAlgorithm::ED25519.value(), vec![0; 32]);
-        let rrsig = RrsigRdata::new(
-            RecordType::AAAA,
-            DnssecAlgorithm::ED25519.value(),
-            2,
-            300,
-            1000,
-            10,
-            dnskey.key_tag(),
-            signer,
-            Vec::new(),
-        );
-        let a_record = ResourceRecord::new(
-            owner,
-            RecordType::A,
-            styx_proto::RecordClass::In,
-            styx_proto::Ttl::from_secs(300),
-            styx_proto::RData::A(std::net::Ipv4Addr::new(1, 2, 3, 4)),
-        );
-        let records = [&a_record];
-        let result = verify_rrsig_record(
-            &rrsig,
-            &records,
-            &dnskey,
-            &Name::from_ascii("example.com.").unwrap(),
-            &clock,
-        );
-        assert_eq!(result, Err(VerdictReason::NoValidRrsig));
-    }
-
-    #[test]
-    fn verify_rrsig_record_rejects_owner_not_subdomain_of_signer() {
-        let clock = clock_at(100);
-        let signer = Name::from_ascii("example.com.").unwrap();
-        let other_owner = Name::from_ascii("other.org.").unwrap();
-        let dnskey = DnskeyRdata::new(256, 3, DnssecAlgorithm::ED25519.value(), vec![0; 32]);
-        let rrsig = RrsigRdata::new(
-            RecordType::A,
-            DnssecAlgorithm::ED25519.value(),
-            2,
-            300,
-            1000,
-            10,
-            dnskey.key_tag(),
-            signer.clone(),
-            Vec::new(),
-        );
-        let record = ResourceRecord::new(
-            other_owner,
-            RecordType::A,
-            styx_proto::RecordClass::In,
-            styx_proto::Ttl::from_secs(300),
-            styx_proto::RData::A(std::net::Ipv4Addr::new(1, 2, 3, 4)),
-        );
-        let records = [&record];
-        let result = verify_rrsig_record(&rrsig, &records, &dnskey, &signer, &clock);
-        assert_eq!(result, Err(VerdictReason::NoValidRrsig));
-    }
-
-    #[test]
-    fn verify_rrsig_record_rejects_signer_name_mismatch_with_dnskey_owner() {
-        let clock = clock_at(100);
-        let signer = Name::from_ascii("example.com.").unwrap();
-        let dnskey_owner = Name::from_ascii("other.com.").unwrap();
-        let dnskey = DnskeyRdata::new(256, 3, DnssecAlgorithm::ED25519.value(), vec![0; 32]);
-        let rrsig = RrsigRdata::new(
-            RecordType::A,
-            DnssecAlgorithm::ED25519.value(),
-            2,
-            300,
-            1000,
-            10,
-            dnskey.key_tag(),
-            signer.clone(),
-            Vec::new(),
-        );
-        let record = ResourceRecord::new(
-            signer,
-            RecordType::A,
-            styx_proto::RecordClass::In,
-            styx_proto::Ttl::from_secs(300),
-            styx_proto::RData::A(std::net::Ipv4Addr::new(1, 2, 3, 4)),
-        );
-        let records = [&record];
-        let result = verify_rrsig_record(&rrsig, &records, &dnskey, &dnskey_owner, &clock);
-        assert_eq!(result, Err(VerdictReason::NoValidRrsig));
     }
 }

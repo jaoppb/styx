@@ -17,7 +17,7 @@ pub use domain::denial::{
     ClosestEncloserProof, DenialProof, DenialStrength, Nsec3Flags, Nsec3Params, Nsec3Proof,
     NsecProof,
 };
-pub use domain::error::{ChainSourceError, DenialError, TrustAnchorError};
+pub use domain::error::{AnchorLineError, ChainSourceError, DenialError, TrustAnchorError};
 pub use domain::policy::{
     AlgorithmSupport, DigestType, DnssecAlgorithm, FailureMode, Nsec3HashAlgorithm,
     Nsec3IterationsCap, ValidationPolicy,

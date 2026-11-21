@@ -6,7 +6,7 @@ use data_encoding::HEXUPPER_PERMISSIVE;
 use styx_proto::domain::rdata::DsRdata;
 use styx_proto::Name;
 
-use crate::domain::error::TrustAnchorError;
+use crate::domain::error::{AnchorLineError, TrustAnchorError};
 use crate::domain::policy::{DigestType, DnssecAlgorithm};
 use crate::domain::ports::TrustAnchorSource;
 use crate::domain::trust_anchor::{TrustAnchor, TrustAnchors};
@@ -134,37 +134,32 @@ const fn digest_length(digest_type: DigestType) -> Option<usize> {
     }
 }
 
-fn parse_anchor_line(text: &str) -> Result<TrustAnchor, String> {
+fn parse_anchor_line(text: &str) -> Result<TrustAnchor, AnchorLineError> {
     let tokens: Vec<&str> = text.split_whitespace().collect();
     let ds_index = tokens
         .iter()
         .position(|token| token.eq_ignore_ascii_case("DS"))
-        .ok_or_else(|| "expected a DS record; DNSKEY-form anchors are not supported".to_owned())?;
+        .ok_or(AnchorLineError::MissingDsKeyword)?;
     let (head, rest) = tokens.split_at(ds_index);
-    let (owner_text, between) = head
-        .split_first()
-        .ok_or_else(|| "the owner name must come before DS".to_owned())?;
+    let (owner_text, between) = head.split_first().ok_or(AnchorLineError::MissingOwner)?;
     if !between
         .iter()
         .all(|token| token.eq_ignore_ascii_case("IN") || token.parse::<u32>().is_ok())
     {
-        return Err("only a TTL and the class IN may sit between the owner and DS".to_owned());
+        return Err(AnchorLineError::UnexpectedTokenBeforeDs);
     }
-    let owner =
-        Name::from_ascii(owner_text).map_err(|error| format!("invalid owner name: {error}"))?;
+    let owner = Name::from_ascii(owner_text)?;
     let fields = rest.get(1..).unwrap_or_default();
     let [key_tag, algorithm, digest_type, digest_chunks @ ..] = fields else {
-        return Err("expected a key tag, an algorithm, a digest type and a digest".to_owned());
+        return Err(AnchorLineError::MissingFields);
     };
-    let key_tag: u16 = key_tag
-        .parse()
-        .map_err(|_| format!("invalid key tag {key_tag:?}"))?;
+    let key_tag: u16 = key_tag.parse().map_err(AnchorLineError::InvalidKeyTag)?;
     let algorithm: u8 = algorithm
         .parse()
-        .map_err(|_| format!("invalid algorithm {algorithm:?}"))?;
+        .map_err(AnchorLineError::InvalidAlgorithm)?;
     let digest_type: u8 = digest_type
         .parse()
-        .map_err(|_| format!("invalid digest type {digest_type:?}"))?;
+        .map_err(AnchorLineError::InvalidDigestType)?;
     let digest = decode_digest(digest_chunks, DigestType::new(digest_type))?;
     Ok(TrustAnchor::new(
         owner,
@@ -172,19 +167,18 @@ fn parse_anchor_line(text: &str) -> Result<TrustAnchor, String> {
     ))
 }
 
-fn decode_digest(chunks: &[&str], digest_type: DigestType) -> Result<Vec<u8>, String> {
+fn decode_digest(chunks: &[&str], digest_type: DigestType) -> Result<Vec<u8>, AnchorLineError> {
     if chunks.is_empty() {
-        return Err("missing digest".to_owned());
+        return Err(AnchorLineError::MissingDigest);
     }
     let hex = chunks.concat();
-    let digest = HEXUPPER_PERMISSIVE
-        .decode(hex.as_bytes())
-        .map_err(|error| format!("digest is not hexadecimal: {error}"))?;
+    let digest = HEXUPPER_PERMISSIVE.decode(hex.as_bytes())?;
     match digest_length(digest_type) {
-        Some(expected) if expected != digest.len() => Err(format!(
-            "a digest of type {digest_type} is {expected} octets, got {}",
-            digest.len()
-        )),
+        Some(expected) if expected != digest.len() => Err(AnchorLineError::DigestLengthMismatch {
+            digest_type,
+            expected,
+            actual: digest.len(),
+        }),
         _ => Ok(digest),
     }
 }

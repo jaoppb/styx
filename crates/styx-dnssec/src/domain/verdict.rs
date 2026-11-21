@@ -54,6 +54,10 @@ pub enum VerdictReason {
     ChainMaterialUnavailable,
     /// Trust anchor source failed to load configured anchors.
     TrustAnchorUnavailable,
+    /// Response lacked a question or carried a malformed answer or authority section.
+    MalformedResponse,
+    /// Signature verification attempt or failure budget was exhausted (KeyTrap protection).
+    SignatureBudgetExceeded,
 }
 
 /// The complete outcome of validating a DNS message.
@@ -96,15 +100,25 @@ impl ValidationOutcome {
         Self::new(ValidationVerdict::Indeterminate, reason)
     }
 
-    /// Applies the validation outcome to the response's AD bit and, for a `Bogus`
-    /// verdict under [`FailureMode::HardFail`], turns the response into SERVFAIL.
+    /// Applies the validation outcome to the response's AD bit and, under
+    /// [`FailureMode::HardFail`], turns `Bogus` and below-anchor `Indeterminate`
+    /// responses (every `Indeterminate` other than `NoPathToAnchor`) into SERVFAIL.
     pub fn apply_to_message(&self, message: &mut Message, mode: FailureMode) {
         match self.verdict {
             ValidationVerdict::Secure => {
                 message.header.authentic_data = true;
             }
-            ValidationVerdict::Insecure | ValidationVerdict::Indeterminate => {
+            ValidationVerdict::Insecure => {
                 message.header.authentic_data = false;
+            }
+            ValidationVerdict::Indeterminate => {
+                message.header.authentic_data = false;
+                if mode == FailureMode::HardFail && self.reason != VerdictReason::NoPathToAnchor {
+                    message.header.rcode = ResponseCode::SERVFAIL;
+                    message.answers.clear();
+                    message.authorities.clear();
+                    message.additionals.clear();
+                }
             }
             ValidationVerdict::Bogus => {
                 message.header.authentic_data = false;
@@ -128,7 +142,7 @@ impl From<DenialError> for ValidationOutcome {
             DenialError::UnsupportedHashAlgorithm(_) => {
                 Self::insecure(VerdictReason::UnsupportedAlgorithm)
             }
-            DenialError::DenialProofIncomplete | DenialError::NotCovered | DenialError::Name(_) => {
+            DenialError::DenialProofIncomplete | DenialError::NotCovered => {
                 Self::bogus(VerdictReason::DenialProofIncomplete)
             }
         }

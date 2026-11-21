@@ -191,12 +191,10 @@ class Nsec3Proof {
     +closest_encloser(qname: Name) Result~Name, DenialError~
     +prove_next_closer_covered(qname: Name, closest_encloser: Name) Result~(), DenialError~
     +prove_no_wildcard(closest_encloser: Name) Result~(), DenialError~
-    +opt_out_applies() bool
 }
 
 class Nsec3Params {
     +hash_algorithm: Nsec3HashAlgorithm
-    +flags: Nsec3Flags
     +iterations: u16
     +salt: Vec~u8~
     +check_iterations(cap: Nsec3IterationsCap) Result~(), DenialError~
@@ -768,8 +766,8 @@ attacker-facing NSEC3 primitives — see Norm 14.
 
 1. Responsibility: hold the NSEC3 parameters and refuse excessive work **before** doing
    any of it.
-2. Attributes: `hash_algorithm`, `flags: Nsec3Flags`, `iterations: u16`,
-   `salt: Vec<u8>`.
+2. Attributes: `hash_algorithm`, `iterations: u16`, `salt: Vec<u8>` (opt-out flags live
+   per-record on NSEC3 RDATA, not on the chain-wide `Nsec3Params`).
 3. `Nsec3Flags` wraps the wire's flags octet, per `AGENTS.md`'s primitive-obsession
    rule: it carries the named opt-out bit rather than leaving every caller to mask a
    bare `u8` by hand. Constructor `Nsec3Flags::new(raw: u8) -> Self` (every octet value
@@ -924,7 +922,10 @@ attacker-facing NSEC3 primitives — see Norm 14.
 2. Logic:
    - `Secure` → AD set.
    - `Insecure` → AD cleared, answer served.
-   - `Indeterminate` → AD cleared, answer served, logged at `warn`.
+   - `Indeterminate` → AD cleared, logged at `warn`; under `WarnOnly`, answer served;
+     under `HardFail`, **SERVFAIL** for every reason except `NoPathToAnchor` (RFC 4035
+     §5.5: a chain that cannot be built under a configured anchor must not fall back to
+     an unvalidated answer).
    - `Bogus` → under `WarnOnly`, AD cleared and the answer served with a `warn` log;
      under `HardFail`, **SERVFAIL**.
 3. Constraints:

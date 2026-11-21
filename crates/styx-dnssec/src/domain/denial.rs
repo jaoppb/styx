@@ -39,8 +39,6 @@ impl Nsec3Flags {
 pub struct Nsec3Params {
     /// Hash algorithm (1 = SHA-1).
     pub hash_algorithm: Nsec3HashAlgorithm,
-    /// Flags, including Opt-Out.
-    pub flags: Nsec3Flags,
     /// Iteration count for hash computation.
     pub iterations: u16,
     /// Salt octets appended during hashing.
@@ -50,15 +48,9 @@ pub struct Nsec3Params {
 impl Nsec3Params {
     /// Constructs a new [`Nsec3Params`].
     #[must_use]
-    pub fn new(
-        hash_algorithm: Nsec3HashAlgorithm,
-        flags: Nsec3Flags,
-        iterations: u16,
-        salt: Vec<u8>,
-    ) -> Self {
+    pub fn new(hash_algorithm: Nsec3HashAlgorithm, iterations: u16, salt: Vec<u8>) -> Self {
         Self {
             hash_algorithm,
-            flags,
             iterations,
             salt,
         }
@@ -137,14 +129,14 @@ impl ClosestEncloserProof {
 pub fn longest_common_ancestor(left: &Name, right: &Name) -> Name {
     let max_labels = left.label_count().min(right.label_count());
     for label_count in (1..=max_labels).rev() {
-        let Some(left_anc) = left.ancestor(label_count) else {
+        let Some(left_ancestor) = left.ancestor(label_count) else {
             continue;
         };
-        let Some(right_anc) = right.ancestor(label_count) else {
+        let Some(right_ancestor) = right.ancestor(label_count) else {
             continue;
         };
-        if left_anc.eq_ignore_case(&right_anc) {
-            return left_anc;
+        if left_ancestor.eq_ignore_case(&right_ancestor) {
+            return left_ancestor;
         }
     }
     Name::root()

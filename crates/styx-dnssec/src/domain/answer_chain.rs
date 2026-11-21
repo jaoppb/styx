@@ -49,11 +49,15 @@ impl<'a> AnswerChain<'a> {
     /// to the question: a record off the chain, a fork, a loop, or too many hops.
     #[must_use]
     pub fn follow(question: &Question, answers: &'a [ResourceRecord]) -> Option<Self> {
+        if answers
+            .iter()
+            .any(|record| record.rclass != question.qclass)
+        {
+            return None;
+        }
         let data: Vec<&ResourceRecord> = answers
             .iter()
-            .filter(|record| {
-                !matches!(record.rdata, RData::Rrsig(_)) && record.rclass == question.qclass
-            })
+            .filter(|record| !matches!(record.rdata, RData::Rrsig(_)))
             .collect();
         let mut links = Vec::new();
         let mut current = question.qname.to_canonical();

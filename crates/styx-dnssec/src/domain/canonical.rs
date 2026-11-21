@@ -5,6 +5,24 @@ use styx_proto::application::encoder::Encoder;
 use styx_proto::domain::error::EncodeError;
 use styx_proto::domain::rdata::RrsigRdata;
 use styx_proto::{Name, ResourceRecord};
+use thiserror::Error;
+
+/// Errors occurring during RFC 4034 canonical serialization.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum CanonicalError {
+    /// RRSIG `labels` count exceeds the record owner's label count.
+    #[error("RRSIG label count {sig_labels} exceeds owner label count {owner_labels}")]
+    InvalidLabelCount {
+        /// Label count declared in the RRSIG header.
+        sig_labels: u8,
+        /// Actual label count of the record owner name.
+        owner_labels: usize,
+    },
+
+    /// Canonical wire encoding failed.
+    #[error(transparent)]
+    Encode(#[from] EncodeError),
+}
 
 /// Resolves the canonical owner name for an RRset under an RRSIG.
 ///
@@ -12,7 +30,11 @@ use styx_proto::{Name, ResourceRecord};
 /// number of non-root labels in the RR owner name, the record was synthesized
 /// from a wildcard. The owner name must be truncated from the left to the number
 /// of labels indicated by `rrsig_labels`, with a single `*` label prepended.
-pub fn canonical_owner_for_rrsig(owner: &Name, rrsig_labels: u8) -> Result<Name, EncodeError> {
+///
+/// # Errors
+/// Returns [`CanonicalError::InvalidLabelCount`] if `rrsig_labels` exceeds `owner`'s label count,
+/// or [`CanonicalError::Encode`] if wildcard construction overflows wire bounds.
+pub fn canonical_owner_for_rrsig(owner: &Name, rrsig_labels: u8) -> Result<Name, CanonicalError> {
     let owner_count = owner.label_count();
     let sig_count = usize::from(rrsig_labels);
 
@@ -20,14 +42,15 @@ pub fn canonical_owner_for_rrsig(owner: &Name, rrsig_labels: u8) -> Result<Name,
         return Ok(owner.clone());
     }
 
-    if sig_count > owner_count {
-        return Err(EncodeError::TooManyRecords);
-    }
-
-    let ancestor = owner
-        .ancestor(sig_count)
-        .ok_or(EncodeError::TooManyRecords)?;
-    ancestor.with_wildcard().map_err(EncodeError::from)
+    let Some(ancestor) = owner.ancestor(sig_count) else {
+        return Err(CanonicalError::InvalidLabelCount {
+            sig_labels: rrsig_labels,
+            owner_labels: owner_count,
+        });
+    };
+    ancestor
+        .with_wildcard()
+        .map_err(|error| CanonicalError::Encode(EncodeError::from(error)))
 }
 
 /// Encodes one resource record into the canonical wire buffer.
@@ -47,14 +70,14 @@ fn encode_canonical_rr(
     let rdata_start = encoder.buf.len();
     encoder.encode_rdata(&record.rdata)?;
     let rdata_len = encoder.buf.len().saturating_sub(rdata_start);
-    let rdlen_u16 =
+    let rdlength_u16 =
         u16::try_from(rdata_len).map_err(|_| EncodeError::RdLengthOverflow(rdata_len))?;
-    let rdlen_bytes = rdlen_u16.to_be_bytes();
+    let rdlength_bytes = rdlength_u16.to_be_bytes();
     if let Some(slot) = encoder
         .buf
         .get_mut(rdlength_pos..rdlength_pos.saturating_add(2))
     {
-        slot.copy_from_slice(&rdlen_bytes);
+        slot.copy_from_slice(&rdlength_bytes);
     }
     Ok(())
 }
@@ -62,11 +85,11 @@ fn encode_canonical_rr(
 /// Builds the RFC 4034 canonical byte stream that an RRSIG signature was computed over.
 ///
 /// # Errors
-/// Returns [`EncodeError`] if serialization fails.
+/// Returns [`CanonicalError`] if serialization or label-count checks fail.
 pub fn build_canonical_signed_data(
     rrsig: &RrsigRdata,
     rrset: &[&ResourceRecord],
-) -> Result<Vec<u8>, EncodeError> {
+) -> Result<Vec<u8>, CanonicalError> {
     let mut encoder = Encoder::new_canonical(usize::MAX);
 
     // 1. RRSIG RDATA prefix excluding signature field (RFC 4034 §3.1.8.1)

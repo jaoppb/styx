@@ -102,10 +102,10 @@ impl fmt::Display for Nsec3HashAlgorithm {
 /// Failure enforcement mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FailureMode {
-    /// Log verdicts at warn level without altering client response or setting SERVFAIL.
+    /// Log Bogus and Indeterminate verdicts at warn level without altering client response or setting SERVFAIL.
+    #[default]
     WarnOnly,
     /// Reject bogus responses with SERVFAIL and assert Authentic Data (AD) bit on secure ones.
-    #[default]
     HardFail,
 }
 
@@ -173,6 +173,12 @@ pub struct ValidationPolicy {
     pub nsec3_max_iterations: Nsec3IterationsCap,
     /// Maximum zone cuts to traverse during descent.
     pub max_zone_cuts: u8,
+    /// Maximum cryptographic signature verification attempts per validation (KeyTrap bound).
+    pub max_signature_verifications: u16,
+    /// Maximum failed cryptographic signature verifications per validation (KeyTrap bound).
+    pub max_signature_failures: u16,
+    /// Maximum candidate DNSKEYs tried per `(key_tag, algorithm)` pair on an RRSIG.
+    pub max_keys_per_tag_algorithm: u8,
 }
 
 impl ValidationPolicy {
@@ -187,6 +193,9 @@ impl ValidationPolicy {
             failure_mode,
             nsec3_max_iterations,
             max_zone_cuts,
+            max_signature_verifications: 64,
+            max_signature_failures: 16,
+            max_keys_per_tag_algorithm: 4,
         }
     }
 }
@@ -197,6 +206,9 @@ impl Default for ValidationPolicy {
             failure_mode: FailureMode::default(),
             nsec3_max_iterations: Nsec3IterationsCap::DEFAULT,
             max_zone_cuts: 10,
+            max_signature_verifications: 64,
+            max_signature_failures: 16,
+            max_keys_per_tag_algorithm: 4,
         }
     }
 }

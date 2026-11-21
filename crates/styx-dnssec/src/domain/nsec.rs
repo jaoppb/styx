@@ -145,9 +145,9 @@ impl NsecProof {
         signature_labels: u8,
     ) -> Result<(), DenialError> {
         self.check_zone(signer_zone, owner)?;
-        let max_encloser_labels = usize::from(signature_labels);
+        let expected_encloser_labels = usize::from(signature_labels);
         match self.closest_encloser(signer_zone, owner) {
-            Ok(encloser) if encloser.label_count() <= max_encloser_labels => Ok(()),
+            Ok(encloser) if encloser.label_count() == expected_encloser_labels => Ok(()),
             _ => Err(DenialError::DenialProofIncomplete),
         }
     }
