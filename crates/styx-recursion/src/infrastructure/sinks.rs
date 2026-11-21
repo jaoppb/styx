@@ -21,8 +21,8 @@ impl ChainMaterialSink for DiscardChainMaterial {
 /// read, keyed by the member's [`UpstreamId`] so several recursors sharing one store do
 /// not overwrite each other.
 ///
-/// Publication swaps an `Arc` under a lock held only for the map insert, and a reader
-/// clones the `Arc` the same way; neither ever waits on a descent.
+/// Publication inserts the member's `Arc` under a lock held only for the map insert, and
+/// a reader clones the `Arc` the same way; neither ever waits on a descent.
 #[derive(Debug, Default)]
 pub struct DiagnosticsStore {
     latest: Mutex<HashMap<UpstreamId, Arc<RecursionDiagnostics>>>,
@@ -43,13 +43,13 @@ impl DiagnosticsStore {
 
     fn with_map<R>(
         &self,
-        f: impl FnOnce(&mut HashMap<UpstreamId, Arc<RecursionDiagnostics>>) -> R,
+        operation: impl FnOnce(&mut HashMap<UpstreamId, Arc<RecursionDiagnostics>>) -> R,
     ) -> R {
         let mut guard = match self.latest.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        f(&mut guard)
+        operation(&mut guard)
     }
 }
 

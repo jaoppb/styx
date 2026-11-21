@@ -180,3 +180,54 @@ fn validate_checks_overrides_and_resolves_every_recursor() {
         Err(ConfigError::UnknownMember("recursor-far".to_owned()))
     );
 }
+
+#[test]
+fn a_member_can_enable_ipv6_over_a_disabled_global_default() {
+    let section = section(
+        "[recursion]\nroot_hints = \"x\"\nuse_ipv6 = false\n\
+         [recursion.members.v6]\nuse_ipv6 = true\n",
+    );
+    assert!(section.for_member("v6").unwrap().use_ipv6);
+    assert!(!section.for_member("plain").unwrap().use_ipv6);
+}
+
+#[test]
+fn a_wrong_typed_member_value_fails_naming_the_member() {
+    let bad_type =
+        "[recursion]\nroot_hints = \"x\"\n[recursion.members.recursor-v4]\nmax_depth = \"deep\"\n";
+    let error = RecursionSection::from_toml_str(bad_type).unwrap_err();
+    assert!(
+        matches!(&error, ConfigError::Member { member, reason }
+            if member == "recursor-v4" && matches!(reason, MemberConfigError::Toml(_))),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("recursor-v4"), "{error}");
+}
+
+#[test]
+fn zero_wall_clock_or_outbound_queries_in_a_member_names_the_member() {
+    for (field, key) in [
+        ("wall_clock", "wall_clock_ms"),
+        ("max_outbound_queries", "max_outbound_queries"),
+    ] {
+        let toml = format!(
+            "[recursion]\nroot_hints = \"x\"\n[recursion.members.recursor-v4]\n{key} = 0\n"
+        );
+        assert_eq!(
+            section(&toml).for_member("recursor-v4"),
+            Err(ConfigError::member(
+                "recursor-v4",
+                MemberConfigError::ZeroLimit(field)
+            ))
+        );
+    }
+}
+
+#[test]
+fn a_stray_member_override_without_defaults_is_rejected_by_validate() {
+    let section = section("[recursion.members.stray]\nroot_hints = \"x\"\n");
+    assert_eq!(
+        section.validate(&[]),
+        Err(ConfigError::UnknownMember("stray".to_owned()))
+    );
+}
