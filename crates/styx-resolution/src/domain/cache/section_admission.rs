@@ -158,9 +158,10 @@ impl<'a> SectionAdmission<'a> {
     }
 
     /// Turns an RRset that passed its section's rule into a cache RRset, or records
-    /// why it cannot be stored: a zero TTL is served once and never kept.
+    /// why it cannot be stored: a zero TTL, from upstream or after the configured clamp,
+    /// is served once and never kept.
     fn store(&self, raw: RawRRset, now: Instant, tally: &mut Tally) -> Option<CachedRRset> {
-        if raw.ttl == Ttl::ZERO {
+        if raw.ttl == Ttl::ZERO || self.ttl.clamp(raw.ttl) == Ttl::ZERO {
             tally.reject(raw.rejected(RejectReason::ZeroTtl));
             return None;
         }
