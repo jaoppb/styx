@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::{Body, Bytes, Frame, Incoming, SizeHint};
@@ -177,15 +177,11 @@ where
             .saturating_add(self.limits.handshake_timeout.as_duration())
     }
 
-    async fn dispatch(
-        &self,
-        wire: &[u8],
-        peer: SocketAddr,
-        received_at: Instant,
-    ) -> Result<EncodedAnswer, DohError> {
+    async fn dispatch(&self, wire: &[u8], peer: SocketAddr) -> Result<EncodedAnswer, DohError> {
         let Some(_permit) = self.shared.budget.acquire().await else {
             return Err(DohError::ShuttingDown);
         };
+        let received_at = self.shared.clock.now_monotonic();
         let task = QueryTask::new(
             self.shared.clone(),
             Arc::clone(&self.malformed_warning),
@@ -285,8 +281,7 @@ where
 
     /// Answers one stream. Every failure is an HTTP status, never a panic.
     async fn handle(&self, request: Request<Incoming>) -> Response<SlottedBody> {
-        let received_at = self.endpoint.shared.clock.now_monotonic();
-        match self.answer(request, received_at).await {
+        match self.answer(request).await {
             Ok(slotted) => {
                 let response =
                     DohResponse::answer(slotted.answer.wire, slotted.answer.min_ttl).into_http();
@@ -331,11 +326,7 @@ where
         })
     }
 
-    async fn answer(
-        &self,
-        request: Request<Incoming>,
-        received_at: Instant,
-    ) -> Result<SlottedAnswer, DohError> {
+    async fn answer(&self, request: Request<Incoming>) -> Result<SlottedAnswer, DohError> {
         if self.limiter.spend() == Spend::Over {
             return Err(DohError::StreamBudgetExceeded);
         }
@@ -350,10 +341,7 @@ where
             limits.idle_timeout.as_duration(),
         )
         .await?;
-        let answer = self
-            .endpoint
-            .dispatch(&wire, self.peer, received_at)
-            .await?;
+        let answer = self.endpoint.dispatch(&wire, self.peer).await?;
         Ok(SlottedAnswer { answer, slot })
     }
 }

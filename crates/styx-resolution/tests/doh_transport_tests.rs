@@ -501,3 +501,159 @@ async fn a_zero_window_client_that_parks_answers_is_closed_at_the_send_deadline(
     );
     server.shutdown().await;
 }
+
+/// Yields via a brief timer so `tokio::time::timeout(Duration::ZERO, ...)` expires if
+/// `received_at` was captured prematurely before body read or budget acquisition.
+struct YieldingTerminal;
+
+impl styx_resolution::TerminalHandler for YieldingTerminal {
+    async fn handle_terminal(
+        &self,
+        ctx: &styx_resolution::RequestContext,
+    ) -> Result<styx_resolution::ResolutionResponse, styx_resolution::PipelineError> {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        AnsweringTerminal.handle_terminal(ctx).await
+    }
+}
+
+#[tokio::test]
+async fn a_slow_streamed_post_body_gets_its_full_query_timeout_after_read_wire() {
+    let mut server =
+        EncryptedTestServer::boot(Arc::new(YieldingTerminal), EncryptedOptions::default()).await;
+    let tls = tls_connect(server.doh(), &server.certificate, &[b"h2"])
+        .await
+        .unwrap();
+    let (mut sender, connection) = h2::client::handshake(tls).await.unwrap();
+    let _conn = tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let request = hyper::Request::builder()
+        .method("POST")
+        .uri(DOH)
+        .header(hyper::header::CONTENT_TYPE, "application/dns-message")
+        .body(())
+        .unwrap();
+    let wire = query("example.com.");
+    let (head, tail) = wire.split_at(12);
+
+    let (response, mut body) = sender.send_request(request, false).unwrap();
+    body.send_data(hyper::body::Bytes::copy_from_slice(head), false)
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Advance past the 2s query_timeout while the body is still arriving under idle_timeout.
+    server.clock.advance(Duration::from_secs(10));
+    body.send_data(hyper::body::Bytes::copy_from_slice(tail), true)
+        .unwrap();
+
+    let res = tokio::time::timeout(PROMPTLY, response)
+        .await
+        .expect("DoH POST must answer promptly")
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let mut recv = res.into_body();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = recv.data().await {
+        bytes.extend_from_slice(&chunk.unwrap());
+    }
+    let answer = Message::from_vec(&bytes).unwrap();
+    assert_eq!(
+        answer.metadata.response_code,
+        hickory_proto::op::ResponseCode::NoError
+    );
+    assert_eq!(answer.answers.len(), 1);
+    server.shutdown().await;
+}
+
+struct GatedTerminal {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    gate_first: std::sync::atomic::AtomicBool,
+}
+
+impl styx_resolution::TerminalHandler for GatedTerminal {
+    async fn handle_terminal(
+        &self,
+        ctx: &styx_resolution::RequestContext,
+    ) -> Result<styx_resolution::ResolutionResponse, styx_resolution::PipelineError> {
+        if self
+            .gate_first
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            self.entered.notify_one();
+            self.release.notified().await;
+        } else {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        AnsweringTerminal.handle_terminal(ctx).await
+    }
+}
+
+#[tokio::test]
+async fn a_doh_request_waiting_on_the_global_query_budget_gets_its_full_query_timeout() {
+    use std::num::NonZeroUsize;
+    use styx_resolution::ConcurrencyLimits;
+
+    let terminal = Arc::new(GatedTerminal {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+        gate_first: std::sync::atomic::AtomicBool::new(true),
+    });
+    let defaults = ConcurrencyLimits::default_limits();
+    let settings = harness::server::ServerSettings {
+        // One permit is held by the idle UDP listener's pre-recv admit(), so 2 permits
+        // allow one active DoH query while forcing the second DoH query to wait.
+        limits: ConcurrencyLimits::new(
+            NonZeroUsize::MIN.saturating_add(1),
+            defaults.max_tcp_connections(),
+            defaults.max_in_flight_per_connection(),
+            defaults.udp_sockets_per_addr(),
+            defaults.tcp_write_timeout(),
+        ),
+        ..harness::server::ServerSettings::default()
+    };
+    let mut server = EncryptedTestServer::boot_with_server_settings(
+        Arc::clone(&terminal),
+        EncryptedOptions::default(),
+        settings,
+    )
+    .await;
+
+    let mut client1 = DohClient::connect(server.doh(), &server.certificate).await;
+    let mut client2 = DohClient::connect(server.doh(), &server.certificate).await;
+    let wire = query("example.com.");
+    let first = tokio::spawn({
+        let wire = wire.clone();
+        async move { client1.get(&wire).await }
+    });
+    tokio::time::timeout(PROMPTLY, terminal.entered.notified())
+        .await
+        .expect("query 1 must enter terminal");
+
+    let second = tokio::spawn({
+        let wire = wire.clone();
+        async move { client2.get(&wire).await }
+    });
+    // Let query 2 pass read_wire and park on the 1-permit global QueryBudget.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    server.clock.advance(Duration::from_secs(10));
+    terminal.release.notify_one();
+
+    let _ = tokio::time::timeout(PROMPTLY, first)
+        .await
+        .expect("query 1 must finish")
+        .unwrap();
+    let reply2 = tokio::time::timeout(PROMPTLY, second)
+        .await
+        .expect("query 2 must finish")
+        .unwrap();
+    assert_eq!(reply2.status, 200);
+    let answer = Message::from_vec(&reply2.body).unwrap();
+    assert_eq!(
+        answer.metadata.response_code,
+        hickory_proto::op::ResponseCode::NoError
+    );
+    assert_eq!(answer.answers.len(), 1);
+    tokio::time::timeout(PROMPTLY, server.shutdown())
+        .await
+        .expect("server must shut down");
+}

@@ -70,6 +70,7 @@ type Booted<T> = Server<NoLocalRecords, AllowAllFilter, DiscardObserver, TestClo
 /// A booted server and the certificate it serves.
 pub struct EncryptedTestServer<T> {
     pub server: Booted<T>,
+    pub clock: Arc<TestClock>,
     pub udp_addr: SocketAddr,
     pub tcp_addr: SocketAddr,
     pub dot_addr: Option<SocketAddr>,
@@ -82,6 +83,15 @@ impl<T: TerminalHandler + Send + Sync + 'static> EncryptedTestServer<T> {
     /// Boots with `terminal` answering every query, serving an operator certificate read
     /// through the production loader.
     pub async fn boot(terminal: Arc<T>, options: EncryptedOptions) -> Self {
+        Self::boot_with_server_settings(terminal, options, ServerSettings::default()).await
+    }
+
+    /// Boots with custom [`ServerSettings`] alongside `options`.
+    pub async fn boot_with_server_settings(
+        terminal: Arc<T>,
+        options: EncryptedOptions,
+        server_settings: ServerSettings,
+    ) -> Self {
         let certificate = TestCertificate::valid();
         let scratch = Scratch::new();
         let (cert_path, key_path) = scratch
@@ -103,11 +113,11 @@ impl<T: TerminalHandler + Send + Sync + 'static> EncryptedTestServer<T> {
         )
         .with_terminal(terminal);
         let server = Server::bind_with_encrypted(
-            ServerSettings::default().server_config(),
+            server_settings.server_config(),
             Some(EncryptedListeners::new(config, setup)),
             Arc::new(pipeline),
             Arc::clone(&clock),
-            Arc::new(TestSleeper::new(clock)),
+            Arc::new(TestSleeper::new(Arc::clone(&clock))),
         )
         .await
         .unwrap();
@@ -118,6 +128,7 @@ impl<T: TerminalHandler + Send + Sync + 'static> EncryptedTestServer<T> {
             dot_addr: server.dot_addrs().first().copied(),
             doh_addr: server.doh_addrs().first().copied(),
             server,
+            clock,
             certificate,
             scratch,
         }
