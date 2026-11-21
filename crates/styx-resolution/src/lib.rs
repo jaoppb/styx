@@ -14,7 +14,6 @@ pub mod domain;
 pub mod infrastructure;
 
 // Public re-exports for convenience
-pub use application::tls_config::tls_config_from_toml_str;
 pub use application::{
     CacheConfig, CacheStage, ConfiguredStrategy, OrderedFailover, Pipeline, PoolMember,
     PoolTerminal, ProbeScheduler, RaceAll, RefusedTerminal, RoundRobin, TerminalHandler,
@@ -45,7 +44,7 @@ pub use domain::refused::RefusedReplies;
 pub use domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 pub use domain::selection::{MemberView, Selection, SelectionStrategy, StrategyName};
 pub use domain::tls::{
-    CertificateSource, DohResourcePath, EncryptedLimits, StreamConcurrencyLimit,
+    BoundedTimeout, CertificateSource, DohResourcePath, EncryptedLimits, StreamConcurrencyLimit,
     StreamMessageLimit, TlsConfig,
 };
 pub use domain::weight::Weight;

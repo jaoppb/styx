@@ -28,10 +28,9 @@ use styx_recursion::infrastructure::do53_transport::{Do53Transport, DNS_PORT};
 use styx_recursion::infrastructure::infra_cache::MemoryInfraCache;
 use styx_recursion::infrastructure::sinks::{DiagnosticsStore, DiscardChainMaterial};
 use styx_resolution::{
-    tls_config_from_toml_str, AllowAllFilter, CacheConfig, CacheStage, CanaryConfig,
-    ConfiguredStrategy, DiscardObserver, Do53Forwarder, NoLocalRecords, Pipeline, PoolConfig,
-    PoolMember, ProbePolicy, ProbeScheduler, Server, ServerConfig, ShardedAnswerCache, TlsConfig,
-    TtlPolicy, UpstreamConfig, UpstreamPool,
+    AllowAllFilter, CacheConfig, CacheStage, CanaryConfig, ConfiguredStrategy, DiscardObserver,
+    Do53Forwarder, NoLocalRecords, Pipeline, PoolConfig, PoolMember, ProbePolicy, ProbeScheduler,
+    Server, ServerConfig, ShardedAnswerCache, TlsConfig, TtlPolicy, UpstreamConfig, UpstreamPool,
 };
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::filter::LevelFilter;
@@ -59,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
             init_tracing(LogOutput::Stderr);
             let path = config_path(args.next()).await?;
             let content = read_config(&path).await?;
-            let tls = tls_config_from_toml_str(&content)
+            let tls = TlsConfig::from_toml_str(&content)
                 .with_context(|| format!("failed to parse [tls] from {path}"))?;
             encrypted::print_pin(tls).await
         }
@@ -321,7 +320,7 @@ async fn load_config(arg: Option<String>) -> anyhow::Result<LoadedConfig> {
         .with_context(|| format!("failed to parse [recursion] from {path}"))?;
     let cache = CacheConfig::from_toml_str(&content)
         .with_context(|| format!("failed to parse [cache] from {path}"))?;
-    let tls = tls_config_from_toml_str(&content)
+    let tls = TlsConfig::from_toml_str(&content)
         .with_context(|| format!("failed to parse [tls] from {path}"))?;
     Ok(LoadedConfig {
         server: config,

@@ -7,8 +7,8 @@
 
 use styx_testkit::{ExampleDocument, SchemaTable};
 
-use super::{tls_config_from_toml_str, RawTls};
-use crate::domain::tls::{CertificateSource, EncryptedLimits};
+use super::RawTls;
+use crate::domain::tls::{CertificateSource, EncryptedLimits, TlsConfig};
 
 const EXAMPLE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -71,7 +71,7 @@ fn tls_schema_keys_match_the_example() {
 #[test]
 fn switched_on_example_keeps_encrypted_inbound_off_by_default() {
     let enabled = ExampleDocument::parse(EXAMPLE).enabled();
-    assert_eq!(tls_config_from_toml_str(&enabled).ok(), Some(None));
+    assert_eq!(TlsConfig::from_toml_str(&enabled).ok(), Some(None));
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn commented_tls_limits_equal_the_defaults_once_enabled() {
     let enabled = ExampleDocument::parse(EXAMPLE)
         .enabled()
         .replace("enabled = false", "enabled = true");
-    let config = tls_config_from_toml_str(&enabled)
+    let config = TlsConfig::from_toml_str(&enabled)
         .expect("switched-on [tls] parses")
         .expect("enabled");
     assert_eq!(config.limits(), EncryptedLimits::default());

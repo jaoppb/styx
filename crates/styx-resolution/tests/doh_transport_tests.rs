@@ -17,7 +17,7 @@ use harness::encrypted::{
 };
 use hickory_proto::op::{Message, MessageType, OpCode, Query};
 use hickory_proto::rr::{Name, RecordType};
-use styx_resolution::{StreamConcurrencyLimit, StreamMessageLimit};
+use styx_resolution::{BoundedTimeout, StreamConcurrencyLimit, StreamMessageLimit};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
@@ -264,7 +264,7 @@ async fn the_query_ceiling_counts_streams_and_then_closes_the_connection() {
 #[tokio::test]
 async fn an_idle_doh_connection_is_closed_at_the_idle_timeout() {
     let mut options = EncryptedOptions::default();
-    options.limits.idle_timeout = Duration::from_millis(300);
+    options.limits.idle_timeout = BoundedTimeout::new(Duration::from_millis(300)).unwrap();
     let mut server = boot(options).await;
     let mut client = DohClient::connect(server.doh(), &server.certificate).await;
     assert_eq!(client.get(&query("example.com.")).await.status, 200);
@@ -278,7 +278,7 @@ async fn an_idle_doh_connection_is_closed_at_the_idle_timeout() {
 #[tokio::test]
 async fn a_client_that_never_finishes_the_handshake_is_closed_at_the_deadline() {
     let mut options = EncryptedOptions::default();
-    options.limits.handshake_timeout = Duration::from_millis(300);
+    options.limits.handshake_timeout = BoundedTimeout::new(Duration::from_millis(300)).unwrap();
     let mut server = boot(options).await;
     let mut silent = TcpStream::connect(server.doh()).await.unwrap();
     let mut buf = [0u8; 16];
@@ -336,7 +336,7 @@ async fn http1_is_served_only_when_enabled() {
 #[tokio::test]
 async fn a_stalled_request_body_times_out_with_408_and_releases_the_connection() {
     let mut options = EncryptedOptions::default();
-    options.limits.idle_timeout = Duration::from_millis(200);
+    options.limits.idle_timeout = BoundedTimeout::new(Duration::from_millis(200)).unwrap();
     let mut server = boot(options).await;
     let tls = tls_connect(server.doh(), &server.certificate, &[b"h2"])
         .await

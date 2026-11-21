@@ -181,13 +181,64 @@ impl StreamConcurrencyLimit {
     }
 }
 
+/// A non-zero deadline capped at [`Self::MAX_TIMEOUT`] (one hour).
+///
+/// The upper bound keeps `Instant + Duration` arithmetic in the HTTP/2 and TLS stacks
+/// from overflowing on a configured value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoundedTimeout {
+    duration: Duration,
+}
+
+impl BoundedTimeout {
+    /// The longest handshake or idle timeout accepted. Far above any useful value, and far
+    /// below what `Instant` arithmetic in the HTTP and TLS stacks can overflow on.
+    pub const MAX_TIMEOUT: Duration = Duration::from_secs(3600);
+
+    /// Validates a deadline in `1ns..=MAX_TIMEOUT`.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::Invalid`] when `duration` is zero or exceeds
+    /// [`Self::MAX_TIMEOUT`].
+    pub fn new(duration: Duration) -> Result<Self, ConfigError> {
+        if duration.is_zero() || duration > Self::MAX_TIMEOUT {
+            return Err(invalid(&format!(
+                "timeout must be non-zero and at most {} seconds",
+                Self::MAX_TIMEOUT.as_secs()
+            )));
+        }
+        Ok(Self { duration })
+    }
+
+    /// Validates a deadline given in whole seconds (`1..=3600`).
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::Invalid`] when `seconds` is zero or exceeds
+    /// [`Self::MAX_TIMEOUT`].
+    pub fn from_secs(seconds: u64) -> Result<Self, ConfigError> {
+        Self::new(Duration::from_secs(seconds))
+    }
+
+    const fn from_valid_secs(seconds: u64) -> Self {
+        Self {
+            duration: Duration::from_secs(seconds),
+        }
+    }
+
+    /// The underlying duration.
+    #[must_use]
+    pub const fn as_duration(self) -> Duration {
+        self.duration
+    }
+}
+
 /// Bounds on the stateful encrypted transports, one value per exhaustion path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncryptedLimits {
     /// How long a client may take to complete the TLS handshake.
-    pub handshake_timeout: Duration,
+    pub handshake_timeout: BoundedTimeout,
     /// How long a connection may sit with no query outstanding.
-    pub idle_timeout: Duration,
+    pub idle_timeout: BoundedTimeout,
     /// Open connections per listener; each listener has its own ceiling.
     pub max_connections: NonZeroUsize,
     /// Concurrent HTTP/2 streams per DoH connection.
@@ -200,18 +251,15 @@ pub struct EncryptedLimits {
 
 impl EncryptedLimits {
     /// Default handshake deadline.
-    pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+    pub const DEFAULT_HANDSHAKE_TIMEOUT: BoundedTimeout = BoundedTimeout::from_valid_secs(5);
     /// Default idle deadline.
-    pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+    pub const DEFAULT_IDLE_TIMEOUT: BoundedTimeout = BoundedTimeout::from_valid_secs(30);
     /// Default connection ceiling per listener.
     pub const DEFAULT_MAX_CONNECTIONS: NonZeroUsize = NonZeroUsize::MIN.saturating_add(127);
     /// Default HTTP/2 stream ceiling, the floor RFC 9113 §6.5.2 recommends.
     pub const DEFAULT_MAX_STREAMS: StreamConcurrencyLimit = StreamConcurrencyLimit::DEFAULT;
     /// Default per-connection query ceiling.
     pub const DEFAULT_MAX_QUERIES: NonZeroU64 = NonZeroU64::MIN.saturating_add(9_999);
-    /// The longest handshake or idle timeout accepted. Far above any useful value, and far
-    /// below what `Instant` arithmetic in the HTTP and TLS stacks can overflow on.
-    pub const MAX_TIMEOUT: Duration = Duration::from_secs(3600);
 }
 
 impl Default for EncryptedLimits {
@@ -267,24 +315,13 @@ impl TlsConfig {
     ///
     /// # Errors
     /// Returns [`ConfigError::Invalid`] when only one of the certificate and key paths is
-    /// set, when neither DoT nor DoH has an address, when a self-signed certificate would
-    /// carry no name, or when a timeout is zero or longer than
-    /// [`EncryptedLimits::MAX_TIMEOUT`].
+    /// set, when neither DoT nor DoH has an address, or when a self-signed certificate would
+    /// carry no name.
     pub fn new(parts: TlsConfigParts) -> Result<Self, ConfigError> {
         if parts.dot_listen_addrs.is_empty() && parts.doh_listen_addrs.is_empty() {
             return Err(invalid(
                 "enabled with neither dot_listen_addrs nor doh_listen_addrs",
             ));
-        }
-        let timeouts = [parts.limits.handshake_timeout, parts.limits.idle_timeout];
-        if timeouts
-            .iter()
-            .any(|timeout| timeout.is_zero() || *timeout > EncryptedLimits::MAX_TIMEOUT)
-        {
-            return Err(invalid(&format!(
-                "handshake_timeout_secs and idle_timeout_secs must be between 1 and {}",
-                EncryptedLimits::MAX_TIMEOUT.as_secs()
-            )));
         }
         let source = match (parts.cert_path, parts.key_path) {
             (Some(cert_path), Some(key_path)) => CertificateSource::OperatorSupplied {
@@ -435,29 +472,30 @@ mod tests {
     }
 
     #[test]
-    fn enabled_with_no_listener_or_a_zero_timeout_is_refused() {
+    fn enabled_with_no_listener_is_refused() {
         let mut no_listener = parts();
         no_listener.dot_listen_addrs.clear();
         assert!(TlsConfig::new(no_listener).is_err());
-
-        let mut zero = parts();
-        zero.limits.idle_timeout = Duration::ZERO;
-        assert!(TlsConfig::new(zero).is_err());
     }
 
     #[test]
-    fn a_timeout_past_the_maximum_is_refused() {
-        let past = EncryptedLimits::MAX_TIMEOUT.saturating_add(Duration::from_secs(1));
-        let mut idle = parts();
-        idle.limits.idle_timeout = past;
-        assert!(TlsConfig::new(idle).is_err());
+    fn bounded_timeout_rejects_zero_and_values_past_the_maximum() {
+        assert!(BoundedTimeout::new(Duration::ZERO).is_err());
+        assert!(BoundedTimeout::from_secs(0).is_err());
 
-        let mut handshake = parts();
-        handshake.limits.handshake_timeout = past;
-        assert!(TlsConfig::new(handshake).is_err());
+        let past = BoundedTimeout::MAX_TIMEOUT.saturating_add(Duration::from_secs(1));
+        assert!(BoundedTimeout::new(past).is_err());
+        assert!(BoundedTimeout::from_secs(3601).is_err());
 
-        let mut at_max = parts();
-        at_max.limits.idle_timeout = EncryptedLimits::MAX_TIMEOUT;
-        assert!(TlsConfig::new(at_max).is_ok());
+        assert_eq!(
+            BoundedTimeout::new(BoundedTimeout::MAX_TIMEOUT)
+                .unwrap()
+                .as_duration(),
+            BoundedTimeout::MAX_TIMEOUT
+        );
+        assert_eq!(
+            BoundedTimeout::from_secs(1).unwrap().as_duration(),
+            Duration::from_secs(1)
+        );
     }
 }

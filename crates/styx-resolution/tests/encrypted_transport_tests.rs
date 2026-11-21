@@ -15,7 +15,7 @@ use harness::encrypted::{
 };
 use hickory_proto::op::{Message, MessageType, OpCode, Query};
 use hickory_proto::rr::{Name, RecordType};
-use styx_resolution::domain::tls::EncryptedLimits;
+use styx_resolution::domain::tls::{BoundedTimeout, EncryptedLimits};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpStream, UdpSocket};
 
@@ -32,8 +32,9 @@ fn query(name: &str, record_type: RecordType) -> Vec<u8> {
 
 fn tight(limits: impl FnOnce(&mut EncryptedLimits)) -> EncryptedOptions {
     let mut options = EncryptedOptions::default();
-    options.limits.handshake_timeout = Duration::from_millis(300);
-    options.limits.idle_timeout = Duration::from_millis(300);
+    let short = BoundedTimeout::new(Duration::from_millis(300)).unwrap();
+    options.limits.handshake_timeout = short;
+    options.limits.idle_timeout = short;
     limits(&mut options.limits);
     options
 }
@@ -194,7 +195,7 @@ async fn an_idle_dot_connection_is_closed_at_the_idle_timeout() {
 async fn connections_past_the_ceiling_are_refused_before_the_handshake() {
     let mut server = boot(tight(|limits| {
         limits.max_connections = std::num::NonZeroUsize::MIN;
-        limits.idle_timeout = Duration::from_secs(10);
+        limits.idle_timeout = BoundedTimeout::from_secs(10).unwrap();
     }))
     .await;
     let _held = tls_connect(server.dot(), &server.certificate, &[b"dot"])
@@ -214,7 +215,7 @@ async fn connections_past_the_ceiling_are_refused_before_the_handshake() {
 async fn a_connection_is_closed_after_its_query_ceiling() {
     let mut server = boot(tight(|limits| {
         limits.max_queries_per_connection = std::num::NonZeroU64::MIN.saturating_add(1);
-        limits.idle_timeout = Duration::from_secs(10);
+        limits.idle_timeout = BoundedTimeout::from_secs(10).unwrap();
     }))
     .await;
     let mut stream = tls_connect(server.dot(), &server.certificate, &[b"dot"])

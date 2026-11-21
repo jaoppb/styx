@@ -103,7 +103,7 @@ where
         concurrency: ConcurrencyLimits,
     ) -> Result<Self, ListenerError> {
         let settings = ConnectionSettings {
-            idle_timeout: limits.idle_timeout,
+            idle_timeout: limits.idle_timeout.as_duration(),
             write_timeout: concurrency.tcp_write_timeout(),
             max_in_flight: concurrency.max_in_flight_per_connection(),
             transport: Transport::Dot,
@@ -114,7 +114,7 @@ where
             acceptor,
             shared: shared.clone(),
             settings,
-            handshake_timeout: limits.handshake_timeout,
+            handshake_timeout: limits.handshake_timeout.as_duration(),
             malformed_warning: bind_malformed_warning(Transport::Dot, bound_addr, &shared),
         })
         .await?;

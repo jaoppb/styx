@@ -7,14 +7,13 @@
 use std::net::SocketAddr;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
-use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::domain::error::ConfigError;
 use crate::domain::tls::{
-    DohResourcePath, EncryptedLimits, StreamConcurrencyLimit, StreamMessageLimit, TlsConfig,
-    TlsConfigParts,
+    BoundedTimeout, DohResourcePath, EncryptedLimits, StreamConcurrencyLimit, StreamMessageLimit,
+    TlsConfig, TlsConfigParts,
 };
 
 /// Where generated self-signed material is kept when `self_signed_dir` is unset.
@@ -56,22 +55,24 @@ struct RawTls {
     max_request_body_bytes: Option<usize>,
 }
 
-/// Reads the `[tls]` section of a whole styx TOML file.
-///
-/// Returns `Ok(None)` when the section is absent or `enabled` is not `true`.
-///
-/// # Errors
-/// Returns [`ConfigError::Toml`] for malformed TOML or an unknown key, and
-/// [`ConfigError::Invalid`] for a value [`TlsConfig::new`] or one of its newtypes refuses.
-pub fn tls_config_from_toml_str(content: &str) -> Result<Option<TlsConfig>, ConfigError> {
-    let file: RawFile = toml::from_str(content)?;
-    let Some(raw) = file.tls else {
-        return Ok(None);
-    };
-    if raw.enabled != Some(true) {
-        return Ok(None);
+impl TlsConfig {
+    /// Reads the `[tls]` section of a whole styx TOML file.
+    ///
+    /// Returns `Ok(None)` when the section is absent or `enabled` is not `true`.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::Toml`] for malformed TOML or an unknown key, and
+    /// [`ConfigError::Invalid`] for a value [`TlsConfig::new`] or one of its newtypes refuses.
+    pub fn from_toml_str(content: &str) -> Result<Option<Self>, ConfigError> {
+        let file: RawFile = toml::from_str(content)?;
+        let Some(raw) = file.tls else {
+            return Ok(None);
+        };
+        if raw.enabled != Some(true) {
+            return Ok(None);
+        }
+        Self::new(parts_from(raw)?).map(Some)
     }
-    TlsConfig::new(parts_from(raw)?).map(Some)
 }
 
 fn parts_from(raw: RawTls) -> Result<TlsConfigParts, ConfigError> {
@@ -85,12 +86,14 @@ fn parts_from(raw: RawTls) -> Result<TlsConfigParts, ConfigError> {
         None => defaults.max_request_body,
     };
     let limits = EncryptedLimits {
-        handshake_timeout: raw
-            .handshake_timeout_secs
-            .map_or(defaults.handshake_timeout, Duration::from_secs),
-        idle_timeout: raw
-            .idle_timeout_secs
-            .map_or(defaults.idle_timeout, Duration::from_secs),
+        handshake_timeout: match raw.handshake_timeout_secs {
+            Some(seconds) => BoundedTimeout::from_secs(seconds)?,
+            None => defaults.handshake_timeout,
+        },
+        idle_timeout: match raw.idle_timeout_secs {
+            Some(seconds) => BoundedTimeout::from_secs(seconds)?,
+            None => defaults.idle_timeout,
+        },
         max_connections: raw.max_connections.unwrap_or(defaults.max_connections),
         max_streams_per_connection: match raw.max_streams_per_connection {
             Some(streams) => StreamConcurrencyLimit::from_configured(streams)?,
@@ -127,25 +130,27 @@ mod schema_keys;
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::domain::tls::CertificateSource;
 
     #[test]
     fn absent_or_disabled_section_means_no_encrypted_inbound() {
-        assert_eq!(tls_config_from_toml_str("listen_addrs = []").unwrap(), None);
+        assert_eq!(TlsConfig::from_toml_str("listen_addrs = []").unwrap(), None);
         assert_eq!(
-            tls_config_from_toml_str("[tls]\ncert_path = \"c\"\nkey_path = \"k\"").unwrap(),
+            TlsConfig::from_toml_str("[tls]\ncert_path = \"c\"\nkey_path = \"k\"").unwrap(),
             None
         );
         assert_eq!(
-            tls_config_from_toml_str("[tls]\nenabled = false").unwrap(),
+            TlsConfig::from_toml_str("[tls]\nenabled = false").unwrap(),
             None
         );
     }
 
     #[test]
     fn enabled_alone_gets_the_documented_defaults() {
-        let config = tls_config_from_toml_str("[tls]\nenabled = true")
+        let config = TlsConfig::from_toml_str("[tls]\nenabled = true")
             .unwrap()
             .unwrap();
         assert_eq!(config.dot_listen_addrs(), default_dot_listen_addrs());
@@ -167,14 +172,17 @@ mod tests {
 
     #[test]
     fn keys_override_the_defaults() {
-        let config = tls_config_from_toml_str(
+        let config = TlsConfig::from_toml_str(
             "[tls]\nenabled = true\ndoh_listen_addrs = []\nidle_timeout_secs = 7\n\
              max_request_body_bytes = 4096\ncert_path = \"c.pem\"\nkey_path = \"k.pem\"",
         )
         .unwrap()
         .unwrap();
         assert!(config.doh_listen_addrs().is_empty());
-        assert_eq!(config.limits().idle_timeout, Duration::from_secs(7));
+        assert_eq!(
+            config.limits().idle_timeout.as_duration(),
+            Duration::from_secs(7)
+        );
         assert_eq!(config.limits().max_request_body.octets(), 4096);
         assert!(matches!(
             config.certificate_source(),
@@ -191,10 +199,12 @@ mod tests {
             "[tls]\nenabled = true\nmax_connections = 0",
             "[tls]\nenabled = true\nmax_streams_per_connection = 0",
             "[tls]\nenabled = true\nhandshake_timeout_secs = 0",
+            "[tls]\nenabled = true\nhandshake_timeout_secs = 3601",
+            "[tls]\nenabled = true\nidle_timeout_secs = 3601",
             "[tls]\nenabled = true\ndot_listen_addrs = []\ndoh_listen_addrs = []",
             "[tls]\nenabled = true\ncert_pth = \"c.pem\"",
         ] {
-            assert!(tls_config_from_toml_str(content).is_err(), "{content}");
+            assert!(TlsConfig::from_toml_str(content).is_err(), "{content}");
         }
     }
 }

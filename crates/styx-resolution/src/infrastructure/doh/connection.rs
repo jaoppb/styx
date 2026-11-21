@@ -125,7 +125,8 @@ where
     ) -> Arc<DohConnection<L, F, O, C, T, S>> {
         let streams = self.limits.max_streams_per_connection.as_usize();
         let ceiling = QueryLimit::limited(self.limits.max_queries_per_connection).ceiling();
-        let limiter = ConnectionLimiter::new(streams, ceiling, self.limits.idle_timeout);
+        let limiter =
+            ConnectionLimiter::new(streams, ceiling, self.limits.idle_timeout.as_duration());
         Arc::new(DohConnection {
             endpoint: Arc::clone(self),
             peer,
@@ -145,7 +146,7 @@ where
         builder
             .http1()
             .timer(TokioTimer::new())
-            .header_read_timeout(self.limits.idle_timeout);
+            .header_read_timeout(self.limits.idle_timeout.as_duration());
         // No HTTP/2 keep-alive pings: the idle timer already closes a connection with no
         // stream outstanding, and a stalled body is bounded by its own read deadline.
         builder
@@ -160,7 +161,7 @@ where
     fn drain_bound(&self) -> Duration {
         self.shared
             .query_timeout
-            .saturating_add(self.limits.handshake_timeout)
+            .saturating_add(self.limits.handshake_timeout.as_duration())
     }
 
     async fn dispatch(
@@ -207,7 +208,7 @@ where
         stream: TcpStream,
         closing: CancellationToken,
     ) {
-        let timeout = self.endpoint.limits.handshake_timeout;
+        let timeout = self.endpoint.limits.handshake_timeout.as_duration();
         let Some(tls) =
             accept_tls(&acceptor, stream, timeout, self.peer, Transport::Doh.name()).await
         else {
@@ -261,7 +262,7 @@ where
             request,
             &self.endpoint.settings.resource,
             limits.max_request_body,
-            limits.idle_timeout,
+            limits.idle_timeout.as_duration(),
         )
         .await?;
         self.endpoint.dispatch(&wire, self.peer, received_at).await

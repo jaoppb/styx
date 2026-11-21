@@ -5,7 +5,7 @@
 
 use styx_core::UpstreamKind;
 use styx_recursion::application::config::RecursionConfig;
-use styx_resolution::{tls_config_from_toml_str, ServerConfig};
+use styx_resolution::{ServerConfig, TlsConfig};
 use styx_testkit::ExampleDocument;
 
 const EXAMPLE_CONFIG: &str = include_str!(concat!(
@@ -23,7 +23,7 @@ fn parse_through_both(text: &str) -> Result<Parsed, String> {
     Ok(Parsed {
         server: ServerConfig::from_toml_str(text).map_err(|error| error.to_string())?,
         recursion: RecursionConfig::from_toml_str(text).map_err(|error| error.to_string())?,
-        tls_enabled: tls_config_from_toml_str(text)
+        tls_enabled: TlsConfig::from_toml_str(text)
             .map_err(|error| error.to_string())?
             .is_some(),
     })
