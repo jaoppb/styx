@@ -413,3 +413,107 @@ async fn a_slow_reading_dot_client_is_closed_within_the_write_timeout() {
     );
     server.shutdown().await;
 }
+
+async fn encrypted_fixture(
+    dot_listen_addrs: Vec<std::net::SocketAddr>,
+    doh_listen_addrs: Vec<std::net::SocketAddr>,
+) -> (
+    styx_resolution::EncryptedListeners,
+    harness::certificates::Scratch,
+) {
+    use styx_resolution::domain::tls::{
+        DohResourcePath, OperatorCertificateLoader, TlsConfig, TlsConfigParts,
+    };
+    use styx_resolution::infrastructure::cert_fs::FilesystemCertificateReader;
+    use styx_resolution::{EncryptedListeners, TlsServerSetup};
+
+    let cert = harness::certificates::TestCertificate::valid();
+    let scratch = harness::certificates::Scratch::new();
+    let (cert_path, key_path) = scratch.write_pair(&cert.cert_pem, &cert.key_pem).await;
+    let identity = FilesystemCertificateReader::new()
+        .load(&cert_path, &key_path)
+        .await
+        .unwrap();
+    let setup = TlsServerSetup::build(&identity, false).unwrap();
+    let tls_cfg = TlsConfig::new(TlsConfigParts {
+        dot_listen_addrs,
+        doh_listen_addrs,
+        cert_path: Some(cert_path),
+        key_path: Some(key_path),
+        self_signed_dir: std::path::PathBuf::from("unused"),
+        self_signed_names: vec!["localhost".into()],
+        doh_path: DohResourcePath::new(DohResourcePath::DEFAULT.into()).unwrap(),
+        allow_http1: false,
+        limits: EncryptedLimits::default(),
+    })
+    .unwrap();
+    (EncryptedListeners::new(tls_cfg, setup), scratch)
+}
+
+#[tokio::test]
+async fn partial_bind_failure_does_not_leak_earlier_listener_tasks_or_sockets() {
+    use styx_resolution::{AllowAllFilter, DiscardObserver, NoLocalRecords, Pipeline, Server};
+    use styx_testkit::{bind_udp_tcp_pair, TestClock, TestSleeper};
+
+    // Keep one TCP port occupied so a later bind in the sequence fails with EADDRINUSE.
+    let occupied_doh = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let conflict_addr = occupied_doh.local_addr().unwrap();
+
+    // Reserve free ports for the earlier plaintext and DoT binds, then release them.
+    let free_plain = bind_udp_tcp_pair(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+        .await
+        .unwrap();
+    let plain_addr = free_plain.tcp.local_addr().unwrap();
+    drop(free_plain);
+    let free_dot = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dot_addr = free_dot.local_addr().unwrap();
+    drop(free_dot);
+
+    let mut server_cfg = harness::server::ServerSettings::default().server_config();
+    server_cfg.listen_addrs = vec![plain_addr];
+    let (encrypted, _scratch) = encrypted_fixture(vec![dot_addr], vec![conflict_addr]).await;
+
+    let clock = Arc::new(TestClock::new());
+    let pipeline = Arc::new(
+        Pipeline::new(
+            Arc::new(NoLocalRecords::new()),
+            Arc::new(AllowAllFilter::new()),
+            Arc::new(DiscardObserver::new()),
+            Arc::clone(&clock),
+        )
+        .with_terminal(Arc::new(AnsweringTerminal)),
+    );
+
+    let tasks_before = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    let outcome = Server::bind_with_encrypted(
+        server_cfg,
+        Some(encrypted),
+        pipeline,
+        Arc::clone(&clock),
+        Arc::new(TestSleeper::new(clock)),
+    )
+    .await;
+    assert!(outcome.is_err(), "occupied DoH port must fail startup");
+
+    tokio::task::yield_now().await;
+    assert_eq!(
+        tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks(),
+        tasks_before,
+        "partial bind failure must not leave detached supervisor tasks running"
+    );
+
+    // Earlier-bound plaintext (UDP + TCP) and DoT sockets must all be closed and rebindable.
+    let _rebound_udp = UdpSocket::bind(plain_addr)
+        .await
+        .expect("plaintext UDP socket must not be held by a leaked task");
+    let _rebound_tcp = tokio::net::TcpListener::bind(plain_addr)
+        .await
+        .expect("plaintext TCP socket must not be held by a leaked task");
+    let _rebound_dot = tokio::net::TcpListener::bind(dot_addr)
+        .await
+        .expect("DoT socket must not be held by a leaked task");
+}

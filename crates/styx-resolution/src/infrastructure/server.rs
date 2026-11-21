@@ -17,7 +17,9 @@ use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
 use crate::infrastructure::admission::{ConnectionBudget, ListenerShared, QueryBudget};
-use crate::infrastructure::supervisor::spawn_listener_supervisor;
+use crate::infrastructure::supervisor::{
+    spawn_listener_supervisor, SupervisedListener, SupervisorBackoffPolicy,
+};
 use crate::infrastructure::tcp::TcpListener;
 use crate::infrastructure::udp::UdpListener;
 
@@ -90,24 +92,49 @@ where
     {
         let cancel = CancellationToken::new();
         let shared = listener_shared(&config, &pipeline, &clock, sleeper, &cancel);
-        let (local_addrs, mut listeners) =
-            bind_plaintext(&config, &shared, &clock, &cancel).await?;
+        let plaintext = bind_plaintext(&config, &shared).await?;
         let binding = encrypted::Binding {
             shared: &shared,
             concurrency: config.limits,
-            supervisor: config.supervisor,
-            cancel: &cancel,
         };
         let bound = match &encrypted {
             Some(encrypted) => binding.bind(encrypted).await?,
             None => encrypted::BoundEncrypted::default(),
         };
-        listeners.extend(bound.handles);
+        let mut listeners = Vec::new();
+        spawn_group(
+            plaintext.udp,
+            &clock,
+            config.supervisor,
+            &cancel,
+            &mut listeners,
+        );
+        spawn_group(
+            plaintext.tcp,
+            &clock,
+            config.supervisor,
+            &cancel,
+            &mut listeners,
+        );
+        spawn_group(
+            bound.dot,
+            &clock,
+            config.supervisor,
+            &cancel,
+            &mut listeners,
+        );
+        spawn_group(
+            bound.doh,
+            &clock,
+            config.supervisor,
+            &cancel,
+            &mut listeners,
+        );
 
         Ok(Self {
             _pipeline: pipeline,
             _clock: clock,
-            local_addrs,
+            local_addrs: plaintext.local_addrs,
             dot_addrs: bound.dot_addrs,
             doh_addrs: bound.doh_addrs,
             listeners,
@@ -122,13 +149,37 @@ where
 
 type ListenerHandles = Vec<JoinHandle<Result<(), ListenerError>>>;
 
-/// Binds a UDP group and a TCP listener per configured address.
+struct BoundPlaintext<L, F, O, C, T, S> {
+    local_addrs: Vec<SocketAddr>,
+    udp: Vec<UdpListener<L, F, O, C, T, S>>,
+    tcp: Vec<TcpListener<L, F, O, C, T, S>>,
+}
+
+fn spawn_group<Li, C>(
+    listeners: Vec<Li>,
+    clock: &Arc<C>,
+    policy: SupervisorBackoffPolicy,
+    cancel: &CancellationToken,
+    handles: &mut ListenerHandles,
+) where
+    Li: SupervisedListener,
+    C: Clock + Send + Sync + 'static,
+{
+    for listener in listeners {
+        handles.push(spawn_listener_supervisor(
+            listener,
+            Arc::clone(clock),
+            policy,
+            cancel.clone(),
+        ));
+    }
+}
+
+/// Binds a UDP group and a TCP listener per configured address without spawning tasks yet.
 async fn bind_plaintext<L, F, O, C, T, S>(
     config: &ServerConfig,
     shared: &ListenerShared<L, F, O, C, T, S>,
-    clock: &Arc<C>,
-    cancel: &CancellationToken,
-) -> Result<(Vec<SocketAddr>, ListenerHandles), ServerError>
+) -> Result<BoundPlaintext<L, F, O, C, T, S>, ServerError>
 where
     L: LocalRecords + Send + Sync + 'static,
     F: FilterPolicy + Send + Sync + 'static,
@@ -140,7 +191,8 @@ where
     let limits = config.limits;
     let connections = ConnectionBudget::new(limits.max_tcp_connections());
     let mut local_addrs = Vec::new();
-    let mut listeners = Vec::new();
+    let mut udp = Vec::new();
+    let mut tcp = Vec::new();
     for &addr in &config.listen_addrs {
         let udp_group =
             UdpListener::bind_group(addr, limits.udp_sockets_per_addr(), shared.clone())
@@ -150,7 +202,7 @@ where
             local_addrs.push(first.bound_addr());
         }
 
-        let tcp = TcpListener::bind(
+        let tcp_listener = TcpListener::bind(
             addr,
             shared.clone(),
             connections.clone(),
@@ -159,24 +211,16 @@ where
         )
         .await
         .map_err(|e| bind_error(addr, e))?;
-        local_addrs.push(tcp.bound_addr());
+        local_addrs.push(tcp_listener.bound_addr());
 
-        for udp in udp_group {
-            listeners.push(spawn_listener_supervisor(
-                udp,
-                Arc::clone(clock),
-                config.supervisor,
-                cancel.clone(),
-            ));
-        }
-        listeners.push(spawn_listener_supervisor(
-            tcp,
-            Arc::clone(clock),
-            config.supervisor,
-            cancel.clone(),
-        ));
+        udp.extend(udp_group);
+        tcp.push(tcp_listener);
     }
-    Ok((local_addrs, listeners))
+    Ok(BoundPlaintext {
+        local_addrs,
+        udp,
+        tcp,
+    })
 }
 
 /// Builds the collaborators every listener of one server shares.

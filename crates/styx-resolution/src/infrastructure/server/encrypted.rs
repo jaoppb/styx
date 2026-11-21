@@ -3,10 +3,6 @@
 
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Arc;
-
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 
 use styx_core::{Clock, Sleeper};
 
@@ -20,9 +16,6 @@ use crate::domain::tls::TlsConfig;
 use crate::infrastructure::admission::ListenerShared;
 use crate::infrastructure::doh::{DohListener, DohSettings};
 use crate::infrastructure::dot::DotListener;
-use crate::infrastructure::supervisor::{
-    spawn_listener_supervisor, SupervisedListener, SupervisorBackoffPolicy,
-};
 use crate::infrastructure::tls::TlsServerSetup;
 
 use super::bind_error;
@@ -43,20 +36,29 @@ impl EncryptedListeners {
     }
 }
 
-/// The encrypted listeners once bound and supervised.
-#[derive(Default)]
-pub(super) struct BoundEncrypted {
+/// The encrypted listeners once bound, ready to be supervised after all binds succeed.
+pub(super) struct BoundEncrypted<L, F, O, C, T, S> {
     pub(super) dot_addrs: Vec<SocketAddr>,
     pub(super) doh_addrs: Vec<SocketAddr>,
-    pub(super) handles: Vec<JoinHandle<Result<(), ListenerError>>>,
+    pub(super) dot: Vec<DotListener<L, F, O, C, T, S>>,
+    pub(super) doh: Vec<DohListener<L, F, O, C, T, S>>,
+}
+
+impl<L, F, O, C, T, S> Default for BoundEncrypted<L, F, O, C, T, S> {
+    fn default() -> Self {
+        Self {
+            dot_addrs: Vec::new(),
+            doh_addrs: Vec::new(),
+            dot: Vec::new(),
+            doh: Vec::new(),
+        }
+    }
 }
 
 /// The collaborators every encrypted listener is bound with.
 pub(super) struct Binding<'a, L, F, O, C, T, S> {
     pub(super) shared: &'a ListenerShared<L, F, O, C, T, S>,
     pub(super) concurrency: ConcurrencyLimits,
-    pub(super) supervisor: SupervisorBackoffPolicy,
-    pub(super) cancel: &'a CancellationToken,
 }
 
 impl<L, F, O, C, T, S> Binding<'_, L, F, O, C, T, S>
@@ -68,18 +70,19 @@ where
     T: TerminalHandler + Send + Sync + 'static,
     S: Sleeper + Send + Sync + 'static,
 {
-    /// Binds every configured DoT and DoH address; any bind failure aborts startup.
+    /// Binds every configured DoT and DoH address; any bind failure aborts startup without
+    /// spawning tasks.
     pub(super) async fn bind(
         &self,
         encrypted: &EncryptedListeners,
-    ) -> Result<BoundEncrypted, ServerError> {
+    ) -> Result<BoundEncrypted<L, F, O, C, T, S>, ServerError> {
         let mut bound = BoundEncrypted::default();
         let limits = encrypted.config.limits();
         let settings = DohSettings::new(
             encrypted.config.doh_path().clone(),
             encrypted.config.allow_http1(),
         );
-        self.bind_group(
+        Self::bind_group(
             encrypted.config.dot_listen_addrs(),
             |addr| {
                 DotListener::bind(
@@ -92,10 +95,10 @@ where
             },
             DotListener::bound_addr,
             &mut bound.dot_addrs,
-            &mut bound.handles,
+            &mut bound.dot,
         )
         .await?;
-        self.bind_group(
+        Self::bind_group(
             encrypted.config.doh_listen_addrs(),
             |addr| {
                 DohListener::bind(
@@ -108,33 +111,26 @@ where
             },
             DohListener::bound_addr,
             &mut bound.doh_addrs,
-            &mut bound.handles,
+            &mut bound.doh,
         )
         .await?;
         Ok(bound)
     }
 
     async fn bind_group<Li, Fut>(
-        &self,
         addrs: &[SocketAddr],
         bind_one: impl Fn(SocketAddr) -> Fut,
         addr_of: impl Fn(&Li) -> SocketAddr,
         bound_addrs: &mut Vec<SocketAddr>,
-        handles: &mut Vec<JoinHandle<Result<(), ListenerError>>>,
+        listeners: &mut Vec<Li>,
     ) -> Result<(), ServerError>
     where
-        Li: SupervisedListener + 'static,
         Fut: Future<Output = Result<Li, ListenerError>>,
     {
         for &addr in addrs {
             let listener = bind_one(addr).await.map_err(|e| bind_error(addr, e))?;
             bound_addrs.push(addr_of(&listener));
-            handles.push(spawn_listener_supervisor(
-                listener,
-                Arc::clone(&self.shared.clock),
-                self.supervisor,
-                self.cancel.clone(),
-            ));
+            listeners.push(listener);
         }
         Ok(())
     }
