@@ -11,7 +11,7 @@ use styx_dnssec::{
     SignedRrset, ValidationPolicy, ValidationVerdict, Validator, VerdictReason, ZoneCutMaterial,
 };
 use styx_proto::domain::rdata::{DnskeyRdata, Nsec3Rdata, NsecRdata, TypeBitmap};
-use styx_proto::{Name, RData, RecordType, ResponseCode};
+use styx_proto::{Name, RData, RecordClass, RecordType, ResourceRecord, ResponseCode};
 use support::{
     a_record, base32hex_encode, clock, mark_non_cuts, name, query, record, StaticAnchorSource,
     ZoneKey,
@@ -229,3 +229,107 @@ async fn test_signed_delegation_with_unrelated_records_ignores_them_for_budget()
         .validate(&message, &source)
         .await;
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
+}
+
+#[tokio::test]
+async fn test_multi_rrset_cname_and_authority_nsec_exceeding_per_tag_limit_succeed() {
+    let root_key = ZoneKey::generate(&Name::root());
+    let example_key = ZoneKey::generate(&name("example."));
+    let source = root_only(&root_key);
+    source.insert_cut(example_key.signed_cut(&root_key));
+
+    let mut message = query(&name("c0.example."), RecordType::A);
+    for idx in 0u8..6 {
+        let owner = name(&format!("c{idx}.example."));
+        let next = name(&format!("c{}.example.", idx.saturating_add(1)));
+        source.record_not_a_cut(owner.clone());
+        let cname = record(&owner, RecordType::CNAME, RData::Cname(next));
+        message
+            .answers
+            .push(example_key.sign(std::slice::from_ref(&cname)));
+        message.answers.push(cname);
+    }
+    let final_owner = name("c6.example.");
+    source.record_not_a_cut(final_owner.clone());
+    let answer = a_record(&final_owner, 7);
+    message
+        .answers
+        .push(example_key.sign(std::slice::from_ref(&answer)));
+    message.answers.push(answer);
+
+    for idx in 0u8..6 {
+        let owner = name(&format!("n{idx}.example."));
+        let next = name(&format!("n{}.example.", idx.saturating_add(1)));
+        source.record_not_a_cut(owner.clone());
+        let nsec = support::nsec(
+            &owner,
+            &next,
+            &[RecordType::A, RecordType::RRSIG, RecordType::NSEC],
+        );
+        message
+            .authorities
+            .push(example_key.sign(std::slice::from_ref(&nsec)));
+        message.authorities.push(nsec);
+    }
+
+    let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
+    let outcome = Validator::new(
+        clock(),
+        ValidationPolicy::default(),
+        anchors.anchors.clone(),
+    )
+    .validate(&message, &source)
+    .await;
+    assert_eq!(outcome.verdict, ValidationVerdict::Secure);
+}
+
+#[tokio::test]
+async fn test_delegation_ds_rrsig_with_mismatched_owner_or_class_is_bogus() {
+    let root_key = ZoneKey::generate(&Name::root());
+    let example_key = ZoneKey::generate(&name("example."));
+    let ds = vec![example_key.ds_record()];
+    let valid_sig = root_key.sign(&ds);
+    let wrong_owner_sig = ResourceRecord::new(
+        name("other."),
+        valid_sig.rtype,
+        valid_sig.rclass,
+        valid_sig.ttl,
+        valid_sig.rdata.clone(),
+    );
+    let wrong_class_sig = ResourceRecord::new(
+        valid_sig.owner.clone(),
+        valid_sig.rtype,
+        RecordClass::Ch,
+        valid_sig.ttl,
+        valid_sig.rdata,
+    );
+    let www = name("www.example.");
+    let answer = a_record(&www, 5);
+    let mut message = query(&www, RecordType::A);
+    message
+        .answers
+        .push(example_key.sign(std::slice::from_ref(&answer)));
+    message.answers.push(answer);
+    let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
+
+    for bad_sig in [wrong_owner_sig, wrong_class_sig] {
+        let source = root_only(&root_key);
+        source.insert_cut(ZoneCutMaterial::new(
+            name("example."),
+            Delegation::Signed {
+                ds: SignedRrset::new(ds.clone(), vec![bad_sig]),
+                dnskey: example_key.dnskey_rrset(),
+            },
+        ));
+        mark_non_cuts(&source, &www, &name("example."));
+        let outcome = Validator::new(
+            clock(),
+            ValidationPolicy::default(),
+            anchors.anchors.clone(),
+        )
+        .validate(&message, &source)
+        .await;
+        assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
+        assert_eq!(outcome.reason, VerdictReason::NoValidRrsig);
+    }
+}

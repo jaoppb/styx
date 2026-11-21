@@ -156,15 +156,21 @@ impl<C: Clock> Authenticator<C> {
         keys: &[ResourceRecord],
         budget: &mut VerificationBudget,
     ) -> Result<Option<u8>, VerdictReason> {
-        if rrset.is_empty() {
+        let Some(first) = rrset.first() else {
             return Err(VerdictReason::NoValidRrsig);
-        }
+        };
         let mut last_error = VerdictReason::NoValidRrsig;
         let mut per_tag_algorithm: HashMap<(u16, u8), u8> = HashMap::new();
         for signature_record in signatures {
             let RData::Rrsig(ref rrsig) = signature_record.rdata else {
                 continue;
             };
+            if !signature_record.owner.eq_ignore_case(&first.owner)
+                || signature_record.rclass != first.rclass
+                || rrsig.type_covered() != first.rtype
+            {
+                continue;
+            }
             let tag_algorithm = (rrsig.key_tag(), rrsig.algorithm());
             let tried = per_tag_algorithm.entry(tag_algorithm).or_insert(0);
             let limit = budget.max_keys_per_tag_algorithm;

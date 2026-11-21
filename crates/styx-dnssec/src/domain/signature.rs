@@ -153,11 +153,14 @@ pub(crate) fn check_rrsig_metadata<C: Clock>(
     rrset: &[&ResourceRecord],
     clock: &C,
 ) -> Result<DnssecAlgorithm, VerdictReason> {
-    if rrset.is_empty() {
+    let Some(first) = rrset.first() else {
         return Err(VerdictReason::NoValidRrsig);
-    }
+    };
     if rrset.iter().any(|record| {
-        record.rtype != rrsig.type_covered() || !record.owner.is_subdomain_of(rrsig.signer_name())
+        !record.owner.eq_ignore_case(&first.owner)
+            || record.rclass != first.rclass
+            || record.rtype != rrsig.type_covered()
+            || !record.owner.is_subdomain_of(rrsig.signer_name())
     }) {
         return Err(VerdictReason::NoValidRrsig);
     }
