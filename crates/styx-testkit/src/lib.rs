@@ -28,7 +28,7 @@ pub use client::DnsClient;
 pub use commandable::{CommandableUpstream, UpstreamBehavior};
 pub use config_example::{ExampleDocument, ExampleEntry, SchemaMismatch, SchemaTable};
 pub use error::HarnessError;
-pub use fake::{FakeNameServer, FakeRole};
+pub use fake::{bind_udp_tcp_pair, bind_udp_tcp_pair_on, FakeNameServer, FakeRole, UdpTcpPair};
 pub use responder::ReceivedQuery;
 pub use script::{
     ScriptedAnswer, ScriptedDname, ScriptedGlue, ScriptedOrigin, ScriptedRcode, ScriptedReferral,

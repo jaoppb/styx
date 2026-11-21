@@ -33,6 +33,10 @@ pub enum CacheError {
     #[error("cache needs at least one shard")]
     ZeroShards,
 
+    /// The stats logger was given a zero interval, which would log in a busy loop.
+    #[error("cache stats interval must be greater than zero")]
+    ZeroStatsInterval,
+
     /// The configured entry bound cannot give every shard at least one entry.
     #[error("capacity of {max_entries} entries cannot be split across {shards} shards")]
     BudgetBelowShardCount {

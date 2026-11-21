@@ -29,10 +29,11 @@ use styx_recursion::infrastructure::do53_transport::{Do53Transport, DNS_PORT};
 use styx_recursion::infrastructure::infra_cache::MemoryInfraCache;
 use styx_recursion::infrastructure::sinks::{DiagnosticsStore, DiscardChainMaterial};
 use styx_resolution::{
-    AllowAllFilter, CacheConfig, CacheStage, CanaryConfig, ConfiguredStrategy, DiscardObserver,
-    Do53Forwarder, NoLocalRecords, Pipeline, PoolConfig, PoolMember, ProbePolicy, ProbeScheduler,
-    Server, ServerConfig, ShardedAnswerCache, TtlPolicy, UpstreamConfig, UpstreamPool,
+    AllowAllFilter, CacheConfig, CacheStage, CacheStatsLogger, CanaryConfig, ConfiguredStrategy,
+    DiscardObserver, Do53Forwarder, NoLocalRecords, Pipeline, PoolConfig, PoolMember, ProbePolicy,
+    ProbeScheduler, Server, ServerConfig, ShardedAnswerCache, UpstreamConfig, UpstreamPool,
 };
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -40,6 +41,10 @@ use upstream::{PoolUpstream, ProductionRecursor};
 
 /// Log filter used when `RUST_LOG` is unset or unusable.
 const DEFAULT_LOG_FILTER: LevelFilter = LevelFilter::INFO;
+
+/// How often the answer cache's counters are logged at `debug`, so `[cache]` can be tuned
+/// before the Phase 10 telemetry exists.
+const CACHE_STATS_INTERVAL: Duration = Duration::from_secs(60);
 
 type ConcretePool = UpstreamPool<ConfiguredStrategy, PoolUpstream, SystemClock>;
 type ConcreteCache = ShardedAnswerCache<SystemClock>;
@@ -72,16 +77,22 @@ async fn main() -> anyhow::Result<()> {
     let clock = Arc::new(SystemClock::new());
     let recursion = RecursionWiring::load(recursion, pool_config, config.query_timeout).await?;
     let pool = build_pool(pool_config, &recursion, &clock)?;
-    let pipeline = build_pipeline(pool.clone(), clock.clone(), &config, cache)?;
+    let answer_cache = build_cache(clock.clone(), &cache)?;
+    let pipeline = build_pipeline(
+        pool.clone(),
+        clock.clone(),
+        &config,
+        answer_cache.clone(),
+        &cache,
+    );
 
-    let probe_cancel = CancellationToken::new();
-    let scheduler = ProbeScheduler::new(pool, clock.clone(), pool_config.probe.tick);
-    let probe_token = probe_cancel.clone();
-    tokio::spawn(async move {
-        scheduler.run(probe_token).await;
-    });
+    let sleeper = Arc::new(SystemSleeper::new());
+    let background = BackgroundTasks::spawn(
+        ProbeScheduler::new(pool, clock.clone(), pool_config.probe.tick),
+        CacheStatsLogger::new(answer_cache, sleeper.clone(), CACHE_STATS_INTERVAL)?,
+    );
 
-    let mut server = Server::bind(config, pipeline, clock, Arc::new(SystemSleeper::new()))
+    let mut server = Server::bind(config, pipeline, clock, sleeper)
         .await
         .context("failed to bind server listeners")?;
 
@@ -94,12 +105,38 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to listen for shutdown signal")?;
 
     tracing::info!("shutdown signal received; closing listeners");
-    probe_cancel.cancel();
-    server
-        .shutdown()
-        .await
-        .context("failed to shut down server")?;
-    Ok(())
+    let (server_stopped, background_stopped) = tokio::join!(server.shutdown(), background.stop());
+    server_stopped.context("failed to shut down server")?;
+    background_stopped
+}
+
+/// The tasks that run beside the listeners, sharing one shutdown token.
+struct BackgroundTasks {
+    shutdown: CancellationToken,
+    probe_scheduler: JoinHandle<()>,
+    cache_stats: JoinHandle<()>,
+}
+
+impl BackgroundTasks {
+    fn spawn(
+        scheduler: ProbeScheduler<ConfiguredStrategy, PoolUpstream, SystemClock>,
+        stats_logger: CacheStatsLogger<ConcreteCache, SystemSleeper>,
+    ) -> Self {
+        let shutdown = CancellationToken::new();
+        Self {
+            probe_scheduler: tokio::spawn(scheduler.run(shutdown.clone())),
+            cache_stats: tokio::spawn(stats_logger.run(shutdown.clone())),
+            shutdown,
+        }
+    }
+
+    /// Cancels every task and waits for all of them, even when one of them failed.
+    async fn stop(self) -> anyhow::Result<()> {
+        self.shutdown.cancel();
+        let (probe_scheduler, cache_stats) = tokio::join!(self.probe_scheduler, self.cache_stats);
+        probe_scheduler.context("probe scheduler task failed")?;
+        cache_stats.context("cache stats logger task failed")
+    }
 }
 
 /// Validated per-member recursion settings, each unique root-hints file loaded once,
@@ -244,27 +281,30 @@ fn build_pool(
     )))
 }
 
+fn build_cache(
+    clock: Arc<SystemClock>,
+    cache_config: &CacheConfig,
+) -> anyhow::Result<Arc<ConcreteCache>> {
+    let cache = ShardedAnswerCache::new(clock, cache_config.capacity, cache_config.shards)
+        .context("failed to size the answer cache from [cache]")?;
+    Ok(Arc::new(cache))
+}
+
 fn build_pipeline(
     pool: Arc<ConcretePool>,
     clock: Arc<SystemClock>,
     config: &ServerConfig,
-    cache_config: CacheConfig,
-) -> anyhow::Result<Arc<ConcretePipeline>> {
-    let cache = ShardedAnswerCache::new(
-        clock.clone(),
-        cache_config.capacity,
-        TtlPolicy::default(),
-        cache_config.shards,
-    )
-    .context("failed to size the answer cache from [cache]")?;
-    let cache = Arc::new(cache);
-    let cache_stage = Arc::new(CacheStage::new(
+    cache: Arc<ConcreteCache>,
+    cache_config: &CacheConfig,
+) -> Arc<ConcretePipeline> {
+    let cache_stage = Arc::new(CacheStage::from_config(
         cache,
         pool,
+        cache_config,
         clock.clone(),
         config.query_timeout,
     ));
-    Ok(Arc::new(
+    Arc::new(
         Pipeline::new(
             Arc::new(NoLocalRecords::new()),
             Arc::new(AllowAllFilter::new()),
@@ -273,7 +313,7 @@ fn build_pipeline(
         )
         .with_filter_aaaa(config.filter_aaaa)
         .with_terminal(cache_stage),
-    ))
+    )
 }
 
 /// What the TOML file holds, one parsed section per owner.

@@ -154,6 +154,14 @@ impl Admission {
         let effective_ttl = self
             .ttl
             .effective_negative_ttl_raw(rr.ttl, soa_rdata.minimum());
+        if effective_ttl == Ttl::ZERO {
+            tally.reject(RejectedRecord {
+                owner: CanonicalName::canonicalize(&rr.owner),
+                rtype: RecordType::SOA,
+                reason: RejectReason::ZeroTtl,
+            });
+            return;
+        }
         let Ok(deadline) = Deadline::from_ttl(now, effective_ttl) else {
             return;
         };
