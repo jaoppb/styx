@@ -2,7 +2,7 @@
 
 styx can answer DNS over TLS (DoT, RFC 7858) and DNS over HTTPS over HTTP/2 (DoH,
 RFC 8484) next to plain UDP and TCP. Both reach the same pipeline: an encrypted query is
-answered exactly as the same query over port 53, and the client is identified by its IP
+answered exactly as the same query over TCP port 53, and the client is identified by its IP
 address only.
 
 Encrypted inbound is off until you enable it in the `[tls]` section of `styx.toml`.
@@ -85,10 +85,11 @@ Later boots reuse the certificate and do not print the pin again. To see it at a
 styx pin /etc/styx/styx.toml
 ```
 
-`styx pin` reads the configuration, prints the `pin-sha256="…"` line to stdout and exits.
-It opens no socket and never generates a certificate: if none exists yet it says so and
-exits with an error. With an operator certificate configured, it prints that certificate's
-pin.
+`styx pin [config]` reads the configuration (defaulting to `styx.toml` in the current
+directory when no path is given), prints the `pin-sha256="…"` line to stdout and exits.
+It fails when `[tls]` is absent or `enabled = false`, opens no socket, and never generates
+a certificate: if none exists yet it says so and exits with an error. With an operator
+certificate configured, it prints that certificate's pin.
 
 To query DoH with the pin:
 
@@ -108,10 +109,12 @@ is what authenticates the server.
   handshake, and a client that offers none is served.
 - **DoH** on each `doh_listen_addrs` entry (conventionally port 443), at `doh_path`
   (`/dns-query` by default), over HTTP/2. Both `GET /dns-query?dns=<base64url>` and
-  `POST` with an `application/dns-message` body work. Answers carry
-  `Cache-Control: max-age` equal to their smallest TTL. HTTP/1.1 is offered only with
-  `allow_http1 = true`.
-- Set either list to `[]` to turn that transport off.
+  `POST` with an `application/dns-message` body work. Answers with records carry
+  `Cache-Control: max-age` equal to the smallest TTL in the answer section (or in the
+  authority section for negative answers); an answer with no records in either section
+  carries no `Cache-Control` header. HTTP/1.1 is offered only with `allow_http1 = true`.
+- Set either list to `[]` to turn that transport off. Setting both to `[]` with
+  `enabled = true` is a startup error; set `enabled = false` to disable encrypted inbound.
 - DNS over QUIC (DoQ, HTTP/3) is not supported.
 - DoH has its own listener. It does not share a port, a certificate setting or an origin
   with the admin web UI, and it is available in the headless build.
@@ -120,26 +123,33 @@ is what authenticates the server.
 
 ## Limits
 
-Each limit applies per listener, so a flood on DoH cannot starve DoT. Refusals are logged
-at most once a second.
+Each listener has its own connection ceiling (`max_connections`), so a connection flood on
+DoH cannot exhaust DoT's connection slots; the remaining `[tls]` limits apply identically
+to every encrypted listener. Refusals are logged at most once a second.
 
 | Key | Default | Bounds |
 |---|---|---|
 | `handshake_timeout_secs` | 5 | Time a client has to finish the TLS handshake, 1 to 3600 |
-| `idle_timeout_secs` | 30 | Time a connection may stay open with no query in flight, 1 to 3600 |
-| `max_connections` | 128 | Open connections per listener; more are closed before the handshake |
+| `idle_timeout_secs` | 30 | Time a connection may stay open with no query in flight, 1 to 3600; also bounds each DoH POST-body read and HTTP/1 header read |
+| `max_connections` | 128 | Open connections per listener; more are closed before the handshake (no per-source-IP cap or maximum connection lifetime) |
 | `max_streams_per_connection` | 100 | Concurrent HTTP/2 streams per DoH connection |
 | `max_queries_per_connection` | 10000 | Queries one connection carries before styx closes it |
 | `max_request_body_bytes` | 4096 | Largest DNS message a DoH request may carry, 12 to 65535 |
+
+`max_connections` caps the whole listener with no per-source-IP limit and no maximum
+connection lifetime, so one peer can hold all slots by sending a query per idle period.
 
 Encrypted queries also share the server-wide `max_in_flight_queries` budget with UDP and
 TCP. A DoT connection also has plain TCP's fixed per-connection bounds, which are not
 `[tls]` keys: 5 seconds to write each answer and 32 queries in flight.
 
-Every DoH stream may hold one request body of up to `max_request_body_bytes` while it is
-read, so the worst case per listener is `max_connections` × `max_streams_per_connection` ×
-`max_request_body_bytes`: about 50 MiB at the defaults. Lower one of the three on a small
-box.
+Every DoH stream may buffer up to `max_request_body_bytes` while reading a request
+(`max_connections` × `max_streams_per_connection` × `max_request_body_bytes`, about 50 MiB
+at the defaults) and up to one 65 535-octet response while sending (`max_connections` ×
+`max_streams_per_connection` × 65 535 B, up to about 800 MiB if every slot holds a
+maximum-sized answer simultaneously). Stalled sends hit the 5-second per-stream write
+deadline and close the connection. Lower `max_connections` or
+`max_streams_per_connection` on a small box.
 
 ## Every `[tls]` key
 

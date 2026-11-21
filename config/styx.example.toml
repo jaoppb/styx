@@ -107,10 +107,11 @@ addr = "9.9.9.9:53"
 # With neither, it generates a self-signed certificate once into self_signed_dir and logs
 # its SPKI pin; that is enough for curl and DoH clients that accept a pin, not for Android
 # Private DNS, which wants a publicly-valid name: bring a certificate for that. A
-# certificate replaced on disk is only picked up on restart. Every limit below is per
-# listener. A DoT connection also has plain TCP's fixed bounds, which are not [tls] keys:
-# 5 seconds to write each answer and 32 queries in flight. Both timeouts accept 1 to 3600
-# seconds, and max_request_body_bytes 12 (a DNS header) to 65535 octets.
+# certificate replaced on disk is only picked up on restart. Each listener has its own
+# connection ceiling, and each limit below applies to every listener (queries also share
+# max_in_flight_queries). A DoT connection also has plain TCP's fixed bounds, which are
+# not [tls] keys: 5 seconds to write each answer and 32 queries in flight. Both timeouts
+# accept 1 to 3600 seconds, and max_request_body_bytes 12 (a DNS header) to 65535 octets.
 # See docs/operator/encrypted-inbound.md.
 # [tls]
 # enabled = false

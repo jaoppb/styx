@@ -27,10 +27,10 @@ policy and a web admin UI, all in a single binary on top of Tokio.
 The project is in early development. v1 is planned as 12 phases in the
 [ROADMAP](ROADMAP.md), and the tree currently covers the first ones: the `styx-proto`
 DNS wire codec (fuzzed, bounds-checked), the UDP/TCP server loop with its socket-level
-test harness, and the upstream pool with the Do53 forwarder, health tracking and circuit
-breaker. The answer cache, recursion, DNSSEC validation, DoT/DoH listeners, filtering,
-storage and the admin UI are still ahead, so styx is not yet ready to replace a running
-resolver.
+test harness, the upstream pool with the Do53 forwarder, health tracking and circuit
+breaker, the sharded answer cache, the iterative recursor, and encrypted inbound (DoT and
+DoH) listeners. DNSSEC validation, filtering, storage and the admin UI are still ahead, so
+styx is not yet ready to replace a running resolver.
 
 Correctness is enforced mechanically: each feature is its own crate with
 `domain`/`application`/`infrastructure` layers, and `just gate` checks formatting,

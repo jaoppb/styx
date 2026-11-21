@@ -122,10 +122,12 @@ styx/
 │   │   │   ├── application/    # Pipeline, selection strategies, probe scheduler,
 │   │   │   │                   # CacheStage, [cache] and [tls] config, CertificateProvisioner
 │   │   │   └── infrastructure/ # UDP/TCP listeners, client transports, port adapters,
-│   │   │                       # framing (shared stream length prefix), tls, dot, doh/,
-│   │   │                       # cert_fs/ (operator PEM reader, self-signed generator),
-│   │   │                       # cache/ (sharded store, CLOCK ring, eviction),
-│   │   │                       # throttled malformed-query warning (malformed_warning, warn_gate)
+│   │   │                       # accept, connection_bounds, stream_query, framing
+│   │   │                       # (shared stream length prefix), server/encrypted, tls, dot,
+│   │   │                       # doh/, cert_fs/ (operator PEM reader, self-signed
+│   │   │                       # generator), cache/ (sharded store, CLOCK ring, eviction),
+│   │   │                       # throttled malformed-query warning (malformed_warning,
+│   │   │                       # warn_gate)
 │   │   └── fuzz/               # cargo-fuzz targets: stream framing, DoH request extraction
 │   ├── styx-recursion/         # Iterative recursor behind the Upstream port
 │   │   ├── src/
