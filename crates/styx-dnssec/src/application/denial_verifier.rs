@@ -54,11 +54,11 @@ fn is_child_signed_only(
     zone_signatures: &[&ResourceRecord],
     child_signed_owners: &[&Name],
 ) -> bool {
-    let has_zone_sig = zone_signatures.iter().any(|sig| {
-        matches!(sig.rdata, RData::Rrsig(ref rrsig) if rrsig.type_covered() == RecordType::NSEC)
-            && sig.owner.eq_ignore_case(&record.owner)
+    let has_zone_signature = zone_signatures.iter().any(|signature| {
+        matches!(signature.rdata, RData::Rrsig(ref rrsig) if rrsig.type_covered() == RecordType::NSEC)
+            && signature.owner.eq_ignore_case(&record.owner)
     });
-    !has_zone_sig
+    !has_zone_signature
         && child_signed_owners
             .iter()
             .any(|owner| owner.eq_ignore_case(&record.owner))

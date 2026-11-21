@@ -11,10 +11,10 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CanonicalError {
     /// RRSIG `labels` count exceeds the record owner's label count.
-    #[error("RRSIG label count {sig_labels} exceeds owner label count {owner_labels}")]
+    #[error("RRSIG label count {signature_labels} exceeds owner label count {owner_labels}")]
     InvalidLabelCount {
         /// Label count declared in the RRSIG header.
-        sig_labels: u8,
+        signature_labels: u8,
         /// Actual label count of the record owner name.
         owner_labels: usize,
     },
@@ -36,15 +36,15 @@ pub enum CanonicalError {
 /// or [`CanonicalError::Encode`] if wildcard construction overflows wire bounds.
 pub fn canonical_owner_for_rrsig(owner: &Name, rrsig_labels: u8) -> Result<Name, CanonicalError> {
     let owner_count = owner.label_count();
-    let sig_count = usize::from(rrsig_labels);
+    let signature_label_count = usize::from(rrsig_labels);
 
-    if sig_count == owner_count {
+    if signature_label_count == owner_count {
         return Ok(owner.clone());
     }
 
-    let Some(ancestor) = owner.ancestor(sig_count) else {
+    let Some(ancestor) = owner.ancestor(signature_label_count) else {
         return Err(CanonicalError::InvalidLabelCount {
-            sig_labels: rrsig_labels,
+            signature_labels: rrsig_labels,
             owner_labels: owner_count,
         });
     };

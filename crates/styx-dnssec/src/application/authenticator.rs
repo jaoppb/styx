@@ -153,9 +153,9 @@ impl<C: Clock> Authenticator<C> {
         keys: &[ResourceRecord],
         budget: &mut VerificationBudget,
     ) -> Result<Option<u8>, VerdictReason> {
-        let Some(first) = rrset.first() else {
+        if rrset.is_empty() {
             return Err(VerdictReason::NoValidRrsig);
-        };
+        }
         let mut last_error = VerdictReason::NoValidRrsig;
         let mut per_tag_algorithm: HashMap<(u16, u8), u8> = HashMap::new();
         for signature_record in signatures {
@@ -181,7 +181,7 @@ impl<C: Clock> Authenticator<C> {
                 }
             };
             match self.verify_rrsig_with_matching_keys(
-                rrset, first, rrsig, algorithm, &matching, tried, budget,
+                rrset, rrsig, algorithm, &matching, tried, budget,
             )? {
                 Some(result) => return Ok(result),
                 None => continue,
@@ -190,17 +190,18 @@ impl<C: Clock> Authenticator<C> {
         Err(last_error)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn verify_rrsig_with_matching_keys(
         &self,
         rrset: &[&ResourceRecord],
-        first: &ResourceRecord,
         rrsig: &RrsigRdata,
         algorithm: DnssecAlgorithm,
         matching: &[&DnskeyRdata],
         tried: &mut u8,
         budget: &mut VerificationBudget,
     ) -> Result<Option<Option<u8>>, VerdictReason> {
+        let Some(first) = rrset.first() else {
+            return Err(VerdictReason::NoValidRrsig);
+        };
         let Ok(signed_data) = build_canonical_signed_data(rrsig, rrset) else {
             return Ok(None);
         };
