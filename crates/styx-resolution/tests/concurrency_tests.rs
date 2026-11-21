@@ -406,3 +406,19 @@ fn deadline_must_exceed_every_member_timeout() {
     let longer = ServerConfig::from_toml_str("query_timeout_secs = 3").unwrap();
     assert!(longer.check_deadline_covers(&pool).is_ok());
 }
+
+#[test]
+fn deadline_check_skips_recursor_members() {
+    let pool = PoolConfig::from_toml_str(
+        r#"
+            strategy = "ordered_failover"
+            [[members]]
+            name = "rec"
+            kind = "recursor"
+            addr = "0.0.0.0:0"
+        "#,
+    )
+    .unwrap();
+    let short_deadline = ServerConfig::from_toml_str("query_timeout_secs = 2").unwrap();
+    assert!(short_deadline.check_deadline_covers(&pool).is_ok());
+}

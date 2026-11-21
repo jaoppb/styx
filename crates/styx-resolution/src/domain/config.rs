@@ -98,8 +98,8 @@ impl PoolConfig {
         }
 
         let mut members = Vec::with_capacity(raw.members.len());
-        for m in raw.members {
-            members.push(parse_member(m)?);
+        for member in raw.members {
+            members.push(parse_member(member)?);
         }
 
         Ok(Self {
@@ -187,51 +187,51 @@ fn parse_canary(kind: UpstreamKind, raw: RawCanaryConfig) -> Result<CanaryConfig
     Ok(canary)
 }
 
-fn reject_recursor_transport_keys(m: &RawUpstreamConfig) -> Result<(), ConfigError> {
+fn reject_recursor_transport_keys(member: &RawUpstreamConfig) -> Result<(), ConfigError> {
     let set_keys = [
-        ("edns_buffer", m.edns_buffer.is_some()),
-        ("udp_timeout_ms", m.udp_timeout_ms.is_some()),
-        ("tcp_timeout_ms", m.tcp_timeout_ms.is_some()),
+        ("edns_buffer", member.edns_buffer.is_some()),
+        ("udp_timeout_ms", member.udp_timeout_ms.is_some()),
+        ("tcp_timeout_ms", member.tcp_timeout_ms.is_some()),
     ];
     match set_keys.into_iter().find(|(_, set)| *set) {
         Some((key, _)) => Err(ConfigError::RecursorMemberKey {
-            member: m.name.clone(),
+            member: member.name.clone(),
             key,
         }),
         None => Ok(()),
     }
 }
 
-fn parse_member(m: RawUpstreamConfig) -> Result<UpstreamConfig, ConfigError> {
-    let kind = upstream_kind(m.kind);
+fn parse_member(member: RawUpstreamConfig) -> Result<UpstreamConfig, ConfigError> {
+    let kind = upstream_kind(member.kind);
     if kind == UpstreamKind::Recursor {
-        reject_recursor_transport_keys(&m)?;
+        reject_recursor_transport_keys(&member)?;
     }
-    let edns_buffer = match m.edns_buffer {
+    let edns_buffer = match member.edns_buffer {
         Some(octets) => EdnsBufferSize::new(octets)?,
         None => EdnsBufferSize::default(),
     };
 
-    let canary = m
+    let canary = member
         .canary
         .map(|raw_canary| parse_canary(kind, raw_canary))
         .transpose()?;
 
     let default_timeouts = Timeouts::default();
     let timeouts = Timeouts {
-        udp: m
+        udp: member
             .udp_timeout_ms
             .map_or(default_timeouts.udp, Duration::from_millis),
-        tcp: m
+        tcp: member
             .tcp_timeout_ms
             .map_or(default_timeouts.tcp, Duration::from_millis),
     };
 
     Ok(UpstreamConfig {
-        name: m.name,
+        name: member.name,
         kind,
-        addr: m.addr,
-        weight: m.weight.map_or_else(Weight::default, Weight::new),
+        addr: member.addr,
+        weight: member.weight.map_or_else(Weight::default, Weight::new),
         canary,
         timeouts,
         edns_buffer,
@@ -341,14 +341,25 @@ mod tests {
                  kind = \"recursor\"\naddr = \"0.0.0.0:0\"\n{key_line}\n"
             );
             let expected_key = key_line.split(' ').next().unwrap_or_default();
+            let error = PoolConfig::from_toml_str(&toml).expect_err("key must be rejected");
             assert!(
                 matches!(
-                    PoolConfig::from_toml_str(&toml),
-                    Err(ConfigError::RecursorMemberKey { ref member, key })
+                    error,
+                    ConfigError::RecursorMemberKey { ref member, key }
                         if member == "rec" && key == expected_key
                 ),
-                "{key_line} on a recursor member must be rejected"
+                "{key_line} on a recursor member must be rejected: {error:?}"
             );
+            let message = error.to_string();
+            if expected_key == "edns_buffer" {
+                assert!(
+                    message.contains("no recursor equivalent")
+                        && !message.contains("[recursion.members."),
+                    "{message}"
+                );
+            } else {
+                assert!(message.contains("[recursion.members.rec]"), "{message}");
+            }
         }
     }
 

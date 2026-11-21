@@ -38,11 +38,11 @@ pub enum ConfigError {
     #[error("recursor canary must test full root descent")]
     CanaryNotDescending,
 
-    /// A recursor pool member sets a key the recursor never reads; its recursion settings
-    /// live in `[recursion.members.<name>]`.
+    /// A recursor pool member sets a key the recursor never reads; timeouts belong in
+    /// `[recursion.members.<name>]`, while `edns_buffer` has no recursor equivalent.
     #[error(
-        "upstream member `{member}` is a recursor, which ignores `{key}`; \
-         set it under [recursion.members.{member}] instead"
+        "upstream member `{member}` is a recursor, which ignores `{key}`; {}",
+        recursor_key_advice(member, key)
     )]
     RecursorMemberKey {
         /// The pool member's name.
@@ -50,4 +50,11 @@ pub enum ConfigError {
         /// The rejected key.
         key: &'static str,
     },
+}
+
+fn recursor_key_advice(member: &str, key: &str) -> String {
+    if key == "edns_buffer" {
+        return "edns_buffer has no recursor equivalent and should be removed".to_owned();
+    }
+    format!("set it under [recursion.members.{member}] instead")
 }
