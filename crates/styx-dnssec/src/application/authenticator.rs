@@ -3,19 +3,56 @@
 use std::collections::HashMap;
 
 use styx_core::Clock;
-use styx_proto::domain::rdata::{DnskeyRdata, DsRdata};
-use styx_proto::{Name, RData, ResourceRecord};
+use styx_proto::domain::rdata::{DnskeyRdata, DsRdata, RrsigRdata};
+use styx_proto::{Name, RData, RecordType, ResourceRecord};
 
+use crate::domain::canonical::build_canonical_signed_data;
 use crate::domain::chain::SignedRrset;
 use crate::domain::policy::{AlgorithmSupport, DigestType, DnssecAlgorithm, ValidationPolicy};
-use crate::domain::signature::{check_single_ds_linkage, verify_rrsig_record};
+use crate::domain::signature::{
+    check_rrsig_metadata, check_single_ds_linkage, key_matches_rrsig, verify_rrsig_bytes,
+};
 use crate::domain::verdict::{ValidationOutcome, VerdictReason};
 
 /// Wildcard synthesis claim emitted when an answer RRset verified only via a wildcard RRSIG.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WildcardClaim {
     pub(crate) owner: Name,
-    pub(crate) sig_labels: u8,
+    pub(crate) signature_labels: u8,
+}
+
+/// Per-validation budget bounding signature trials and failures (KeyTrap protection).
+#[derive(Debug)]
+pub(crate) struct VerificationBudget {
+    verifications_remaining: u16,
+    failures_remaining: u16,
+    max_keys_per_tag_algorithm: u8,
+}
+
+impl VerificationBudget {
+    pub(crate) fn from_policy(policy: &ValidationPolicy) -> Self {
+        Self {
+            verifications_remaining: policy.max_signature_verifications,
+            failures_remaining: policy.max_signature_failures,
+            max_keys_per_tag_algorithm: policy.max_keys_per_tag_algorithm,
+        }
+    }
+
+    fn consume_attempt(&mut self) -> Result<(), VerdictReason> {
+        if self.verifications_remaining == 0 || self.failures_remaining == 0 {
+            return Err(VerdictReason::SignatureBudgetExceeded);
+        }
+        self.verifications_remaining = self.verifications_remaining.saturating_sub(1);
+        Ok(())
+    }
+
+    fn record_failure(&mut self) -> Result<(), VerdictReason> {
+        self.failures_remaining = self.failures_remaining.saturating_sub(1);
+        if self.failures_remaining == 0 {
+            return Err(VerdictReason::SignatureBudgetExceeded);
+        }
+        Ok(())
+    }
 }
 
 /// Verifies RRSIGs and DS-to-DNSKEY linkage under one policy and one clock.
@@ -39,47 +76,38 @@ impl<C: Clock> Authenticator<C> {
     ///
     /// The error is the outcome the whole validation ends with: `Insecure` when no
     /// voucher uses a supported algorithm (RFC 4035 §5.2), `Bogus` otherwise.
-    ///
-    /// Every key a voucher matches is tried, not only the first: during a KSK rollover
-    /// the RRset carries a published key that does not sign yet, or no longer signs, and
-    /// any matched key that signs is enough (RFC 4035 §5.2).
     pub(crate) fn authenticate_keys(
         &self,
         zone: &Name,
         dnskey: &SignedRrset,
         vouchers: &[DsRdata],
+        budget: &mut VerificationBudget,
     ) -> Result<Vec<ResourceRecord>, ValidationOutcome> {
         let usable = self.usable_vouchers(vouchers)?;
-        let mut vouched = vouched_keys(zone, &dnskey.records, &usable).peekable();
-        if vouched.peek().is_none() {
+        let vouched: Vec<ResourceRecord> = vouched_keys(zone, &dnskey.records, &usable)
+            .cloned()
+            .collect();
+        if vouched.is_empty() {
             return Err(ValidationOutcome::bogus(VerdictReason::DsDnskeyMismatch));
         }
         let records: Vec<&ResourceRecord> = dnskey.records.iter().collect();
         let signatures: Vec<&ResourceRecord> = dnskey.signatures.iter().collect();
-        let signs = vouched.any(|key| {
-            self.verify_rrset_with_key(&records, &signatures, key, zone)
-                .is_ok()
-        });
-        if signs {
-            Ok(dnskey.records.clone())
-        } else {
-            Err(ValidationOutcome::bogus(VerdictReason::NoValidRrsig))
+        match self.verify_rrset_against_keys(&records, &signatures, &vouched, budget) {
+            Ok(_) => Ok(dnskey.records.clone()),
+            Err(reason) => Err(ValidationOutcome::bogus(reason)),
         }
     }
 
     /// Verifies that every RRset in `records` carries a valid RRSIG from one of `keys`
     /// that covers it as it stands, not as an expansion of a wildcard.
-    ///
-    /// Denial records and DS RRsets must never come from a wildcard: an RRSIG over
-    /// `*.example. NSEC` would otherwise vouch for the same NSEC moved to any owner
-    /// (RFC 4035 §5.3.4, §5.4).
     pub(crate) fn authenticate_unexpanded<'a, 'b>(
         &self,
         records: impl IntoIterator<Item = &'a ResourceRecord>,
         signatures: impl IntoIterator<Item = &'b ResourceRecord>,
         keys: &[ResourceRecord],
+        budget: &mut VerificationBudget,
     ) -> Result<(), VerdictReason> {
-        let claims = self.authenticate_rrsets(records, signatures, keys)?;
+        let claims = self.authenticate_rrsets(records, signatures, keys, budget)?;
         if claims.is_empty() {
             Ok(())
         } else {
@@ -94,21 +122,24 @@ impl<C: Clock> Authenticator<C> {
         records: impl IntoIterator<Item = &'a ResourceRecord>,
         signatures: impl IntoIterator<Item = &'b ResourceRecord>,
         keys: &[ResourceRecord],
+        budget: &mut VerificationBudget,
     ) -> Result<Vec<WildcardClaim>, VerdictReason> {
         let rrsets = group_into_rrsets(records);
         if rrsets.is_empty() {
             return Err(VerdictReason::NoValidRrsig);
         }
-        let sig_list: Vec<&ResourceRecord> = signatures.into_iter().collect();
+        let signature_list: Vec<&ResourceRecord> = signatures.into_iter().collect();
         let mut wildcard_claims = Vec::new();
         for rrset in rrsets {
-            let Some(labels) = self.verify_rrset_against_keys(&rrset, &sig_list, keys)? else {
+            let Some(labels) =
+                self.verify_rrset_against_keys(&rrset, &signature_list, keys, budget)?
+            else {
                 continue;
             };
             if let Some(first) = rrset.first() {
                 wildcard_claims.push(WildcardClaim {
                     owner: first.owner.clone(),
-                    sig_labels: labels,
+                    signature_labels: labels,
                 });
             }
         }
@@ -120,43 +151,70 @@ impl<C: Clock> Authenticator<C> {
         rrset: &[&ResourceRecord],
         signatures: &[&ResourceRecord],
         keys: &[ResourceRecord],
+        budget: &mut VerificationBudget,
     ) -> Result<Option<u8>, VerdictReason> {
-        let mut wildcard_labels: Option<u8> = None;
-        for key_record in keys {
-            let RData::Dnskey(ref key) = key_record.rdata else {
+        let Some(first) = rrset.first() else {
+            return Err(VerdictReason::NoValidRrsig);
+        };
+        let mut last_error = VerdictReason::NoValidRrsig;
+        let mut per_tag_algorithm: HashMap<(u16, u8), u8> = HashMap::new();
+        for signature_record in signatures {
+            let RData::Rrsig(ref rrsig) = signature_record.rdata else {
                 continue;
             };
-            let Ok(labels) = self.verify_rrset_with_key(rrset, signatures, key, &key_record.owner)
-            else {
+            let tag_algorithm = (rrsig.key_tag(), rrsig.algorithm());
+            let tried = per_tag_algorithm.entry(tag_algorithm).or_insert(0);
+            let limit = budget.max_keys_per_tag_algorithm;
+            if *tried >= limit {
                 continue;
-            };
-            let Some(first) = rrset.first() else {
-                return Err(VerdictReason::NoValidRrsig);
-            };
-            if !is_expansion(&first.owner, labels) {
-                return Ok(None);
             }
-            wildcard_labels = Some(labels);
+            let matching =
+                matching_keys_for_rrsig(rrsig, keys, usize::from(limit.saturating_sub(*tried)));
+            if matching.is_empty() {
+                continue;
+            }
+            let algorithm = match check_rrsig_metadata(rrsig, rrset, &self.clock) {
+                Ok(algorithm) => algorithm,
+                Err(reason) => {
+                    last_error = reason;
+                    continue;
+                }
+            };
+            match self.verify_rrsig_with_matching_keys(
+                rrset, first, rrsig, algorithm, &matching, tried, budget,
+            )? {
+                Some(result) => return Ok(result),
+                None => continue,
+            }
         }
-        wildcard_labels.map(Some).ok_or(VerdictReason::NoValidRrsig)
+        Err(last_error)
     }
 
-    fn verify_rrset_with_key(
+    #[allow(clippy::too_many_arguments)]
+    fn verify_rrsig_with_matching_keys(
         &self,
         rrset: &[&ResourceRecord],
-        signatures: &[&ResourceRecord],
-        dnskey: &DnskeyRdata,
-        dnskey_owner: &Name,
-    ) -> Result<u8, VerdictReason> {
-        for signature in signatures {
-            let RData::Rrsig(ref rrsig) = signature.rdata else {
-                continue;
-            };
-            if verify_rrsig_record(rrsig, rrset, dnskey, dnskey_owner, &self.clock).is_ok() {
-                return Ok(rrsig.labels());
+        first: &ResourceRecord,
+        rrsig: &RrsigRdata,
+        algorithm: DnssecAlgorithm,
+        matching: &[&DnskeyRdata],
+        tried: &mut u8,
+        budget: &mut VerificationBudget,
+    ) -> Result<Option<Option<u8>>, VerdictReason> {
+        let Ok(signed_data) = build_canonical_signed_data(rrsig, rrset) else {
+            return Ok(None);
+        };
+        for &key in matching {
+            budget.consume_attempt()?;
+            *tried = tried.saturating_add(1);
+            if verify_rrsig_bytes(algorithm, key, &signed_data, rrsig.signature()) {
+                let expansion =
+                    is_expansion(&first.owner, rrsig.labels()).then_some(rrsig.labels());
+                return Ok(Some(expansion));
             }
+            budget.record_failure()?;
         }
-        Err(VerdictReason::NoValidRrsig)
+        Ok(None)
     }
 
     fn usable_vouchers<'a>(
@@ -183,18 +241,31 @@ impl<C: Clock> Authenticator<C> {
     }
 }
 
-/// Every DNSKEY in `dnskeys` that one of `vouchers` matches.
+fn matching_keys_for_rrsig<'a>(
+    rrsig: &RrsigRdata,
+    keys: &'a [ResourceRecord],
+    remaining: usize,
+) -> Vec<&'a DnskeyRdata> {
+    keys.iter()
+        .filter_map(|record| match record.rdata {
+            RData::Dnskey(ref key) if key_matches_rrsig(rrsig, key, &record.owner) => Some(key),
+            _ => None,
+        })
+        .take(remaining)
+        .collect()
+}
+
+/// Every DNSKEY record in `dnskeys` that one of `vouchers` matches.
 fn vouched_keys<'a>(
     zone: &'a Name,
     dnskeys: &'a [ResourceRecord],
     vouchers: &'a [&DsRdata],
-) -> impl Iterator<Item = &'a DnskeyRdata> {
-    dnskeys.iter().filter_map(move |record| match record.rdata {
+) -> impl Iterator<Item = &'a ResourceRecord> {
+    dnskeys.iter().filter(move |record| match record.rdata {
         RData::Dnskey(ref key) => vouchers
             .iter()
-            .any(|ds| check_single_ds_linkage(zone, ds, key))
-            .then_some(key),
-        _ => None,
+            .any(|ds| check_single_ds_linkage(zone, ds, key)),
+        _ => false,
     })
 }
 
@@ -214,10 +285,11 @@ fn is_expansion(owner: &Name, labels: u8) -> bool {
     !(literal_wildcard && labels.checked_add(1) == Some(owner_labels))
 }
 
-fn group_into_rrsets<'a>(
+pub(crate) fn group_into_rrsets<'a>(
     records: impl IntoIterator<Item = &'a ResourceRecord>,
 ) -> Vec<Vec<&'a ResourceRecord>> {
-    let mut rrsets: HashMap<_, Vec<&ResourceRecord>> = HashMap::new();
+    let mut rrsets: HashMap<(&Name, styx_proto::RecordClass, RecordType), Vec<&ResourceRecord>> =
+        HashMap::new();
     for record in records {
         rrsets
             .entry((&record.owner, record.rclass, record.rtype))

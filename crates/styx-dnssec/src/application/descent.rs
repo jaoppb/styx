@@ -1,26 +1,38 @@
 //! Chain descent walking and intermediate zone cut validation.
 
+use std::collections::HashMap;
+
 use styx_core::Clock;
 use styx_proto::domain::rdata::DsRdata;
 use styx_proto::{Name, RData, RecordType, ResourceRecord};
 
-use crate::application::authenticator::Authenticator;
+use crate::application::authenticator::{Authenticator, VerificationBudget};
 use crate::domain::chain::{Delegation, ZoneCutMaterial};
 use crate::domain::denial::DenialProof;
 use crate::domain::ports::ChainSource;
 use crate::domain::trust_anchor::{TrustAnchor, TrustAnchors};
-use crate::domain::verdict::{ValidationOutcome, ValidationVerdict, VerdictReason};
+use crate::domain::verdict::{ValidationOutcome, VerdictReason};
 
-/// The outcome of walking a chain of trust down to a target zone.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Descent {
-    /// Descent reached the target zone with authenticated DNSKEY records.
-    Secure {
-        zone: Name,
-        keys: Vec<ResourceRecord>,
-    },
-    /// Descent completed with a terminal outcome (e.g. Insecure at an unsigned delegation).
-    Ended(ValidationOutcome),
+/// Maximum `ChainSource::material_for` calls per descent (`NotACut` probe bound).
+const MAX_DESCENT_PROBES: usize = 32;
+
+/// Authenticated zone and its DNSKEY RRset reached by chain descent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SecureZone {
+    pub(crate) zone: Name,
+    pub(crate) keys: Vec<ResourceRecord>,
+}
+
+#[derive(Debug, Clone)]
+enum CachedStep {
+    NotACut,
+    Secure(Vec<ResourceRecord>),
+}
+
+/// Per-validation cache of authenticated cuts and non-cuts along the chain descent.
+#[derive(Debug, Default)]
+pub(crate) struct DescentCache {
+    steps: HashMap<Name, Result<CachedStep, ValidationOutcome>>,
 }
 
 /// The outcome of stepping across a single candidate zone cut.
@@ -30,8 +42,6 @@ enum CutStep {
     NotACut,
     /// Secure cut; advance descent into the child zone with authenticated keys.
     Child(Vec<ResourceRecord>),
-    /// Terminal outcome (e.g. proven unsigned delegation).
-    Ended(ValidationOutcome),
 }
 
 /// The trust-anchored zone a descent starts from, with its anchors in DS form.
@@ -79,49 +89,114 @@ pub(crate) async fn walk_chain_descent<C: Clock, S: ChainSource>(
     qname: &Name,
     chain_source: &S,
     anchors: &TrustAnchors,
-) -> Result<Descent, ValidationOutcome> {
+    budget: &mut VerificationBudget,
+    cache: &mut DescentCache,
+) -> Result<SecureZone, ValidationOutcome> {
     let anchored = AnchoredZone::closest(qname, anchors)
         .ok_or_else(|| ValidationOutcome::indeterminate(VerdictReason::NoPathToAnchor))?;
 
-    let material = fetch_material(chain_source, &anchored.zone).await?;
-    let dnskey = material
-        .delegation
-        .dnskey()
-        .ok_or_else(|| ValidationOutcome::indeterminate(VerdictReason::ChainMaterialUnavailable))?;
-    let mut keys = authenticator.authenticate_keys(&anchored.zone, dnskey, &anchored.vouchers)?;
+    let mut keys =
+        authenticate_anchored_zone(authenticator, &anchored, chain_source, budget, cache).await?;
 
     let mut current_zone = anchored.zone;
     let mut authoritative_zone = current_zone.clone();
     let mut cuts_crossed = 0u8;
+    let mut probes = 0usize;
     while let Some(next_zone) = find_next_zone_cut(qname, &current_zone) {
-        let material = fetch_material(chain_source, &next_zone).await?;
-        if !material.zone.eq_ignore_case(&next_zone) {
+        probes = probes.saturating_add(1);
+        if probes > MAX_DESCENT_PROBES {
+            return Err(ValidationOutcome::indeterminate(
+                VerdictReason::MaxZoneCutsExceeded,
+            ));
+        }
+        let step = step_cached(
+            authenticator,
+            &authoritative_zone,
+            &next_zone,
+            &keys,
+            chain_source,
+            budget,
+            cache,
+        )
+        .await?;
+        if let CachedStep::Secure(child_keys) = step {
+            cuts_crossed = cuts_crossed.saturating_add(1);
+            if cuts_crossed > authenticator.policy().max_zone_cuts {
+                return Err(ValidationOutcome::indeterminate(
+                    VerdictReason::MaxZoneCutsExceeded,
+                ));
+            }
+            keys = child_keys;
+            authoritative_zone = next_zone.clone();
+        }
+        current_zone = next_zone;
+    }
+
+    Ok(SecureZone {
+        zone: authoritative_zone,
+        keys,
+    })
+}
+
+async fn authenticate_anchored_zone<C: Clock, S: ChainSource>(
+    authenticator: &Authenticator<C>,
+    anchored: &AnchoredZone,
+    chain_source: &S,
+    budget: &mut VerificationBudget,
+    cache: &mut DescentCache,
+) -> Result<Vec<ResourceRecord>, ValidationOutcome> {
+    if let Some(cached) = cache.steps.get(&anchored.zone) {
+        return match cached {
+            Ok(CachedStep::Secure(keys)) => Ok(keys.clone()),
+            Ok(CachedStep::NotACut) => Err(ValidationOutcome::indeterminate(
+                VerdictReason::ChainMaterialUnavailable,
+            )),
+            Err(outcome) => Err(outcome.clone()),
+        };
+    }
+    let result = async {
+        let material = fetch_material(chain_source, &anchored.zone).await?;
+        let dnskey = material.delegation.dnskey().ok_or_else(|| {
+            ValidationOutcome::indeterminate(VerdictReason::ChainMaterialUnavailable)
+        })?;
+        authenticator.authenticate_keys(&anchored.zone, dnskey, &anchored.vouchers, budget)
+    }
+    .await;
+    cache.steps.insert(
+        anchored.zone.clone(),
+        result.clone().map(CachedStep::Secure),
+    );
+    result
+}
+
+async fn step_cached<C: Clock, S: ChainSource>(
+    authenticator: &Authenticator<C>,
+    authoritative_zone: &Name,
+    next_zone: &Name,
+    parent_keys: &[ResourceRecord],
+    chain_source: &S,
+    budget: &mut VerificationBudget,
+    cache: &mut DescentCache,
+) -> Result<CachedStep, ValidationOutcome> {
+    if let Some(cached) = cache.steps.get(next_zone) {
+        return cached.clone();
+    }
+    let result = async {
+        let material = fetch_material(chain_source, next_zone).await?;
+        if !material.zone.eq_ignore_case(next_zone) {
             tracing::warn!(requested = %next_zone, described = %material.zone, "chain material describes another name");
             return Err(ValidationOutcome::indeterminate(
                 VerdictReason::ChainMaterialUnavailable,
             ));
         }
-        match step_into_cut(authenticator, &authoritative_zone, &material, &keys)? {
-            CutStep::NotACut => {}
-            CutStep::Child(child_keys) => {
-                cuts_crossed = cuts_crossed.saturating_add(1);
-                if cuts_crossed > authenticator.policy().max_zone_cuts {
-                    return Err(ValidationOutcome::indeterminate(
-                        VerdictReason::MaxZoneCutsExceeded,
-                    ));
-                }
-                keys = child_keys;
-                authoritative_zone = next_zone.clone();
-            }
-            CutStep::Ended(outcome) => return Ok(Descent::Ended(outcome)),
+        match step_into_cut(authenticator, authoritative_zone, &material, parent_keys, budget)? {
+            CutStep::NotACut => Ok(CachedStep::NotACut),
+            CutStep::Child(child_keys) => Ok(CachedStep::Secure(child_keys)),
         }
-        current_zone = next_zone;
     }
-
-    Ok(Descent::Secure {
-        zone: authoritative_zone,
-        keys,
-    })
+    .await;
+    cache.steps.insert(next_zone.clone(), result.clone());
+    result
 }
 
 async fn fetch_material<S: ChainSource>(
@@ -135,12 +210,13 @@ async fn fetch_material<S: ChainSource>(
 }
 
 /// Crosses the name `material` describes: `NotACut` when it is not a zone cut,
-/// `Child` with child DNSKEYs on a signed delegation, or `Ended` on an unsigned delegation.
+/// `Child` with child DNSKEYs on a signed delegation, or `Err(outcome)` on termination.
 fn step_into_cut<C: Clock>(
     authenticator: &Authenticator<C>,
     parent_zone: &Name,
     material: &ZoneCutMaterial,
     parent_keys: &[ResourceRecord],
+    budget: &mut VerificationBudget,
 ) -> Result<CutStep, ValidationOutcome> {
     match material.delegation {
         Delegation::NotACut => Ok(CutStep::NotACut),
@@ -149,11 +225,11 @@ fn step_into_cut<C: Clock>(
         )),
         Delegation::Signed { ref ds, ref dnskey } => {
             authenticator
-                .authenticate_unexpanded(&ds.records, &ds.signatures, parent_keys)
+                .authenticate_unexpanded(&ds.records, &ds.signatures, parent_keys, budget)
                 .map_err(ValidationOutcome::bogus)?;
             let vouchers = ds_records_at(&material.zone, &ds.records);
             authenticator
-                .authenticate_keys(&material.zone, dnskey, &vouchers)
+                .authenticate_keys(&material.zone, dnskey, &vouchers, budget)
                 .map(CutStep::Child)
         }
         Delegation::Unsigned {
@@ -166,13 +242,11 @@ fn step_into_cut<C: Clock>(
             ds_denial,
             signatures,
             parent_keys,
+            budget,
         ) {
-            Ok(()) => Ok(CutStep::Ended(ValidationOutcome::insecure(
+            Ok(()) => Err(ValidationOutcome::insecure(
                 VerdictReason::ProvenUnsignedDelegation,
-            ))),
-            Err(outcome) if outcome.verdict == ValidationVerdict::Insecure => {
-                Ok(CutStep::Ended(outcome))
-            }
+            )),
             Err(outcome) => Err(outcome),
         },
     }
@@ -197,20 +271,20 @@ fn verify_ds_denial<C: Clock>(
     proof: &DenialProof,
     signatures: &[ResourceRecord],
     parent_keys: &[ResourceRecord],
+    budget: &mut VerificationBudget,
 ) -> Result<(), ValidationOutcome> {
     authenticator
-        .authenticate_unexpanded(proof.records(), signatures, parent_keys)
+        .authenticate_unexpanded(proof.records(), signatures, parent_keys, budget)
         .map_err(ValidationOutcome::bogus)?;
-    proof
-        .prove_ds_absence(
-            parent_zone,
-            zone,
-            authenticator.policy().nsec3_max_iterations,
-        )
-        .map_err(|error| {
-            tracing::warn!(%zone, %error, "DS-absence denial proof failed verification");
-            ValidationOutcome::from(error)
-        })
+    let result = proof.prove_ds_absence(
+        parent_zone,
+        zone,
+        authenticator.policy().nsec3_max_iterations,
+    );
+    result.map_err(|error| {
+        tracing::warn!(%zone, %error, "DS-absence denial proof failed verification");
+        ValidationOutcome::from(error)
+    })
 }
 
 /// The name one label below `current_zone` on the way down to `qname`.
