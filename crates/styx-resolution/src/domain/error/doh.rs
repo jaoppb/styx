@@ -53,4 +53,8 @@ pub enum DohError {
     /// The connection's query ceiling is spent.
     #[error("connection query budget exceeded")]
     StreamBudgetExceeded,
+
+    /// The server is shutting down and no longer admitting queries.
+    #[error("server shutting down")]
+    ShuttingDown,
 }

@@ -84,7 +84,7 @@ const fn status(error: &DohError) -> StatusCode {
         | DohError::Unanswerable => StatusCode::BAD_REQUEST,
         DohError::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         DohError::BodyReadTimeout => StatusCode::REQUEST_TIMEOUT,
-        DohError::StreamBudgetExceeded => StatusCode::SERVICE_UNAVAILABLE,
+        DohError::StreamBudgetExceeded | DohError::ShuttingDown => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 
@@ -106,6 +106,7 @@ mod tests {
             (DohError::MalformedBody, 400),
             (DohError::Unanswerable, 400),
             (DohError::StreamBudgetExceeded, 503),
+            (DohError::ShuttingDown, 503),
         ];
         for (error, expected) in statuses {
             let response = DohResponse::Error(error.clone()).into_http();

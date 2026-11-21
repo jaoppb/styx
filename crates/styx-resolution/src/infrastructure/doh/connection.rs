@@ -10,11 +10,13 @@ use std::convert::Infallible;
 use std::fmt::Display;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
-use hyper::body::{Bytes, Incoming};
+use hyper::body::{Body, Bytes, Frame, Incoming, SizeHint};
 use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use hyper::rt::Executor;
 use hyper::service::service_fn;
@@ -22,6 +24,7 @@ use hyper::{Request, Response};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 use tokio::net::TcpStream;
+use tokio::sync::oneshot;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -30,6 +33,7 @@ use styx_core::{Clock, Sleeper};
 
 use crate::application::terminal::TerminalHandler;
 use crate::domain::error::DohError;
+use crate::domain::limits::TCP_WRITE_TIMEOUT;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
@@ -37,7 +41,7 @@ use crate::domain::request::Transport;
 use crate::domain::tls::{DohResourcePath, EncryptedLimits, StreamMessageLimit};
 use crate::infrastructure::admission::ListenerShared;
 use crate::infrastructure::connection_bounds::{
-    ConnectionLimiter, QueryCeiling, QueryLimit, Spend,
+    ConnectionLimiter, InFlightSlot, QueryCeiling, QueryLimit, Spend,
 };
 use crate::infrastructure::doh::request::{accept_body, extract_head, DohHead, DohRequestForm};
 use crate::infrastructure::doh::response::DohResponse;
@@ -133,6 +137,7 @@ where
             endpoint: Arc::clone(self),
             peer,
             limiter,
+            send_stalled: CancellationToken::new(),
         })
     }
 
@@ -149,11 +154,16 @@ where
             .http1()
             .timer(TokioTimer::new())
             .header_read_timeout(self.limits.idle_timeout.as_duration());
+        let stream_window = u32::from(self.limits.max_request_body.octets());
+        let connection_window = stream_window.saturating_mul(4);
         // No HTTP/2 keep-alive pings: the idle timer already closes a connection with no
         // stream outstanding, and a stalled body is bounded by its own read deadline.
         builder
             .http2()
             .timer(TokioTimer::new())
+            .initial_stream_window_size(stream_window)
+            .initial_connection_window_size(connection_window)
+            .max_send_buf_size(usize::from(StreamMessageLimit::protocol_max().octets()))
             .max_concurrent_streams(self.limits.max_streams_per_connection.as_u32())
             .max_header_list_size(MAX_HEADER_LIST_BYTES);
         builder
@@ -173,7 +183,7 @@ where
         received_at: Instant,
     ) -> Result<EncodedAnswer, DohError> {
         let Some(_permit) = self.shared.budget.acquire().await else {
-            return Err(DohError::StreamBudgetExceeded);
+            return Err(DohError::ShuttingDown);
         };
         let task = QueryTask::new(
             self.shared.clone(),
@@ -191,6 +201,40 @@ pub(crate) struct DohConnection<L, F, O, C, T, S> {
     endpoint: Arc<DohEndpoint<L, F, O, C, T, S>>,
     peer: SocketAddr,
     limiter: ConnectionLimiter,
+    send_stalled: CancellationToken,
+}
+
+struct SlottedAnswer {
+    answer: EncodedAnswer,
+    slot: InFlightSlot,
+}
+
+/// Response body that holds the stream's [`InFlightSlot`] and arms a per-stream send
+/// deadline until hyper finishes queueing the response (or resets the stream).
+struct SlottedBody {
+    inner: Full<Bytes>,
+    _slot: Option<InFlightSlot>,
+    _cancel_timer: Option<oneshot::Sender<()>>,
+}
+
+impl Body for SlottedBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        Pin::new(&mut self.inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
 }
 
 impl<L, F, O, C, T, S> DohConnection<L, F, O, C, T, S>
@@ -203,7 +247,7 @@ where
     S: Sleeper + Send + Sync + 'static,
 {
     /// Completes the handshake under its deadline, then serves HTTP until the connection
-    /// ends, idles out, spends its query ceiling, or the server shuts down.
+    /// ends, idles out, spends its query ceiling, stalls sending, or the server shuts down.
     pub(crate) async fn serve(
         self: Arc<Self>,
         acceptor: TlsAcceptor,
@@ -226,6 +270,7 @@ where
         tokio::pin!(connection);
         tokio::select! {
             served = connection.as_mut() => return log_end(self.peer, served),
+            () = self.send_stalled.cancelled() => return,
             () = closing.cancelled() => {}
             () = self.limiter.idle_expired() => tracing::debug!(peer = %self.peer, "DoH connection idle; closing"),
             () = self.limiter.budget_spent() => tracing::debug!(peer = %self.peer, "DoH query ceiling reached; closing"),
@@ -238,27 +283,62 @@ where
     }
 
     /// Answers one stream. Every failure is an HTTP status, never a panic.
-    async fn handle(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
+    async fn handle(&self, request: Request<Incoming>) -> Response<SlottedBody> {
         let received_at = self.endpoint.shared.clock.now_monotonic();
-        let response = match self.answer(request, received_at).await {
-            Ok(answer) => DohResponse::answer(answer.wire, answer.min_ttl),
+        match self.answer(request, received_at).await {
+            Ok(slotted) => {
+                let response =
+                    DohResponse::answer(slotted.answer.wire, slotted.answer.min_ttl).into_http();
+                self.wrap_slotted(response, slotted.slot)
+            }
             Err(error) => {
                 tracing::debug!(peer = %self.peer, transport = Transport::Doh.name(), %error, "DoH request refused");
-                DohResponse::Error(error)
+                DohResponse::Error(error).into_http().map(|inner| SlottedBody {
+                    inner,
+                    _slot: None,
+                    _cancel_timer: None,
+                })
             }
-        };
-        response.into_http()
+        }
+    }
+
+    fn wrap_slotted(
+        &self,
+        response: Response<Full<Bytes>>,
+        slot: InFlightSlot,
+    ) -> Response<SlottedBody> {
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let abort = self.endpoint.shared.abort.clone();
+        let stalled = self.send_stalled.clone();
+        let peer = self.peer;
+        self.endpoint.shared.tasks.spawn(async move {
+            tokio::select! {
+                () = abort.cancelled() => {}
+                _ = cancel_rx => {}
+                () = tokio::time::sleep(TCP_WRITE_TIMEOUT) => {
+                    tracing::debug!(%peer, transport = Transport::Doh.name(), "DoH response send timed out; closing");
+                    stalled.cancel();
+                }
+            }
+        });
+        response.map(|inner| SlottedBody {
+            inner,
+            _slot: Some(slot),
+            _cancel_timer: Some(cancel_tx),
+        })
     }
 
     async fn answer(
         &self,
         request: Request<Incoming>,
         received_at: Instant,
-    ) -> Result<EncodedAnswer, DohError> {
+    ) -> Result<SlottedAnswer, DohError> {
         if self.limiter.spend() == Spend::Over {
             return Err(DohError::StreamBudgetExceeded);
         }
-        let _slot = self.limiter.track().await;
+        let Some(slot) = self.limiter.track().await else {
+            return Err(DohError::ShuttingDown);
+        };
         let limits = self.endpoint.limits;
         let wire = read_wire(
             request,
@@ -267,7 +347,8 @@ where
             limits.idle_timeout.as_duration(),
         )
         .await?;
-        self.endpoint.dispatch(&wire, self.peer, received_at).await
+        let answer = self.endpoint.dispatch(&wire, self.peer, received_at).await?;
+        Ok(SlottedAnswer { answer, slot })
     }
 }
 

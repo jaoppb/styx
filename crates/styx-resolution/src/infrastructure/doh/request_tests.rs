@@ -109,6 +109,17 @@ fn post_needs_the_dns_media_type_and_a_declared_length_under_the_cap() {
         ),
         Err(DohError::EmptyBody)
     );
+    for bad in ["not-a-number", "-1", "12.5"] {
+        assert_eq!(
+            extract_head(
+                &post(Some(DNS_MESSAGE_MEDIA_TYPE), Some(bad)),
+                &resource(),
+                cap(512)
+            ),
+            Err(DohError::MalformedBody),
+            "{bad}"
+        );
+    }
 }
 
 #[test]

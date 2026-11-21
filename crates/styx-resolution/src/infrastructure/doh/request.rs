@@ -86,7 +86,7 @@ fn check_post_head(head: &DohHead<'_>, limit: StreamMessageLimit) -> Result<(), 
     let declared: u64 = declared
         .trim()
         .parse()
-        .map_err(|_| DohError::BodyTooLarge)?;
+        .map_err(|_| DohError::MalformedBody)?;
     if declared == 0 {
         return Err(DohError::EmptyBody);
     }

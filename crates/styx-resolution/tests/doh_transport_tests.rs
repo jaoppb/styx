@@ -368,3 +368,54 @@ async fn a_stalled_request_body_times_out_with_408_and_releases_the_connection()
         .unwrap();
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_zero_window_client_that_parks_answers_is_closed_at_the_send_deadline() {
+    let options = EncryptedOptions::default();
+    // Long idle timeout (30s default) so only the 5s per-stream send deadline can close the
+    // connection promptly; meanwhile the held in-flight slot keeps the stream tracked.
+    let mut server = boot(options).await;
+    let tls = tls_connect(server.doh(), &server.certificate, &[b"h2"])
+        .await
+        .unwrap();
+    let (mut sender, mut connection) = h2::client::Builder::new()
+        .initial_window_size(0)
+        .handshake::<_, hyper::body::Bytes>(tls)
+        .await
+        .unwrap();
+    let request = hyper::Request::builder()
+        .method("GET")
+        .uri(format!(
+            "{DOH}?dns={}",
+            URL_SAFE_NO_PAD.encode(query("example.com."))
+        ))
+        .body(())
+        .unwrap();
+    let (response, _) = sender.send_request(request, true).unwrap();
+    let started = std::time::Instant::now();
+    // The response headers arrive with 200, while the body cannot be sent under a 0 window.
+    let res = tokio::time::timeout(PROMPTLY, async {
+        tokio::select! {
+            response = response => response.unwrap(),
+            _ = &mut connection => panic!("connection closed before response headers"),
+        }
+    })
+    .await
+    .expect("response headers arrive promptly");
+    assert_eq!(res.status(), 200);
+
+    // Keep `sender` and `res` (its RecvStream) alive without polling/updating window; the
+    // server must close the stalled connection at the 5s send deadline, well before 30s idle.
+    let _keep = (sender, res);
+    let closed = tokio::time::timeout(Duration::from_secs(8), &mut connection).await;
+    assert!(
+        closed.is_ok(),
+        "zero-window connection must be closed by the send deadline"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_secs(4),
+        "must not close before the 5s send deadline ({:?})",
+        started.elapsed()
+    );
+    server.shutdown().await;
+}
