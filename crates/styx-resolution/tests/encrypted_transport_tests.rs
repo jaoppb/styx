@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use harness::encrypted::{
-    dot_exchange, read_frame, tls_connect, write_frame, AnsweringTerminal, DohClient,
+    connector, dot_exchange, read_frame, tls_connect, write_frame, AnsweringTerminal, DohClient,
     EncryptedOptions, EncryptedTestServer,
 };
 use hickory_proto::op::{Message, MessageType, OpCode, Query};
@@ -177,6 +177,10 @@ async fn an_h2_only_client_on_the_dot_port_is_rejected_not_hung() {
 async fn a_client_that_never_finishes_the_handshake_is_closed_at_the_deadline() {
     let mut server = boot(tight(|_| {})).await;
     let mut silent = TcpStream::connect(server.dot()).await.unwrap();
+    assert!(
+        !closed_by_server(&mut silent, Duration::from_millis(100)).await,
+        "must stay open before the 300ms handshake deadline"
+    );
     assert!(closed_by_server(&mut silent, PROMPTLY).await);
     server.shutdown().await;
 }
@@ -187,6 +191,10 @@ async fn an_idle_dot_connection_is_closed_at_the_idle_timeout() {
     let mut stream = tls_connect(server.dot(), &server.certificate, &[b"dot"])
         .await
         .unwrap();
+    assert!(
+        !closed_by_server(&mut stream, Duration::from_millis(100)).await,
+        "must stay open before the 300ms idle deadline"
+    );
     assert!(closed_by_server(&mut stream, PROMPTLY).await);
     server.shutdown().await;
 }
@@ -198,9 +206,22 @@ async fn connections_past_the_ceiling_are_refused_before_the_handshake() {
         limits.idle_timeout = BoundedTimeout::from_secs(10).unwrap();
     }))
     .await;
-    let _held = tls_connect(server.dot(), &server.certificate, &[b"dot"])
+    let mut held = tls_connect(server.dot(), &server.certificate, &[b"dot"])
         .await
         .unwrap();
+    write_frame(&mut held, &query("example.com.", RecordType::A)).await;
+    assert!(read_frame(&mut held).await.is_some());
+
+    // Refusal happens before any TLS handshake: a raw socket sees immediate EOF (0 bytes, no
+    // ServerHello).
+    let mut raw = TcpStream::connect(server.dot()).await.unwrap();
+    let mut byte = [0u8; 1];
+    let eof = tokio::time::timeout(PROMPTLY, raw.read(&mut byte))
+        .await
+        .expect("raw refusal must be prompt")
+        .unwrap();
+    assert_eq!(eof, 0, "must close with EOF before any ServerHello");
+
     let refused = tokio::time::timeout(
         PROMPTLY,
         tls_connect(server.dot(), &server.certificate, &[b"dot"]),
@@ -208,6 +229,63 @@ async fn connections_past_the_ceiling_are_refused_before_the_handshake() {
     .await
     .expect("refusal must be prompt");
     assert!(refused.is_err());
+
+    // Closing the held stream frees the slot for a new connection.
+    drop(held);
+    let mut next = wait_tls_connect(server.dot(), &server.certificate, &[b"dot"]).await;
+    write_frame(&mut next, &query("example.com.", RecordType::A)).await;
+    assert!(read_frame(&mut next).await.is_some());
+    server.shutdown().await;
+}
+
+async fn wait_tls_connect(
+    addr: std::net::SocketAddr,
+    certificate: &harness::certificates::TestCertificate,
+    alpn: &[&[u8]],
+) -> tokio_rustls::client::TlsStream<TcpStream> {
+    tokio::time::timeout(PROMPTLY, async {
+        loop {
+            if let Ok(stream) = tls_connect(addr, certificate, alpn).await {
+                return stream;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn doh_connections_past_the_ceiling_are_refused_before_the_handshake_and_free_their_slot() {
+    let mut server = boot(tight(|limits| {
+        limits.max_connections = std::num::NonZeroUsize::MIN;
+        limits.idle_timeout = BoundedTimeout::from_secs(10).unwrap();
+    }))
+    .await;
+    let mut held = DohClient::connect(server.doh(), &server.certificate).await;
+    assert_eq!(held.get(&query("example.com.", RecordType::A)).await.status, 200);
+
+    let mut raw = TcpStream::connect(server.doh()).await.unwrap();
+    let mut byte = [0u8; 1];
+    let eof = tokio::time::timeout(PROMPTLY, raw.read(&mut byte))
+        .await
+        .expect("raw refusal must be prompt")
+        .unwrap();
+    assert_eq!(eof, 0, "must close with EOF before any ServerHello");
+
+    drop(held);
+    let tls = wait_tls_connect(server.doh(), &server.certificate, &[b"h2"]).await;
+    let (sender, connection) = hyper::client::conn::http2::handshake(
+        hyper_util::rt::TokioExecutor::new(),
+        hyper_util::rt::TokioIo::new(tls),
+    )
+    .await
+    .unwrap();
+    let connection = tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let mut next = DohClient { sender, connection };
+    assert_eq!(next.get(&query("example.com.", RecordType::A)).await.status, 200);
     server.shutdown().await;
 }
 
@@ -269,5 +347,60 @@ async fn malformed_dot_frames_drop_that_connection_and_the_listener_keeps_servin
     .await;
     assert_eq!(Message::from_vec(&answer).unwrap().answers.len(), 1);
 
+    server.shutdown().await;
+}
+
+async fn send_pipelined_frames<W: tokio::io::AsyncWrite + Unpin>(
+    mut writer: W,
+    body: Vec<u8>,
+    count: usize,
+) {
+    let len = u16::try_from(body.len()).unwrap().to_be_bytes();
+    for _ in 0..count {
+        let len_err = tokio::io::AsyncWriteExt::write_all(&mut writer, &len)
+            .await
+            .is_err();
+        let body_err = tokio::io::AsyncWriteExt::write_all(&mut writer, &body)
+            .await
+            .is_err();
+        if len_err || body_err {
+            break;
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_slow_reading_dot_client_is_closed_within_the_write_timeout() {
+    let mut server = boot(EncryptedOptions::default()).await;
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    // Shrink the client receive window and pipeline enough large answers (> 4 MiB) to fill
+    // loopback's send buffer so tokio-rustls flush() blocks and hits the 5s write_timeout.
+    socket.set_recv_buffer_size(4096).unwrap();
+    let tcp = socket.connect(server.dot()).await.unwrap();
+    let stream = connector(&server.certificate, &[b"dot"])
+        .connect(rustls::pki_types::ServerName::try_from("localhost").unwrap(), tcp)
+        .await
+        .unwrap();
+    let (mut reader, writer) = tokio::io::split(stream);
+
+    const PIPELINED: usize = 600;
+    let large = query("large.example.com.", RecordType::TXT);
+    let sender = tokio::spawn(send_pipelined_frames(writer, large, PIPELINED));
+
+    // Never read while the 5s write_timeout expires on the blocked flush.
+    tokio::time::sleep(Duration::from_millis(5500)).await;
+    let mut received = 0usize;
+    while tokio::time::timeout(Duration::from_secs(1), read_frame(&mut reader))
+        .await
+        .unwrap_or(None)
+        .is_some()
+    {
+        received = received.saturating_add(1);
+    }
+    let _ = sender.await;
+    assert!(
+        received < PIPELINED,
+        "server must abort the slow-reading DoT connection before sending all {PIPELINED} answers (got {received})"
+    );
     server.shutdown().await;
 }

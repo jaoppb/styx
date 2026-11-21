@@ -149,3 +149,71 @@ async fn a_configured_certificate_that_cannot_load_stops_startup_naming_the_file
         "no fallback to self-signed"
     );
 }
+
+fn read_until_active(stdout: std::process::ChildStdout) -> Vec<String> {
+    use std::io::{BufRead, BufReader};
+
+    let mut lines = Vec::new();
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        let active = line.contains("DNS-over-TLS listener active");
+        lines.push(line);
+        if active {
+            break;
+        }
+    }
+    lines
+}
+
+async fn boot_until_active(config: &Path) -> String {
+    let config = config.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_styx"))
+            .arg(&config)
+            .env("RUST_LOG", "info")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let _ = tx.send(read_until_active(stdout));
+        });
+        let lines = rx.recv_timeout(RUN_BUDGET).unwrap_or_else(|_| {
+            let _ = child.kill();
+            panic!("styx did not start DoT listener within {RUN_BUDGET:?}");
+        });
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = reader.join();
+        lines.join("\n")
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn first_boot_logs_the_pin_once_and_second_boot_reuses_without_printing_it() {
+    let dir = scratch();
+    let tls_dir = dir.join("tls");
+    let config = write_config(&dir, &format!("self_signed_dir = {:?}\n", tls_dir)).await;
+
+    let first_logs = boot_until_active(&config).await;
+    assert!(
+        first_logs.contains("generated a self-signed certificate for DoT/DoH"),
+        "{first_logs}"
+    );
+    assert!(first_logs.contains("pin-sha256=\""), "{first_logs}");
+
+    let second_logs = boot_until_active(&config).await;
+    assert!(
+        !second_logs.contains("generated a self-signed certificate"),
+        "{second_logs}"
+    );
+    assert!(!second_logs.contains("pin-sha256=\""), "{second_logs}");
+
+    let pin_output = styx(vec!["pin".into(), config.display().to_string()]).await;
+    assert!(pin_output.status.success(), "{}", text(&pin_output.stderr));
+    let pin = text(&pin_output.stdout).trim().to_owned();
+    assert!(first_logs.contains(&pin), "{pin}\n{first_logs}");
+}

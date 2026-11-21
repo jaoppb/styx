@@ -247,6 +247,76 @@ async fn the_stream_ceiling_is_advertised_in_the_http2_settings() {
 }
 
 #[tokio::test]
+async fn opening_streams_past_the_ceiling_queues_until_an_open_stream_finishes() {
+    let mut options = EncryptedOptions::default();
+    options.limits.max_streams_per_connection = StreamConcurrencyLimit::from_configured(2).unwrap();
+    let mut server = boot(options).await;
+    let tls = tls_connect(server.doh(), &server.certificate, &[b"h2"])
+        .await
+        .unwrap();
+    let (mut sender, mut connection) = h2::client::handshake(tls).await.unwrap();
+
+    let wire = query("example.com.");
+    let req = || {
+        hyper::Request::builder()
+            .method("POST")
+            .uri(DOH)
+            .header(hyper::header::CONTENT_TYPE, "application/dns-message")
+            .body(())
+            .unwrap()
+    };
+    // Complete one stream so the server's SETTINGS_MAX_CONCURRENT_STREAMS = 2 is applied.
+    let (res0, mut body0) = sender.send_request(req(), false).unwrap();
+    body0
+        .send_data(hyper::body::Bytes::copy_from_slice(&wire), true)
+        .unwrap();
+    tokio::select! {
+        r = res0 => assert_eq!(r.unwrap().status(), 200),
+        _ = &mut connection => panic!("connection ended early"),
+    }
+    assert_eq!(connection.max_concurrent_send_streams(), 2);
+
+    // Open 2 concurrent streams without finishing their bodies, then open a 3rd (N+1)
+    // stream: h2 queues stream 3 until one of the 2 active streams closes.
+    let (res1, mut body1) = sender.send_request(req(), false).unwrap();
+    let (res2, mut body2) = sender.send_request(req(), false).unwrap();
+    let get3 = hyper::Request::builder()
+        .method("GET")
+        .uri(format!("{DOH}?dns={}", URL_SAFE_NO_PAD.encode(&wire)))
+        .body(())
+        .unwrap();
+    let (mut res3, _) = sender.send_request(get3, true).unwrap();
+    let third_while_full = tokio::select! {
+        r = tokio::time::timeout(Duration::from_millis(100), &mut res3) => r,
+        _ = &mut connection => panic!("connection ended while 2 streams are open"),
+    };
+    assert!(
+        third_while_full.is_err(),
+        "3rd stream must queue while 2 streams hit the ceiling"
+    );
+
+    // Finish stream 1; now stream 3 can open and complete.
+    body1
+        .send_data(hyper::body::Bytes::copy_from_slice(&wire), true)
+        .unwrap();
+    tokio::select! {
+        (r1, r3) = async { tokio::join!(res1, res3) } => {
+            assert_eq!(r1.unwrap().status(), 200);
+            assert_eq!(r3.unwrap().status(), 200);
+        }
+        _ = &mut connection => panic!("connection ended before streams 1 and 3 answered"),
+    }
+    body2
+        .send_data(hyper::body::Bytes::copy_from_slice(&wire), true)
+        .unwrap();
+    tokio::select! {
+        r2 = res2 => assert_eq!(r2.unwrap().status(), 200),
+        _ = &mut connection => panic!("connection ended before stream 2 answered"),
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_query_ceiling_counts_streams_and_then_closes_the_connection() {
     let mut options = EncryptedOptions::default();
     options.limits.max_queries_per_connection = NonZeroU64::MIN.saturating_add(1);
@@ -268,6 +338,12 @@ async fn an_idle_doh_connection_is_closed_at_the_idle_timeout() {
     let mut server = boot(options).await;
     let mut client = DohClient::connect(server.doh(), &server.certificate).await;
     assert_eq!(client.get(&query("example.com.")).await.status, 200);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut client.connection)
+            .await
+            .is_err(),
+        "connection must stay open before the 300ms idle deadline"
+    );
     tokio::time::timeout(PROMPTLY, &mut client.connection)
         .await
         .expect("an idle connection is closed")
@@ -282,6 +358,12 @@ async fn a_client_that_never_finishes_the_handshake_is_closed_at_the_deadline() 
     let mut server = boot(options).await;
     let mut silent = TcpStream::connect(server.doh()).await.unwrap();
     let mut buf = [0u8; 16];
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), silent.read(&mut buf))
+            .await
+            .is_err(),
+        "silent handshake must stay open before the 300ms deadline"
+    );
     let read = tokio::time::timeout(PROMPTLY, silent.read(&mut buf))
         .await
         .expect("the server closes a silent client");
