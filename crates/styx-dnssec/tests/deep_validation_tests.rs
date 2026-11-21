@@ -3,7 +3,7 @@
 
 mod support;
 
-use styx_dnssec::domain::denial::{Nsec3Flags, Nsec3Params};
+use styx_dnssec::domain::denial::Nsec3Params;
 use styx_dnssec::domain::nsec3::hash_nsec3_name;
 use styx_dnssec::domain::signature::compute_dnskey_digest;
 use styx_dnssec::{
@@ -13,7 +13,8 @@ use styx_dnssec::{
 use styx_proto::domain::rdata::{DnskeyRdata, Nsec3Rdata, NsecRdata, TypeBitmap};
 use styx_proto::{Name, RData, RecordType, ResponseCode};
 use support::{
-    a_record, base32hex_encode, clock, name, query, record, StaticAnchorSource, ZoneKey,
+    a_record, base32hex_encode, clock, mark_non_cuts, name, query, record, StaticAnchorSource,
+    ZoneKey,
 };
 
 fn root_only(root_key: &ZoneKey) -> InMemoryChainSource {
@@ -37,7 +38,8 @@ async fn test_multi_record_rrset_validation_succeeds() {
         ValidationPolicy::default(),
         anchors.anchors.clone(),
     );
-    let outcome = validator.validate(&message, &root_only(&root_key)).await;
+    let source = root_only(&root_key);
+    let outcome = validator.validate(&message, &source).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
     assert_eq!(outcome.reason, VerdictReason::AnchorMatched);
@@ -51,6 +53,7 @@ async fn test_multi_level_descent_and_subdomain_hostname() {
     source.insert_cut(example_key.signed_cut(&root_key));
 
     let www = name("www.example.");
+    mark_non_cuts(&source, &www, &name("example."));
     let answer = a_record(&www, 9);
     let mut message = query(&www, RecordType::A);
     message
@@ -76,12 +79,7 @@ async fn test_nsec3_nodata_verification() {
     let root_key = ZoneKey::generate(&root);
 
     let salt = vec![0x12, 0x34];
-    let params = Nsec3Params::new(
-        Nsec3HashAlgorithm::SHA1,
-        Nsec3Flags::new(0),
-        1,
-        salt.clone(),
-    );
+    let params = Nsec3Params::new(Nsec3HashAlgorithm::SHA1, 1, salt.clone());
     let root_hash = hash_nsec3_name(&root, &params, Nsec3IterationsCap::DEFAULT).unwrap();
     let owner = name(&format!("{}.", base32hex_encode(&root_hash)));
     let a_only = TypeBitmap::new(vec![0x00, 0x01, 0x40]);
@@ -104,7 +102,9 @@ async fn test_nsec3_nodata_verification() {
         ValidationPolicy::default(),
         anchors.anchors.clone(),
     );
-    let outcome = validator.validate(&message, &root_only(&root_key)).await;
+    let source = root_only(&root_key);
+    source.record_not_a_cut(owner);
+    let outcome = validator.validate(&message, &source).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
     assert_eq!(outcome.reason, VerdictReason::ProvenDenialOfExistence);
@@ -130,7 +130,9 @@ async fn test_unsigned_denial_rejected_as_bogus() {
         ValidationPolicy::default(),
         anchors.anchors.clone(),
     );
-    let outcome = validator.validate(&message, &root_only(&root_key)).await;
+    let source = root_only(&root_key);
+    mark_non_cuts(&source, &name("nonexistent.example."), &root);
+    let outcome = validator.validate(&message, &source).await;
 
     assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
     assert_eq!(outcome.reason, VerdictReason::NoValidRrsig);

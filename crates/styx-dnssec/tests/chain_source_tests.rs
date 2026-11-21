@@ -1,7 +1,7 @@
 //! Integration tests for ChainSource strategies and wire response outcome application (Sub-phase 6d).
 
 use styx_dnssec::{
-    ChainSource, Delegation, FailureMode, InMemoryChainSource, ValidationOutcome,
+    ChainSource, ChainSourceError, Delegation, FailureMode, InMemoryChainSource, ValidationOutcome,
     ValidationVerdict, VerdictReason, ZoneCutMaterial,
 };
 use styx_proto::{
@@ -30,9 +30,11 @@ async fn test_in_memory_chain_source_referral_and_cut_insertion() {
     assert_eq!(other_cut.zone, other_zone);
     assert_eq!(other_cut.delegation, Delegation::NotACut);
 
-    let unknown = source.material_for(&unknown_zone).await.unwrap();
-    assert_eq!(unknown.zone, unknown_zone);
-    assert_eq!(unknown.delegation, Delegation::NotACut);
+    let unknown = source.material_for(&unknown_zone).await;
+    assert!(matches!(
+        unknown,
+        Err(ChainSourceError::Unavailable(ref zone)) if zone == &unknown_zone
+    ));
 }
 
 #[test]

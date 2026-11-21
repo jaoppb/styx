@@ -9,7 +9,8 @@ use styx_dnssec::{
 use styx_proto::domain::rdata::{DsRdata, NsecRdata, TypeBitmap};
 use styx_proto::{Name, RData, RecordType};
 use support::{
-    a_record, clock, clock_at, name, query, record, StaticAnchorSource, ZoneKey, DIGEST_SHA256,
+    a_record, clock, clock_at, mark_non_cuts, name, query, record, StaticAnchorSource, ZoneKey,
+    DIGEST_SHA256,
 };
 
 fn signed_root_answer(root_key: &ZoneKey) -> styx_proto::Message {
@@ -197,6 +198,8 @@ async fn test_cname_loop_is_rejected_as_bogus() {
 
     let www = name("www.example.");
     let alias = name("alias.example.");
+    mark_non_cuts(&source, &www, &name("example."));
+    mark_non_cuts(&source, &alias, &name("example."));
     let c1 = record(&www, RecordType::CNAME, RData::Cname(alias.clone()));
     let c2 = record(&alias, RecordType::CNAME, RData::Cname(www.clone()));
 
@@ -231,6 +234,8 @@ async fn test_cname_chain_and_smuggled_record_validation() {
 
     let www = name("www.example.");
     let alias = name("alias.example.");
+    mark_non_cuts(&source, &www, &name("example."));
+    mark_non_cuts(&source, &alias, &name("example."));
     let cname = record(&www, RecordType::CNAME, RData::Cname(alias.clone()));
     let target_a = a_record(&alias, 9);
 
@@ -275,6 +280,7 @@ async fn test_wildcard_answer_requires_signed_denial_proof() {
     source.insert_cut(example_key.signed_cut(&root_key));
 
     let qname = name("sub.wild.example.");
+    mark_non_cuts(&source, &qname, &name("example."));
     let answer = a_record(&qname, 42);
     let mut message = query(&qname, RecordType::A);
     message

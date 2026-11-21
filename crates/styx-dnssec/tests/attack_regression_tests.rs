@@ -27,6 +27,16 @@ impl Signed {
         let source = InMemoryChainSource::new();
         source.insert_cut(root.apex_cut());
         source.insert_cut(example.signed_cut(&root));
+        for non_cut in [
+            "a.example.",
+            "www.example.",
+            "alias.example.",
+            "ent.example.",
+            "host.example.",
+            "*.example.",
+        ] {
+            source.record_not_a_cut(name(non_cut));
+        }
         Self {
             root,
             example,
@@ -81,6 +91,7 @@ async fn a_rollover_key_that_does_not_sign_does_not_hide_the_one_that_does() {
         },
     ));
     let host = name("host.");
+    source.record_not_a_cut(host.clone());
     let mut message = query(&host, RecordType::A);
     signed_answer(&mut message, &signing, vec![a_record(&host, 1)]);
 
@@ -200,6 +211,7 @@ async fn a_cname_into_another_signed_zone_is_validated_there() {
     zone.source.insert_cut(other.signed_cut(&zone.root));
     let www = name("www.example.");
     let cdn = name("cdn.other.");
+    zone.source.record_not_a_cut(cdn.clone());
     let mut message = query(&www, RecordType::A);
     signed_answer(
         &mut message,
@@ -334,6 +346,8 @@ async fn a_revoked_key_or_a_non_zone_key_verifies_nothing() {
         let source = InMemoryChainSource::new();
         source.insert_cut(root.apex_cut());
         let host = name("host.");
+        source.record_not_a_cut(host.clone());
+        source.record_not_a_cut(host.clone());
         let mut message = query(&host, RecordType::A);
         signed_answer(&mut message, &root, vec![a_record(&host, 1)]);
 

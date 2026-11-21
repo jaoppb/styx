@@ -12,7 +12,7 @@ use crate::domain::ports::ChainSource;
 /// In-memory store for zone cuts and delegation material.
 ///
 /// Can be pre-populated for forwarder lookups or fed referrals as recursive descent proceeds.
-/// A name with no recorded cut is reported as not being a zone cut ([`Delegation::NotACut`]).
+/// Unrecorded names return [`ChainSourceError::Unavailable`] per the [`ChainSource`] contract.
 #[derive(Debug, Default)]
 pub struct InMemoryChainSource {
     cuts: RwLock<HashMap<Name, ZoneCutMaterial>>,
@@ -38,6 +38,11 @@ impl InMemoryChainSource {
     pub fn record_referral(&self, zone: Name, delegation: Delegation) {
         self.insert_cut(ZoneCutMaterial::new(zone, delegation));
     }
+
+    /// Explicitly records that `zone` is not a zone cut.
+    pub fn record_not_a_cut(&self, zone: Name) {
+        self.record_referral(zone, Delegation::NotACut);
+    }
 }
 
 impl ChainSource for InMemoryChainSource {
@@ -48,7 +53,7 @@ impl ChainSource for InMemoryChainSource {
         };
         match map.get(zone) {
             Some(cut) => Ok(cut.clone()),
-            None => Ok(ZoneCutMaterial::new(zone.clone(), Delegation::NotACut)),
+            None => Err(ChainSourceError::Unavailable(zone.clone())),
         }
     }
 }

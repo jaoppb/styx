@@ -13,8 +13,8 @@ use styx_core::test_util::TestClock;
 use styx_dnssec::domain::canonical::build_canonical_signed_data;
 use styx_dnssec::domain::signature::compute_dnskey_digest;
 use styx_dnssec::{
-    Delegation, DigestType, SignedRrset, TrustAnchor, TrustAnchorSource, TrustAnchors,
-    ZoneCutMaterial,
+    Delegation, DigestType, InMemoryChainSource, SignedRrset, TrustAnchor, TrustAnchorSource,
+    TrustAnchors, ZoneCutMaterial,
 };
 use styx_proto::domain::rdata::{DnskeyRdata, DsRdata, NsecRdata, RrsigRdata, TypeBitmap};
 use styx_proto::{
@@ -244,6 +244,15 @@ impl ZoneKey {
                 dnskey: self.dnskey_rrset(),
             },
         )
+    }
+}
+
+pub fn mark_non_cuts(source: &InMemoryChainSource, qname: &Name, authoritative_zone: &Name) {
+    let start = authoritative_zone.label_count().saturating_add(1);
+    for count in start..=qname.label_count() {
+        if let Some(ancestor) = qname.ancestor(count) {
+            source.record_not_a_cut(ancestor);
+        }
     }
 }
 

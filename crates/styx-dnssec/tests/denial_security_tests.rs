@@ -3,13 +3,16 @@
 
 mod support;
 
-use styx_dnssec::domain::denial::{DenialProof, Nsec3Flags, Nsec3Params, Nsec3Proof};
+use styx_dnssec::domain::denial::{DenialProof, Nsec3Params};
 use styx_dnssec::domain::error::DenialError;
 use styx_dnssec::domain::nsec3::{base32hex_decode, hash_nsec3_name};
-use styx_dnssec::{Nsec3HashAlgorithm, Nsec3IterationsCap};
+use styx_dnssec::{
+    Delegation, InMemoryChainSource, Nsec3HashAlgorithm, Nsec3IterationsCap, TrustAnchorSource,
+    ValidationPolicy, ValidationVerdict, Validator, VerdictReason, ZoneCutMaterial,
+};
 use styx_proto::domain::rdata::{Nsec3Rdata, NsecRdata, TypeBitmap};
 use styx_proto::{Name, RData, RecordClass, RecordType, ResourceRecord, ResponseCode, Ttl};
-use support::base32hex_encode;
+use support::{base32hex_encode, clock, mark_non_cuts, query, StaticAnchorSource, ZoneKey};
 
 fn nsec3_record(
     owner: &Name,
@@ -81,12 +84,7 @@ fn test_nsec_multilabel_nxdomain_rejects_existing_wildcard_at_closest_encloser()
 fn test_nsec3_rejects_delegation_and_dname_closest_enclosers() {
     let cap = Nsec3IterationsCap::DEFAULT;
     let salt = vec![0xAA, 0xBB];
-    let params = Nsec3Params::new(
-        Nsec3HashAlgorithm::SHA1,
-        Nsec3Flags::new(0),
-        1,
-        salt.clone(),
-    );
+    let params = Nsec3Params::new(Nsec3HashAlgorithm::SHA1, 1, salt.clone());
 
     let zone = Name::from_ascii("example.").unwrap();
     let ce = Name::from_ascii("sub.example.").unwrap();
@@ -97,18 +95,18 @@ fn test_nsec3_rejects_delegation_and_dname_closest_enclosers() {
     // 1. Closest encloser is a delegation cut (NS bit set, SOA bit clear).
     let ns_only = TypeBitmap::new(vec![0x00, 0x01, 0x20]);
     let delegation_rr = nsec3_record(&ce_owner, salt.clone(), ce_hash.clone(), ns_only);
-    let delegation_proof = Nsec3Proof::from_records(&[&delegation_rr]).unwrap();
+    let delegation_proof = DenialProof::from_records(&[&delegation_rr]).unwrap();
     assert_eq!(
-        delegation_proof.prove_name_does_not_exist(&zone, &qname, cap),
+        delegation_proof.verify(&zone, &qname, RecordType::A, ResponseCode::NXDOMAIN, cap),
         Err(DenialError::DenialProofIncomplete)
     );
 
     // 2. Closest encloser carries a DNAME bit (type 39: byte 4 bit 0 = 0x01).
     let dname_bitmap = TypeBitmap::new(vec![0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x01]);
     let dname_rr = nsec3_record(&ce_owner, salt, ce_hash, dname_bitmap);
-    let dname_proof = Nsec3Proof::from_records(&[&dname_rr]).unwrap();
+    let dname_proof = DenialProof::from_records(&[&dname_rr]).unwrap();
     assert_eq!(
-        dname_proof.prove_name_does_not_exist(&zone, &qname, cap),
+        dname_proof.verify(&zone, &qname, RecordType::A, ResponseCode::NXDOMAIN, cap),
         Err(DenialError::DenialProofIncomplete)
     );
 }
@@ -117,12 +115,7 @@ fn test_nsec3_rejects_delegation_and_dname_closest_enclosers() {
 fn test_nsec3_rejects_parent_zone_owner_and_delegation_nodata() {
     let cap = Nsec3IterationsCap::DEFAULT;
     let salt = vec![0x11, 0x22];
-    let params = Nsec3Params::new(
-        Nsec3HashAlgorithm::SHA1,
-        Nsec3Flags::new(0),
-        1,
-        salt.clone(),
-    );
+    let params = Nsec3Params::new(Nsec3HashAlgorithm::SHA1, 1, salt.clone());
 
     let parent_zone = Name::from_ascii("example.").unwrap();
     let child_zone = Name::from_ascii("sub.example.").unwrap();
@@ -139,16 +132,28 @@ fn test_nsec3_rejects_parent_zone_owner_and_delegation_nodata() {
         sub_hash.clone(),
         ns_only.clone(),
     );
-    let replayed_proof = Nsec3Proof::from_records(&[&parent_rr]).unwrap();
+    let replayed_proof = DenialProof::from_records(&[&parent_rr]).unwrap();
     assert_eq!(
-        replayed_proof.prove_name_does_not_exist(&child_zone, &qname, cap),
+        replayed_proof.verify(
+            &child_zone,
+            &qname,
+            RecordType::A,
+            ResponseCode::NXDOMAIN,
+            cap
+        ),
         Err(DenialError::DenialProofIncomplete)
     );
 
     // Exact NODATA for A at `sub.example.` using delegation NSEC3 (NS without SOA) in `example.`.
-    let nodata_proof = Nsec3Proof::from_records(&[&parent_rr]).unwrap();
+    let nodata_proof = DenialProof::from_records(&[&parent_rr]).unwrap();
     assert_eq!(
-        nodata_proof.prove_type_does_not_exist(&parent_zone, &child_zone, RecordType::A, cap),
+        nodata_proof.verify(
+            &parent_zone,
+            &child_zone,
+            RecordType::A,
+            ResponseCode::NOERROR,
+            cap,
+        ),
         Err(DenialError::NotCovered)
     );
 
@@ -159,9 +164,15 @@ fn test_nsec3_rejects_parent_zone_owner_and_delegation_nodata() {
         sub_hash,
         TypeBitmap::new(vec![0x00, 0x01, 0x20]),
     );
-    assert!(Nsec3Proof::from_records(&[&a_not_ds])
+    assert!(DenialProof::from_records(&[&a_not_ds])
         .unwrap()
-        .prove_type_does_not_exist(&parent_zone, &child_zone, RecordType::DS, cap)
+        .verify(
+            &parent_zone,
+            &child_zone,
+            RecordType::DS,
+            ResponseCode::NOERROR,
+            cap,
+        )
         .is_ok());
 }
 
@@ -184,4 +195,84 @@ fn test_base32hex_decode_rejects_invalid_lengths_padding_and_chars() {
     // Invalid characters and padding `=`
     assert_eq!(base32hex_decode(b"0p9mhaveqvm6t7vbl5lop2u3t2rp3toz"), None);
     assert_eq!(base32hex_decode(b"00======"), None);
+}
+
+#[test]
+fn test_nsec3_iterations_cap_boundaries_and_custom_cap() {
+    let name = Name::from_ascii("test.example.com.").unwrap();
+    let default_cap = Nsec3IterationsCap::DEFAULT;
+
+    let at_cap = Nsec3Params::new(Nsec3HashAlgorithm::SHA1, 100, vec![0xAA, 0xBB]);
+    assert!(hash_nsec3_name(&name, &at_cap, default_cap).is_ok());
+
+    let over_cap = Nsec3Params::new(Nsec3HashAlgorithm::SHA1, 101, vec![0xAA, 0xBB]);
+    assert_eq!(
+        hash_nsec3_name(&name, &over_cap, default_cap),
+        Err(DenialError::Nsec3IterationsExceeded)
+    );
+
+    let custom_cap = Nsec3IterationsCap::new(5);
+    let at_custom = Nsec3Params::new(Nsec3HashAlgorithm::SHA1, 5, vec![0xAA, 0xBB]);
+    let over_custom = Nsec3Params::new(Nsec3HashAlgorithm::SHA1, 6, vec![0xAA, 0xBB]);
+    assert!(hash_nsec3_name(&name, &at_custom, custom_cap).is_ok());
+    assert_eq!(
+        hash_nsec3_name(&name, &over_custom, custom_cap),
+        Err(DenialError::Nsec3IterationsExceeded)
+    );
+}
+
+#[tokio::test]
+async fn test_validator_returns_bogus_for_over_cap_nsec3_proof() {
+    let root = Name::root();
+    let root_key = ZoneKey::generate(&root);
+    let source = InMemoryChainSource::new();
+    source.insert_cut(ZoneCutMaterial::new(
+        root.clone(),
+        Delegation::Apex {
+            dnskey: root_key.dnskey_rrset(),
+        },
+    ));
+
+    let qname = Name::from_ascii("missing.example.").unwrap();
+    mark_non_cuts(&source, &qname, &root);
+
+    let owner_hash = vec![0x11; 20];
+    let nsec3_owner = Name::from_ascii(&format!("{}.", base32hex_encode(&owner_hash))).unwrap();
+    source.record_not_a_cut(nsec3_owner.clone());
+
+    let nsec3 = nsec3_record(
+        &nsec3_owner,
+        vec![0xAB],
+        owner_hash,
+        TypeBitmap::new(vec![0x00, 0x01, 0x22]),
+    );
+    let over_cap_nsec3 = ResourceRecord::new(
+        nsec3.owner,
+        RecordType::NSEC3,
+        RecordClass::In,
+        Ttl::from_secs(300),
+        RData::Nsec3(Nsec3Rdata::new(
+            1,
+            0,
+            101,
+            vec![0xAB],
+            vec![0x11; 20],
+            TypeBitmap::new(vec![0x00, 0x01, 0x22]),
+        )),
+    );
+
+    let mut message = query(&qname, RecordType::A);
+    message.header.rcode = ResponseCode::NXDOMAIN;
+    message
+        .authorities
+        .push(root_key.sign(std::slice::from_ref(&over_cap_nsec3)));
+    message.authorities.push(over_cap_nsec3);
+
+    let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
+    let outcome = Validator::new(clock(), ValidationPolicy::default(), anchors.anchors())
+        .validate(&message, &source)
+        .await;
+
+    assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
+    assert_eq!(outcome.reason, VerdictReason::Nsec3IterationsExceeded);
 }

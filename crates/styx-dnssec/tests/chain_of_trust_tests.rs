@@ -32,6 +32,7 @@ impl Chain {
         let example = ZoneKey::generate(&name("example."));
         let source = InMemoryChainSource::new();
         source.insert_cut(root.apex_cut());
+        source.record_not_a_cut(name("www.example."));
         Self {
             root,
             example,
@@ -236,6 +237,7 @@ async fn a_trust_anchor_below_the_root_starts_the_descent() {
     let chain = Chain::new();
     let source = InMemoryChainSource::new();
     source.insert_cut(chain.example.signed_cut(&chain.root));
+    source.record_not_a_cut(name("www.example."));
     let anchors = StaticAnchorSource::new(vec![chain.example.anchor()]);
 
     let outcome = Validator::new(
@@ -274,7 +276,9 @@ async fn unsigned_nsec3_records_beside_a_signed_nsec_proof_are_bogus() {
             TypeBitmap::new(Vec::new()),
         )),
     );
-    let mut message = query(&name("missing.example."), RecordType::A);
+    let missing = name("missing.example.");
+    support::mark_non_cuts(&chain.source, &missing, &root);
+    let mut message = query(&missing, RecordType::A);
     message.header.rcode = ResponseCode::NXDOMAIN;
     message
         .authorities
