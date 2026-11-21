@@ -224,10 +224,25 @@ fn step_into_cut<C: Clock>(
             VerdictReason::UnexpectedZoneApex,
         )),
         Delegation::Signed { ref ds, ref dnskey } => {
+            let ds_records = ds_records_at(&material.zone, &ds.records);
+            if ds_records.is_empty() {
+                return Err(ValidationOutcome::bogus(VerdictReason::DsDnskeyMismatch));
+            }
             authenticator
-                .authenticate_unexpanded(&ds.records, &ds.signatures, parent_keys, budget)
+                .authenticate_unexpanded(
+                    ds_records.iter().copied(),
+                    &ds.signatures,
+                    parent_keys,
+                    budget,
+                )
                 .map_err(ValidationOutcome::bogus)?;
-            let vouchers = ds_records_at(&material.zone, &ds.records);
+            let vouchers: Vec<DsRdata> = ds_records
+                .iter()
+                .filter_map(|record| match record.rdata {
+                    RData::Ds(ref ds_rdata) => Some(ds_rdata.clone()),
+                    _ => None,
+                })
+                .collect();
             authenticator
                 .authenticate_keys(&material.zone, dnskey, &vouchers, budget)
                 .map(CutStep::Child)
@@ -252,13 +267,13 @@ fn step_into_cut<C: Clock>(
     }
 }
 
-fn ds_records_at(zone: &Name, records: &[ResourceRecord]) -> Vec<DsRdata> {
+fn ds_records_at<'a>(zone: &Name, records: &'a [ResourceRecord]) -> Vec<&'a ResourceRecord> {
     records
         .iter()
-        .filter(|record| &record.owner == zone)
-        .filter_map(|record| match record.rdata {
-            RData::Ds(ref ds) => Some(ds.clone()),
-            _ => None,
+        .filter(|record| {
+            record.owner == *zone
+                && record.rtype == RecordType::DS
+                && matches!(record.rdata, RData::Ds(_))
         })
         .collect()
 }

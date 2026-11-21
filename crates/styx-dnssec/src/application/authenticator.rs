@@ -83,6 +83,9 @@ impl<C: Clock> Authenticator<C> {
         vouchers: &[DsRdata],
         budget: &mut VerificationBudget,
     ) -> Result<Vec<ResourceRecord>, ValidationOutcome> {
+        if vouchers.is_empty() {
+            return Err(ValidationOutcome::bogus(VerdictReason::DsDnskeyMismatch));
+        }
         let usable = self.usable_vouchers(vouchers)?;
         let vouched: Vec<ResourceRecord> = vouched_keys(zone, &dnskey.records, &usable)
             .cloned()
@@ -298,4 +301,29 @@ pub(crate) fn group_into_rrsets<'a>(
             .push(record);
     }
     rrsets.into_values().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use styx_core::test_util::TestClock;
+
+    use super::*;
+    use crate::domain::verdict::ValidationVerdict;
+
+    #[test]
+    fn authenticate_keys_rejects_empty_vouchers_as_bogus() {
+        let auth = Authenticator::new(TestClock::new(), ValidationPolicy::default());
+        let mut budget = VerificationBudget::from_policy(auth.policy());
+        let zone = Name::from_ascii("example.").unwrap();
+        let dnskey = SignedRrset::new(Vec::new(), Vec::new());
+
+        let outcome = auth
+            .authenticate_keys(&zone, &dnskey, &[], &mut budget)
+            .unwrap_err();
+        assert_eq!(
+            outcome,
+            ValidationOutcome::bogus(VerdictReason::DsDnskeyMismatch)
+        );
+        assert_ne!(outcome.verdict, ValidationVerdict::Insecure);
+    }
 }

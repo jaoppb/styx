@@ -7,8 +7,8 @@ use styx_dnssec::domain::denial::Nsec3Params;
 use styx_dnssec::domain::nsec3::hash_nsec3_name;
 use styx_dnssec::domain::signature::compute_dnskey_digest;
 use styx_dnssec::{
-    DigestType, InMemoryChainSource, Nsec3HashAlgorithm, Nsec3IterationsCap, ValidationPolicy,
-    ValidationVerdict, Validator, VerdictReason,
+    Delegation, DigestType, InMemoryChainSource, Nsec3HashAlgorithm, Nsec3IterationsCap,
+    SignedRrset, ValidationPolicy, ValidationVerdict, Validator, VerdictReason, ZoneCutMaterial,
 };
 use styx_proto::domain::rdata::{DnskeyRdata, Nsec3Rdata, NsecRdata, TypeBitmap};
 use styx_proto::{Name, RData, RecordType, ResponseCode};
@@ -145,3 +145,87 @@ fn test_sha1_ds_digest_computation() {
     let digest = compute_dnskey_digest(&zone, &dnskey, DigestType::SHA1);
     assert_eq!(digest.map(|digest| digest.len()), Some(20));
 }
+
+#[tokio::test]
+async fn test_signed_delegation_without_zone_ds_is_bogus_without_spending_budget() {
+    let root_key = ZoneKey::generate(&Name::root());
+    let example_key = ZoneKey::generate(&name("example."));
+    let sibling_key = ZoneKey::generate(&name("sibling."));
+    let www = name("www.example.");
+    let answer = a_record(&www, 9);
+    let mut message = query(&www, RecordType::A);
+    message
+        .answers
+        .push(example_key.sign(std::slice::from_ref(&answer)));
+    message.answers.push(answer);
+    let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
+
+    // Parent-signed sibling DS only (no DS for `example.`) -> Bogus(DsDnskeyMismatch),
+    // not Insecure(UnsupportedAlgorithm), even when budget has only 1 verification for root.
+    let sibling_ds = vec![sibling_key.ds_record()];
+    let sibling_sig = vec![root_key.sign(&sibling_ds)];
+    for ds_set in [
+        SignedRrset::new(Vec::new(), Vec::new()),
+        SignedRrset::new(sibling_ds, sibling_sig),
+    ] {
+        let source = root_only(&root_key);
+        source.insert_cut(ZoneCutMaterial::new(
+            name("example."),
+            Delegation::Signed {
+                ds: ds_set,
+                dnskey: example_key.dnskey_rrset(),
+            },
+        ));
+        mark_non_cuts(&source, &www, &name("example."));
+        let policy = ValidationPolicy {
+            max_signature_verifications: 1,
+            ..ValidationPolicy::default()
+        };
+        let outcome = Validator::new(clock(), policy, anchors.anchors.clone())
+            .validate(&message, &source)
+            .await;
+        assert_eq!(outcome.verdict, ValidationVerdict::Bogus);
+        assert_eq!(outcome.reason, VerdictReason::DsDnskeyMismatch);
+    }
+}
+
+#[tokio::test]
+async fn test_signed_delegation_with_unrelated_records_ignores_them_for_budget() {
+    let root_key = ZoneKey::generate(&Name::root());
+    let example_key = ZoneKey::generate(&name("example."));
+    let www = name("www.example.");
+    let answer = a_record(&www, 9);
+    let mut message = query(&www, RecordType::A);
+    message
+        .answers
+        .push(example_key.sign(std::slice::from_ref(&answer)));
+    message.answers.push(answer);
+    let anchors = StaticAnchorSource::new(vec![root_key.anchor()]);
+
+    // Valid `(example., DS)` alongside an unrelated record does not spend budget on it.
+    let source = root_only(&root_key);
+    let ds = vec![example_key.ds_record()];
+    let ds_sig = root_key.sign(&ds);
+    let unrelated = record(
+        &Name::root(),
+        RecordType::A,
+        RData::A(std::net::Ipv4Addr::LOCALHOST),
+    );
+    let mut ds_records = ds;
+    ds_records.push(unrelated);
+    source.insert_cut(ZoneCutMaterial::new(
+        name("example."),
+        Delegation::Signed {
+            ds: SignedRrset::new(ds_records, vec![ds_sig]),
+            dnskey: example_key.dnskey_rrset(),
+        },
+    ));
+    mark_non_cuts(&source, &www, &name("example."));
+    let tight = ValidationPolicy {
+        max_signature_verifications: 4,
+        ..ValidationPolicy::default()
+    };
+    let outcome = Validator::new(clock(), tight, anchors.anchors.clone())
+        .validate(&message, &source)
+        .await;
+    assert_eq!(outcome.verdict, ValidationVerdict::Secure);
