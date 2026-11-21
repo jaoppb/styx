@@ -4,13 +4,17 @@
 //! wrong would make that suite prove nothing. Each behaviour a descent test relies
 //! on is pinned here.
 
-use std::net::Ipv4Addr;
+use std::io::ErrorKind;
+use std::net::{IpAddr, Ipv4Addr};
 
 use styx_proto::{
     Header, Message, Name, Opcode, Opt, Question, RData, RecordClass, RecordType, ResourceRecord,
     ResponseCode, Ttl,
 };
-use styx_testkit::{DnsClient, FakeNameServer, FakeRole, ZoneScript};
+use styx_testkit::{
+    bind_udp_tcp_pair, bind_udp_tcp_pair_on, DnsClient, FakeNameServer, FakeRole, HarnessError,
+    ZoneScript,
+};
 
 fn name(text: &str) -> Name {
     Name::from_ascii(text).unwrap_or_else(|_| Name::root())
@@ -306,4 +310,36 @@ async fn an_unservable_record_type_fails_at_start() {
     assert!(FakeNameServer::start(FakeRole::Authoritative, script)
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn bind_udp_tcp_pair_shares_one_ephemeral_address() {
+    let pair = bind_udp_tcp_pair(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .await
+        .expect("bind ephemeral pair");
+    let udp_addr = pair.udp.local_addr().expect("udp addr");
+    let tcp_addr = pair.tcp.local_addr().expect("tcp addr");
+    assert_eq!(udp_addr, tcp_addr);
+    assert_ne!(udp_addr.port(), 0);
+}
+
+#[tokio::test]
+async fn bind_udp_tcp_pair_on_returns_addr_in_use_for_occupied_fixed_port() {
+    let occupied_tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind tcp");
+    let addr = occupied_tcp.local_addr().expect("addr");
+    let err = bind_udp_tcp_pair_on(addr)
+        .await
+        .expect_err("fixed occupied tcp port must fail");
+    assert!(matches!(err, HarnessError::Io(io) if io.kind() == ErrorKind::AddrInUse));
+
+    let occupied_udp = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind udp");
+    let udp_addr = occupied_udp.local_addr().expect("addr");
+    let err = bind_udp_tcp_pair_on(udp_addr)
+        .await
+        .expect_err("fixed occupied udp port must fail");
+    assert!(matches!(err, HarnessError::Io(io) if io.kind() == ErrorKind::AddrInUse));
 }
