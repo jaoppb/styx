@@ -263,7 +263,10 @@ async fn doh_connections_past_the_ceiling_are_refused_before_the_handshake_and_f
     }))
     .await;
     let mut held = DohClient::connect(server.doh(), &server.certificate).await;
-    assert_eq!(held.get(&query("example.com.", RecordType::A)).await.status, 200);
+    assert_eq!(
+        held.get(&query("example.com.", RecordType::A)).await.status,
+        200
+    );
 
     let mut raw = TcpStream::connect(server.doh()).await.unwrap();
     let mut byte = [0u8; 1];
@@ -285,7 +288,10 @@ async fn doh_connections_past_the_ceiling_are_refused_before_the_handshake_and_f
         let _ = connection.await;
     });
     let mut next = DohClient { sender, connection };
-    assert_eq!(next.get(&query("example.com.", RecordType::A)).await.status, 200);
+    assert_eq!(
+        next.get(&query("example.com.", RecordType::A)).await.status,
+        200
+    );
     server.shutdown().await;
 }
 
@@ -378,7 +384,10 @@ async fn a_slow_reading_dot_client_is_closed_within_the_write_timeout() {
     socket.set_recv_buffer_size(4096).unwrap();
     let tcp = socket.connect(server.dot()).await.unwrap();
     let stream = connector(&server.certificate, &[b"dot"])
-        .connect(rustls::pki_types::ServerName::try_from("localhost").unwrap(), tcp)
+        .connect(
+            rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+            tcp,
+        )
         .await
         .unwrap();
     let (mut reader, writer) = tokio::io::split(stream);

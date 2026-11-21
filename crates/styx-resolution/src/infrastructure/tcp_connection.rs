@@ -19,7 +19,9 @@ use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::Transport;
 use crate::infrastructure::admission::{ListenerShared, QueryPermit};
 pub use crate::infrastructure::connection_bounds::{ConnectionInFlight, InFlightSlot};
-use crate::infrastructure::connection_bounds::{ConnectionLimiter, QueryCeiling, QueryLimit, Spend};
+use crate::infrastructure::connection_bounds::{
+    ConnectionLimiter, QueryCeiling, QueryLimit, Spend,
+};
 use crate::infrastructure::framing::{read_frame, send_frame, SendFrameError};
 use crate::infrastructure::malformed_warning::MalformedWarning;
 use crate::infrastructure::stream_query::QueryTask;

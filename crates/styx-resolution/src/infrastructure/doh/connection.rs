@@ -130,7 +130,8 @@ where
         peer: SocketAddr,
     ) -> Arc<DohConnection<L, F, O, C, T, S>> {
         let streams = self.limits.max_streams_per_connection.as_usize();
-        let ceiling = QueryCeiling::new(QueryLimit::limited(self.limits.max_queries_per_connection));
+        let ceiling =
+            QueryCeiling::new(QueryLimit::limited(self.limits.max_queries_per_connection));
         let limiter =
             ConnectionLimiter::new(streams, ceiling, self.limits.idle_timeout.as_duration());
         Arc::new(DohConnection {
@@ -293,11 +294,13 @@ where
             }
             Err(error) => {
                 tracing::debug!(peer = %self.peer, transport = Transport::Doh.name(), %error, "DoH request refused");
-                DohResponse::Error(error).into_http().map(|inner| SlottedBody {
-                    inner,
-                    _slot: None,
-                    _cancel_timer: None,
-                })
+                DohResponse::Error(error)
+                    .into_http()
+                    .map(|inner| SlottedBody {
+                        inner,
+                        _slot: None,
+                        _cancel_timer: None,
+                    })
             }
         }
     }
@@ -347,7 +350,10 @@ where
             limits.idle_timeout.as_duration(),
         )
         .await?;
-        let answer = self.endpoint.dispatch(&wire, self.peer, received_at).await?;
+        let answer = self
+            .endpoint
+            .dispatch(&wire, self.peer, received_at)
+            .await?;
         Ok(SlottedAnswer { answer, slot })
     }
 }
