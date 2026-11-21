@@ -36,11 +36,13 @@ use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::Transport;
 use crate::domain::tls::{DohResourcePath, EncryptedLimits, StreamMessageLimit};
 use crate::infrastructure::admission::ListenerShared;
-use crate::infrastructure::connection_bounds::{ConnectionLimiter, QueryLimit, Spend};
+use crate::infrastructure::connection_bounds::{
+    ConnectionLimiter, QueryCeiling, QueryLimit, Spend,
+};
 use crate::infrastructure::doh::request::{accept_body, extract_head, DohHead, DohRequestForm};
 use crate::infrastructure::doh::response::DohResponse;
 use crate::infrastructure::malformed_warning::MalformedWarning;
-use crate::infrastructure::tcp_connection::QueryTask;
+use crate::infrastructure::stream_query::{EncodedAnswer, QueryTask};
 use crate::infrastructure::tls::accept_tls;
 
 /// Cap on the decoded request header block per stream.
@@ -124,7 +126,7 @@ where
         peer: SocketAddr,
     ) -> Arc<DohConnection<L, F, O, C, T, S>> {
         let streams = self.limits.max_streams_per_connection.as_usize();
-        let ceiling = QueryLimit::limited(self.limits.max_queries_per_connection).ceiling();
+        let ceiling = QueryCeiling::new(QueryLimit::limited(self.limits.max_queries_per_connection));
         let limiter =
             ConnectionLimiter::new(streams, ceiling, self.limits.idle_timeout.as_duration());
         Arc::new(DohConnection {
@@ -169,7 +171,7 @@ where
         wire: &[u8],
         peer: SocketAddr,
         received_at: Instant,
-    ) -> Result<Vec<u8>, DohError> {
+    ) -> Result<EncodedAnswer, DohError> {
         let Some(_permit) = self.shared.budget.acquire().await else {
             return Err(DohError::StreamBudgetExceeded);
         };
@@ -239,7 +241,7 @@ where
     async fn handle(&self, request: Request<Incoming>) -> Response<Full<Bytes>> {
         let received_at = self.endpoint.shared.clock.now_monotonic();
         let response = match self.answer(request, received_at).await {
-            Ok(wire) => DohResponse::answer(wire),
+            Ok(answer) => DohResponse::answer(answer.wire, answer.min_ttl),
             Err(error) => {
                 tracing::debug!(peer = %self.peer, transport = Transport::Doh.name(), %error, "DoH request refused");
                 DohResponse::Error(error)
@@ -252,7 +254,7 @@ where
         &self,
         request: Request<Incoming>,
         received_at: Instant,
-    ) -> Result<Vec<u8>, DohError> {
+    ) -> Result<EncodedAnswer, DohError> {
         if self.limiter.spend() == Spend::Over {
             return Err(DohError::StreamBudgetExceeded);
         }

@@ -23,6 +23,7 @@ mod malformed_warning;
 pub mod observer;
 pub mod response;
 pub mod server;
+pub(crate) mod stream_query;
 pub mod supervisor;
 pub mod tcp;
 pub mod tcp_connection;

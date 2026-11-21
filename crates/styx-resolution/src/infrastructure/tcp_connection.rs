@@ -4,10 +4,8 @@
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use styx_proto::application::Decoder;
-use styx_proto::{DecodeError, Message, MessageKind};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -15,18 +13,16 @@ use tokio_util::sync::CancellationToken;
 use styx_core::{Clock, Sleeper};
 
 use crate::application::terminal::TerminalHandler;
-use crate::domain::client_reply::error_reply;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
-use crate::domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
+use crate::domain::request::Transport;
 use crate::infrastructure::admission::{ListenerShared, QueryPermit};
 pub use crate::infrastructure::connection_bounds::{ConnectionInFlight, InFlightSlot};
-use crate::infrastructure::connection_bounds::{ConnectionLimiter, QueryLimit, Spend};
-use crate::infrastructure::early_reply::{badvers_reply, formerr_reply};
+use crate::infrastructure::connection_bounds::{ConnectionLimiter, QueryCeiling, QueryLimit, Spend};
 use crate::infrastructure::framing::{read_frame, send_frame, SendFrameError};
 use crate::infrastructure::malformed_warning::MalformedWarning;
-use crate::infrastructure::response::ResponseWriter;
+use crate::infrastructure::stream_query::QueryTask;
 
 /// An encoded response on its way to the writer, carrying its in-flight slot.
 #[derive(Debug)]
@@ -91,7 +87,7 @@ where
         let (read_half, write_half) = tokio::io::split(stream);
         let limiter = ConnectionLimiter::new(
             self.settings.max_in_flight,
-            self.settings.query_limit.ceiling(),
+            QueryCeiling::new(self.settings.query_limit),
             self.settings.idle_timeout,
         );
         let (frames, outbound) = mpsc::channel(self.settings.max_in_flight.get());
@@ -186,7 +182,7 @@ where
         self.shared.tasks.spawn(async move {
             tokio::select! {
                 () = abort.cancelled() => {}
-                () = query.answer(frame, permit, slot, frames) => {}
+                () = answer_frame(query, frame, permit, slot, frames) => {}
             }
         });
         true
@@ -222,18 +218,15 @@ where
     }
 }
 
-/// One query, answered on its own task: decoded, run through the pipeline and encoded the
-/// same way for every stream transport, DoH included.
-pub(crate) struct QueryTask<L, F, O, C, T, S> {
-    shared: ListenerShared<L, F, O, C, T, S>,
-    malformed_warning: Arc<MalformedWarning<C, S>>,
-    peer: SocketAddr,
-    transport: Transport,
-    received_at: Instant,
-}
-
-impl<L, F, O, C, T, S> QueryTask<L, F, O, C, T, S>
-where
+/// Answers one framed query; the global permit is released as soon as the response is
+/// encoded, before it is queued, so a slow reader cannot pin the budget.
+async fn answer_frame<L, F, O, C, T, S>(
+    query: QueryTask<L, F, O, C, T, S>,
+    frame: Vec<u8>,
+    permit: QueryPermit,
+    slot: InFlightSlot,
+    frames: mpsc::Sender<OutboundFrame>,
+) where
     L: LocalRecords + Send + Sync + 'static,
     F: FilterPolicy + Send + Sync + 'static,
     O: QueryObserver + Send + Sync + 'static,
@@ -241,120 +234,19 @@ where
     T: TerminalHandler + Send + Sync + 'static,
     S: Sleeper + Send + Sync + 'static,
 {
-    /// Answers the query; the global permit is released as soon as the response is
-    /// encoded, before it is queued, so a slow reader cannot pin the budget.
-    async fn answer(
-        self,
-        frame: Vec<u8>,
-        permit: QueryPermit,
-        slot: InFlightSlot,
-        frames: mpsc::Sender<OutboundFrame>,
-    ) {
-        let body = self.respond(&frame).await;
-        drop(permit);
-        let Some(body) = body else {
-            return;
-        };
-        if frames
-            .send(OutboundFrame { body, _slot: slot })
-            .await
-            .is_err()
-        {
-            tracing::debug!(peer = %self.peer, transport = self.transport.name(), "connection writer gone; dropping response");
-        }
-    }
-
-    /// A query task for `peer` on `transport`, received at `received_at`.
-    pub(crate) fn new(
-        shared: ListenerShared<L, F, O, C, T, S>,
-        malformed_warning: Arc<MalformedWarning<C, S>>,
-        peer: SocketAddr,
-        transport: Transport,
-        received_at: Instant,
-    ) -> Self {
-        Self {
-            shared,
-            malformed_warning,
-            peer,
-            transport,
-            received_at,
-        }
-    }
-
-    /// The encoded answer to `bytes`, or `None` when the message gets no answer at all.
-    pub(crate) async fn respond(&self, bytes: &[u8]) -> Option<Vec<u8>> {
-        let mut decoder = Decoder::new(bytes);
-        let query = match decoder.decode_message() {
-            Ok(msg) => msg,
-            Err(DecodeError::UnsupportedEdnsVersion(rejected)) => {
-                tracing::debug!(peer = %self.peer, version = rejected.version(), "unsupported EDNS version; answering BADVERS");
-                return self.reply_early(badvers_reply(&rejected));
-            }
-            Err(err) => {
-                tracing::debug!(peer = %self.peer, transport = self.transport.name(), %err, "malformed stream query; responding FORMERR");
-                self.malformed_warning.record();
-                return self.reply_early(formerr_reply(bytes));
-            }
-        };
-
-        if query.header.kind == MessageKind::Response {
-            tracing::debug!(peer = %self.peer, transport = self.transport.name(), "silently dropping inbound response (QR=1)");
-            return None;
-        }
-
-        let client = ClientId::from_socket_addr(self.peer);
-        let max_size = MaxResponseSize::tcp_ceiling();
-        let ctx = RequestContext::new(
-            query,
-            client,
-            self.transport,
-            max_size,
-            self.shared.udp_payload_size_default,
-            self.received_at,
-        );
-        let pipeline = &self.shared.pipeline;
-        let response = match pipeline
-            .handle_within(&ctx, self.shared.query_timeout)
-            .await
-        {
-            Ok(msg) => msg,
-            Err(crate::domain::error::PipelineError::InboundResponse) => return None,
-            Err(err) => error_reply(&ctx.query, err.response_code()),
-        };
-        self.encode(response, &ctx)
-    }
-
-    /// Encodes `reply` to a query that never reached the pipeline, or drops it when there is
-    /// no reply to give.
-    fn reply_early(&self, reply: Option<Message>) -> Option<Vec<u8>> {
-        let Some(reply) = reply else {
-            tracing::debug!(peer = %self.peer, transport = self.transport.name(), "silently dropping unanswerable message");
-            return None;
-        };
-        self.encode_error_reply(reply)
-    }
-
-    /// Encodes a reply to a query that never reached the pipeline.
-    fn encode_error_reply(&self, resp: Message) -> Option<Vec<u8>> {
-        let client = ClientId::from_socket_addr(self.peer);
-        let ctx = RequestContext::new(
-            resp.clone(),
-            client,
-            self.transport,
-            MaxResponseSize::tcp_ceiling(),
-            self.shared.udp_payload_size_default,
-            self.received_at,
-        );
-        self.encode(resp, &ctx)
-    }
-
-    fn encode(&self, message: Message, ctx: &RequestContext) -> Option<Vec<u8>> {
-        match ResponseWriter::new().write(message, ctx) {
-            Ok(body) => Some(body),
-            Err(err) => {
-                tracing::error!(peer = %self.peer, transport = self.transport.name(), %err, "failed to serialize stream response");
-                None
-            }
-        }
+    let answer = query.respond(&frame).await;
+    drop(permit);
+    let Some(answer) = answer else {
+        return;
+    };
+    if frames
+        .send(OutboundFrame {
+            body: answer.wire,
+            _slot: slot,
+        })
+        .await
+        .is_err()
+    {
+        tracing::debug!("connection writer gone; dropping response");
     }
 }

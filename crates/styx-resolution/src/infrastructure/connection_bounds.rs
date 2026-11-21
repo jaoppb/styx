@@ -99,36 +99,20 @@ impl QueryLimit {
     pub(crate) const fn limited(max: NonZeroU64) -> Self {
         Self(Some(max))
     }
-
-    /// Instantiates a fresh counter for one accepted connection.
-    pub(crate) fn ceiling(self) -> QueryCeiling {
-        match self.0 {
-            Some(max) => QueryCeiling::limited(max),
-            None => QueryCeiling::unlimited(),
-        }
-    }
 }
 
 /// Per-connection query counter enforcing a configured ceiling.
 #[derive(Debug)]
 pub(crate) struct QueryCeiling {
-    max: Option<NonZeroU64>,
+    limit: QueryLimit,
     spent: AtomicU64,
 }
 
 impl QueryCeiling {
-    /// A ceiling that never trips while still counting admitted queries for idle checks.
-    pub(crate) fn unlimited() -> Self {
+    /// Builds a fresh counter enforcing `limit`.
+    pub(crate) fn new(limit: QueryLimit) -> Self {
         Self {
-            max: None,
-            spent: AtomicU64::new(0),
-        }
-    }
-
-    /// A ceiling allowing `max` queries before closing.
-    pub(crate) fn limited(max: NonZeroU64) -> Self {
-        Self {
-            max: Some(max),
+            limit,
             spent: AtomicU64::new(0),
         }
     }
@@ -136,7 +120,7 @@ impl QueryCeiling {
     /// Records one query against the ceiling.
     pub(crate) fn spend(&self) -> Spend {
         let current = self.spent.fetch_add(1, Ordering::Relaxed).saturating_add(1);
-        let Some(max) = self.max else {
+        let Some(max) = self.limit.0 else {
             return Spend::Within;
         };
         if current > max.get() {
@@ -250,13 +234,13 @@ mod tests {
 
     #[test]
     fn query_ceiling_transitions_within_last_over() {
-        let ceiling = QueryCeiling::limited(NonZeroU64::new(2).unwrap());
+        let ceiling = QueryCeiling::new(QueryLimit::limited(NonZeroU64::new(2).unwrap()));
         assert_eq!(ceiling.spend(), Spend::Within);
         assert_eq!(ceiling.spend(), Spend::Last);
         assert_eq!(ceiling.spend(), Spend::Over);
         assert_eq!(ceiling.seen(), 3);
 
-        let unlimited = QueryCeiling::unlimited();
+        let unlimited = QueryCeiling::new(QueryLimit::unlimited());
         for _ in 0..5 {
             assert_eq!(unlimited.spend(), Spend::Within);
         }
