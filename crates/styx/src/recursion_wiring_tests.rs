@@ -164,21 +164,21 @@ async fn an_unreadable_root_hints_file_fails_startup_naming_the_member() {
 async fn recursor_timeouts_must_be_shorter_than_query_timeout() {
     assert!(load_with(2, "").await.is_ok());
 
-    let err_member = load_with(2, "[recursion.members.recursor-b]\ntcp_timeout_ms = 2000\n")
+    let member_error = load_with(2, "[recursion.members.recursor-b]\ntcp_timeout_ms = 2000\n")
         .await
         .err()
         .expect("tcp_timeout_ms == query_timeout must fail");
-    let message = format!("{err_member:#}");
+    let message = format!("{member_error:#}");
     assert!(message.contains("recursor-b"), "{message}");
 
-    let err_shared = load_with(
+    let shared_error = load_with(
         2,
         "udp_timeout_ms = 2500\n[recursion.members.recursor-b]\nudp_timeout_ms = 500\n",
     )
     .await
     .err()
     .expect("recursor-a inherits shared 2500ms > 2000ms");
-    let message = format!("{err_shared:#}");
+    let message = format!("{shared_error:#}");
     assert!(message.contains("recursor-a"), "{message}");
 
     let _ = load_with(
