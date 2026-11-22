@@ -59,57 +59,19 @@ impl<'a> AnswerChain<'a> {
             .iter()
             .filter(|record| !matches!(record.rdata, RData::Rrsig(_)))
             .collect();
-        let mut links = Vec::new();
-        let mut current = question.qname.to_canonical();
+        let mut state = ChainWalk {
+            links: Vec::new(),
+            visited: Vec::new(),
+            synthesized_cnames: 0,
+            current: question.qname.to_canonical(),
+        };
         for _ in 0..=MAX_CNAME_HOPS {
-            if links
-                .iter()
-                .any(|link: &ChainLink<'_>| link.owner == current)
-            {
-                return None;
+            match state.advance(question.qtype, &data)? {
+                StepOutcome::Continue => {}
+                StepOutcome::Finish(end) => return state.complete(end, data.len()),
             }
-            let at_owner: Vec<&ResourceRecord> = data
-                .iter()
-                .copied()
-                .filter(|record| record.owner.eq_ignore_case(&current))
-                .collect();
-            let terminal: Vec<&ResourceRecord> = at_owner
-                .iter()
-                .copied()
-                .filter(|record| {
-                    question.qtype == RecordType::ANY || record.rtype == question.qtype
-                })
-                .collect();
-            if !terminal.is_empty() {
-                links.push(ChainLink {
-                    owner: current,
-                    records: terminal,
-                });
-                return Self::complete(links, ChainEnd::Terminal, data.len());
-            }
-            let [cname] = at_owner.as_slice() else {
-                return at_owner
-                    .is_empty()
-                    .then(|| Self::complete(links, ChainEnd::Dangling(current), data.len()))
-                    .flatten();
-            };
-            let RData::Cname(ref target) = cname.rdata else {
-                return None;
-            };
-            let next = target.to_canonical();
-            links.push(ChainLink {
-                owner: current,
-                records: vec![*cname],
-            });
-            current = next;
         }
         None
-    }
-
-    /// The chain, provided it accounts for every data record in the section.
-    fn complete(links: Vec<ChainLink<'a>>, end: ChainEnd, data_records: usize) -> Option<Self> {
-        let in_chain: usize = links.iter().map(|link| link.records.len()).sum();
-        (in_chain == data_records).then_some(Self { links, end })
     }
 
     /// The links in order from the question name.
@@ -122,5 +84,154 @@ impl<'a> AnswerChain<'a> {
     #[must_use]
     pub fn end(&self) -> &ChainEnd {
         &self.end
+    }
+}
+
+enum StepOutcome {
+    Continue,
+    Finish(ChainEnd),
+}
+
+struct ChainWalk<'a> {
+    links: Vec<ChainLink<'a>>,
+    visited: Vec<Name>,
+    synthesized_cnames: usize,
+    current: Name,
+}
+
+impl<'a> ChainWalk<'a> {
+    fn advance(&mut self, qtype: RecordType, data: &[&'a ResourceRecord]) -> Option<StepOutcome> {
+        if self.visited.contains(&self.current) {
+            return None;
+        }
+        self.visited.push(self.current.clone());
+        let at_owner: Vec<&ResourceRecord> = data
+            .iter()
+            .copied()
+            .filter(|record| record.owner.eq_ignore_case(&self.current))
+            .collect();
+        if let Some(outcome) = self.try_dname_step(qtype, data, &at_owner)? {
+            return Some(outcome);
+        }
+        let terminal: Vec<&ResourceRecord> = at_owner
+            .iter()
+            .copied()
+            .filter(|record| qtype == RecordType::ANY || record.rtype == qtype)
+            .collect();
+        if !terminal.is_empty() {
+            self.links.push(ChainLink {
+                owner: self.current.clone(),
+                records: terminal,
+            });
+            return Some(StepOutcome::Finish(ChainEnd::Terminal));
+        }
+        let [cname] = at_owner.as_slice() else {
+            return at_owner
+                .is_empty()
+                .then(|| StepOutcome::Finish(ChainEnd::Dangling(self.current.clone())));
+        };
+        let RData::Cname(ref target) = cname.rdata else {
+            return None;
+        };
+        self.links.push(ChainLink {
+            owner: self.current.clone(),
+            records: vec![*cname],
+        });
+        self.current = target.to_canonical();
+        Some(StepOutcome::Continue)
+    }
+
+    fn try_dname_step(
+        &mut self,
+        qtype: RecordType,
+        data: &[&'a ResourceRecord],
+        at_owner: &[&ResourceRecord],
+    ) -> Option<Option<StepOutcome>> {
+        let (dname, next) = match find_dname_redirection(&self.current, data) {
+            DnameLookup::None => return Some(None),
+            DnameLookup::Malformed => return None,
+            DnameLookup::Match(dname, next) => (dname, next),
+        };
+        let consumed = matching_synthesized_cname(at_owner, &next)?;
+        self.synthesized_cnames = self.synthesized_cnames.saturating_add(consumed);
+        self.links.push(ChainLink {
+            owner: dname.owner.to_canonical(),
+            records: vec![dname],
+        });
+        if qtype == RecordType::CNAME && consumed == 1 {
+            return Some(Some(StepOutcome::Finish(ChainEnd::Terminal)));
+        }
+        self.current = next;
+        Some(Some(StepOutcome::Continue))
+    }
+
+    fn complete(self, end: ChainEnd, data_records: usize) -> Option<AnswerChain<'a>> {
+        let in_chain: usize = self.links.iter().map(|link| link.records.len()).sum();
+        (in_chain.checked_add(self.synthesized_cnames) == Some(data_records)).then_some(
+            AnswerChain {
+                links: self.links,
+                end,
+            },
+        )
+    }
+}
+
+enum DnameLookup<'a> {
+    None,
+    Match(&'a ResourceRecord, Name),
+    Malformed,
+}
+
+fn find_dname_redirection<'a>(current: &Name, data: &[&'a ResourceRecord]) -> DnameLookup<'a> {
+    let matching: Vec<&ResourceRecord> = data
+        .iter()
+        .copied()
+        .filter(|record| {
+            record.rtype == RecordType::DNAME
+                && !record.owner.eq_ignore_case(current)
+                && current.is_subdomain_of(&record.owner)
+        })
+        .collect();
+    let Some(best) = matching
+        .iter()
+        .copied()
+        .max_by_key(|record| record.owner.label_count())
+    else {
+        return DnameLookup::None;
+    };
+    let same_owner_count = matching
+        .iter()
+        .filter(|record| record.owner.eq_ignore_case(&best.owner))
+        .count();
+    if same_owner_count != 1 {
+        return DnameLookup::Malformed;
+    }
+    let RData::Unknown(ref rdata) = best.rdata else {
+        return DnameLookup::Malformed;
+    };
+    let Some(dname_target) = Name::from_uncompressed_wire(rdata.octets()) else {
+        return DnameLookup::Malformed;
+    };
+    let Some(next) = current.substitute_suffix(&best.owner, &dname_target) else {
+        return DnameLookup::Malformed;
+    };
+    DnameLookup::Match(best, next.to_canonical())
+}
+
+fn matching_synthesized_cname(
+    at_owner: &[&ResourceRecord],
+    expected_target: &Name,
+) -> Option<usize> {
+    match at_owner {
+        [] => Some(0),
+        [record]
+            if matches!(
+                &record.rdata,
+                RData::Cname(target) if target.eq_ignore_case(expected_target)
+            ) =>
+        {
+            Some(1)
+        }
+        _ => None,
     }
 }
