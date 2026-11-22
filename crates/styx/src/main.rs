@@ -216,6 +216,11 @@ impl RecursionWiring {
     }
 }
 
+/// Checks that each recursor member's per-exchange timeouts (`udp_timeout_ms` and
+/// `tcp_timeout_ms`) stay strictly shorter than `query_timeout`.
+///
+/// Only per-exchange timeouts are checked here; comparing `wall_clock_ms` against
+/// `query_timeout` is tracked separately in #146.
 fn check_recursor_deadlines(
     configs: &BTreeMap<String, RecursionConfig>,
     query_timeout: Duration,
@@ -226,7 +231,8 @@ fn check_recursor_deadlines(
             let table = format_recursion_member_table(name);
             bail!(
                 "query_timeout ({}ms) must exceed recursor member `{name}`'s longest \
-                 per-query timeout ({}ms); raise query_timeout_secs or lower \
+                 per-exchange timeout ({}ms; only udp_timeout_ms and tcp_timeout_ms are \
+                 checked, not wall_clock_ms); raise query_timeout_secs or lower \
                  udp_timeout_ms / tcp_timeout_ms under [recursion] or {table}",
                 query_timeout.as_millis(),
                 member_timeout.as_millis()

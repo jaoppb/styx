@@ -170,6 +170,10 @@ async fn recursor_timeouts_must_be_shorter_than_query_timeout() {
         .expect("tcp_timeout_ms == query_timeout must fail");
     let message = format!("{member_error:#}");
     assert!(message.contains("recursor-b"), "{message}");
+    assert!(
+        message.contains("per-exchange") && message.contains("wall_clock_ms"),
+        "{message}"
+    );
 
     let shared_error = load_with(
         2,
