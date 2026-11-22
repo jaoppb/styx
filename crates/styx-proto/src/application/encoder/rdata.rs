@@ -25,8 +25,24 @@ impl Encoder {
             RData::Nsec(nsec) => self.encode_nsec(nsec),
             RData::Nsec3(n3) => self.encode_nsec3(n3),
             RData::Nsec3Param(p) => self.encode_nsec3param(p),
-            RData::Unknown(u) => self.write_slice(u.octets()),
+            RData::Unknown(u) => self.encode_unknown(u),
         }
+    }
+
+    fn encode_unknown(
+        &mut self,
+        unknown: &crate::domain::rdata::UnknownRdata,
+    ) -> Result<(), EncodeError> {
+        // RFC 4034 §6.2 item 3 (retained by RFC 6840 §5.1): DNAME RDATA target is
+        // lowercased in canonical form.
+        if unknown.rtype() == crate::domain::record::RecordType::DNAME && self.lowercase_names {
+            if let Some(target) =
+                crate::domain::name::Name::from_uncompressed_wire(unknown.octets())
+            {
+                return self.write_name(&target);
+            }
+        }
+        self.write_slice(unknown.octets())
     }
 
     fn encode_soa(&mut self, soa: &SoaRdata) -> Result<(), EncodeError> {
@@ -88,13 +104,15 @@ impl Encoder {
         self.write_u32(sig.signature_expiration())?;
         self.write_u32(sig.signature_inception())?;
         self.write_u16(sig.key_tag())?;
-        self.write_name(sig.signer_name())?;
+        // RFC 6840 §5.1 removes RRSIG RDATA from the RFC 4034 §6.2 item 3 lowercasing rule.
+        self.write_name_preserving_case(sig.signer_name())?;
         self.write_slice(sig.signature())?;
         Ok(())
     }
 
     fn encode_nsec(&mut self, nsec: &NsecRdata) -> Result<(), EncodeError> {
-        self.write_name(nsec.next_domain())?;
+        // RFC 6840 §5.1 removes NSEC RDATA from the RFC 4034 §6.2 item 3 lowercasing rule.
+        self.write_name_preserving_case(nsec.next_domain())?;
         self.write_slice(nsec.types().windows())?;
         Ok(())
     }
