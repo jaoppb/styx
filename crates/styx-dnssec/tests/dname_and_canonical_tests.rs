@@ -179,8 +179,8 @@ async fn test_dname_dangling_target_requires_denial_and_succeeds() {
     );
 }
 
-#[tokio::test]
-async fn test_nsec_next_domain_preserves_case_in_canonical_and_sorting() {
+#[test]
+fn test_nsec_next_domain_preserves_case_in_canonical_and_sorting() {
     let mixed_next = name("WWW.ExAmPlE.");
     let nsec_record = nsec(
         &name("a.example."),
@@ -215,7 +215,10 @@ async fn test_nsec_next_domain_preserves_case_in_canonical_and_sorting() {
         canonical_rr_cmp(&nsec_record, &lower_next_nsec),
         Ordering::Less
     );
+}
 
+#[tokio::test]
+async fn test_mixed_case_nsec_next_domain_validates_end_to_end() {
     let root = ZoneKey::generate(&Name::root());
     let source = InMemoryChainSource::new();
     source.insert_cut(root.apex_cut());
