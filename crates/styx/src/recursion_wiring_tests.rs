@@ -190,3 +190,39 @@ async fn recursor_timeouts_must_be_shorter_than_query_timeout() {
     .await
     .expect("member overrides below query_timeout succeed");
 }
+
+#[tokio::test]
+async fn dotted_member_name_is_quoted_in_recursor_deadline_error() {
+    let text = format!(
+        r#"
+query_timeout_secs = 2
+
+[upstream]
+strategy = "ordered_failover"
+
+[[upstream.members]]
+name = "rec.v4"
+kind = "recursor"
+addr = "0.0.0.0:0"
+
+[recursion]
+root_hints = "{ROOT_HINTS}"
+
+[recursion.members."rec.v4"]
+tcp_timeout_ms = 2000
+"#
+    );
+    let server = ServerConfig::from_toml_str(&text).expect("the pool parses");
+    let pool = server.upstream.expect("the file has a pool");
+    let section = RecursionSection::from_toml_str(&text).expect("[recursion] parses");
+    let error = RecursionWiring::load(section, &pool, server.query_timeout)
+        .await
+        .err()
+        .expect("tcp_timeout_ms == query_timeout must fail");
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains(r#"[recursion.members."rec.v4"]"#),
+        "{message}"
+    );
+}

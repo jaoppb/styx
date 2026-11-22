@@ -56,5 +56,65 @@ fn recursor_key_advice(member: &str, key: &str) -> String {
     if key == "edns_buffer" {
         return "edns_buffer has no recursor equivalent and should be removed".to_owned();
     }
-    format!("set it under [recursion.members.{member}] instead")
+    let formatted = format_toml_key(member);
+    format!("set it under [recursion.members.{formatted}] instead")
+}
+
+fn format_toml_key(name: &str) -> String {
+    if !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return name.to_owned();
+    }
+    let mut quoted = String::with_capacity(name.len().saturating_add(2));
+    quoted.push('"');
+    for character in name.chars() {
+        match character {
+            '\\' => quoted.push_str("\\\\"),
+            '"' => quoted.push_str("\\\""),
+            '\u{08}' => quoted.push_str("\\b"),
+            '\t' => quoted.push_str("\\t"),
+            '\n' => quoted.push_str("\\n"),
+            '\u{0C}' => quoted.push_str("\\f"),
+            '\r' => quoted.push_str("\\r"),
+            other if other.is_ascii_control() => {
+                use std::fmt::Write as _;
+                let _ = write!(quoted, "\\u{:04X}", u32::from(other));
+            }
+            other => quoted.push(other),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recursor_key_advice_quotes_non_bare_toml_member_names() {
+        let dotted = ConfigError::RecursorMemberKey {
+            member: "rec.v4".to_owned(),
+            key: "udp_timeout_ms",
+        }
+        .to_string();
+        assert!(
+            dotted.contains(r#"[recursion.members."rec.v4"]"#),
+            "{dotted}"
+        );
+
+        let bare = ConfigError::RecursorMemberKey {
+            member: "recursor-v4_1".to_owned(),
+            key: "tcp_timeout_ms",
+        }
+        .to_string();
+        assert!(bare.contains("[recursion.members.recursor-v4_1]"), "{bare}");
+
+        let escaped = format_toml_key("a\"b\\c");
+        assert_eq!(escaped, r#""a\"b\\c""#);
+        assert_eq!(format_toml_key(""), r#""""#);
+    }
 }

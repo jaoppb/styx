@@ -24,6 +24,7 @@ use styx_core::{SystemClock, SystemSleeper, UpstreamId, UpstreamKind};
 use styx_net::Do53Client;
 use styx_recursion::application::config::{RecursionConfig, RecursionSection};
 use styx_recursion::application::recursor::{Recursor, RecursorPorts};
+use styx_recursion::domain::error::format_recursion_member_table;
 use styx_recursion::domain::root_hints::RootHints;
 use styx_recursion::infrastructure::do53_transport::{Do53Transport, DNS_PORT};
 use styx_recursion::infrastructure::infra_cache::MemoryInfraCache;
@@ -222,11 +223,11 @@ fn check_recursor_deadlines(
     for (name, config) in configs {
         let member_timeout = config.udp_timeout.max(config.tcp_timeout);
         if member_timeout >= query_timeout {
+            let table = format_recursion_member_table(name);
             bail!(
                 "query_timeout ({}ms) must exceed recursor member `{name}`'s longest \
                  per-query timeout ({}ms); raise query_timeout_secs or lower \
-                 udp_timeout_ms / tcp_timeout_ms under [recursion] or \
-                 [recursion.members.{name}]",
+                 udp_timeout_ms / tcp_timeout_ms under [recursion] or {table}",
                 query_timeout.as_millis(),
                 member_timeout.as_millis()
             );
