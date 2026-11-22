@@ -13,8 +13,8 @@ use crate::domain::ports::ChainSource;
 use crate::domain::trust_anchor::{TrustAnchor, TrustAnchors};
 use crate::domain::verdict::{ValidationOutcome, VerdictReason};
 
-/// Maximum `ChainSource::material_for` calls per descent (`NotACut` probe bound).
-const MAX_DESCENT_PROBES: usize = 32;
+/// Maximum `ChainSource::material_for` calls per descent (127-label DNS name maximum).
+const MAX_DESCENT_PROBES: usize = 127;
 
 /// Authenticated zone and its DNSKEY RRset reached by chain descent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,11 +103,13 @@ pub(crate) async fn walk_chain_descent<C: Clock, S: ChainSource>(
     let mut cuts_crossed = 0u8;
     let mut probes = 0usize;
     while let Some(next_zone) = find_next_zone_cut(qname, &current_zone) {
-        probes = probes.saturating_add(1);
-        if probes > MAX_DESCENT_PROBES {
-            return Err(ValidationOutcome::indeterminate(
-                VerdictReason::MaxZoneCutsExceeded,
-            ));
+        if !cache.steps.contains_key(&next_zone) {
+            probes = probes.saturating_add(1);
+            if probes > MAX_DESCENT_PROBES {
+                return Err(ValidationOutcome::indeterminate(
+                    VerdictReason::MaxZoneCutsExceeded,
+                ));
+            }
         }
         let step = step_cached(
             authenticator,
@@ -183,13 +185,13 @@ async fn step_cached<C: Clock, S: ChainSource>(
     }
     let result = async {
         let material = fetch_material(chain_source, next_zone).await?;
-        if !material.zone.eq_ignore_case(next_zone) {
-            tracing::warn!(requested = %next_zone, described = %material.zone, "chain material describes another name");
-            return Err(ValidationOutcome::indeterminate(
-                VerdictReason::ChainMaterialUnavailable,
-            ));
-        }
-        match step_into_cut(authenticator, authoritative_zone, &material, parent_keys, budget)? {
+        match step_into_cut(
+            authenticator,
+            authoritative_zone,
+            &material,
+            parent_keys,
+            budget,
+        )? {
             CutStep::NotACut => Ok(CachedStep::NotACut),
             CutStep::Child(child_keys) => Ok(CachedStep::Secure(child_keys)),
         }
@@ -203,10 +205,21 @@ async fn fetch_material<S: ChainSource>(
     chain_source: &S,
     zone: &Name,
 ) -> Result<ZoneCutMaterial, ValidationOutcome> {
-    chain_source.material_for(zone).await.map_err(|error| {
+    let material = chain_source.material_for(zone).await.map_err(|error| {
         tracing::warn!(%zone, %error, "DNSSEC chain material unavailable");
         ValidationOutcome::indeterminate(VerdictReason::ChainMaterialUnavailable)
-    })
+    })?;
+    if !material.zone.eq_ignore_case(zone) {
+        tracing::warn!(
+            requested = %zone,
+            described = %material.zone,
+            "chain material describes another name"
+        );
+        return Err(ValidationOutcome::indeterminate(
+            VerdictReason::ChainMaterialUnavailable,
+        ));
+    }
+    Ok(material)
 }
 
 /// Crosses the name `material` describes: `NotACut` when it is not a zone cut,

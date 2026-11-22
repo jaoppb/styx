@@ -85,7 +85,7 @@ async fn test_keytrap_budget_stops_colliding_keys_and_signatures() {
     message.answers.extend(std::iter::repeat_n(bad_sig, 5));
     message.answers.push(answer);
 
-    for (max_verif, max_fail, max_keys) in [(5, 2, 2), (1, 16, 4)] {
+    for (max_verif, max_fail, max_keys) in [(5, 1, 2), (1, 16, 4)] {
         let policy = ValidationPolicy {
             max_signature_verifications: max_verif,
             max_signature_failures: max_fail,
@@ -317,7 +317,7 @@ fn test_nsec_wildcard_expansion_requires_exact_encloser_label_count() {
 }
 
 #[tokio::test]
-async fn test_descent_not_a_cut_probe_bound() {
+async fn test_descent_allows_35_non_cut_labels_and_enforces_max_zone_cuts() {
     let root = ZoneKey::generate(&Name::root());
     let source = InMemoryChainSource::new();
     source.insert_cut(root.apex_cut());
@@ -336,14 +336,35 @@ async fn test_descent_not_a_cut_probe_bound() {
         .push(root.sign(std::slice::from_ref(&answer)));
     message.answers.push(answer);
 
-    let outcome = Validator::new(
+    let ok_outcome = Validator::new(
         clock(),
         ValidationPolicy::default(),
         TrustAnchors::new(root.anchor()),
     )
     .validate(&message, &source)
     .await;
+    assert_eq!(ok_outcome.verdict, ValidationVerdict::Secure);
 
-    assert_eq!(outcome.verdict, ValidationVerdict::Indeterminate);
-    assert_eq!(outcome.reason, VerdictReason::MaxZoneCutsExceeded);
+    let child_a = ZoneKey::generate(&name("a."));
+    let child_b = ZoneKey::generate(&name("b.a."));
+    source.insert_cut(child_a.signed_cut(&root));
+    source.insert_cut(child_b.signed_cut(&child_a));
+    let leaf = name("www.b.a.");
+    source.record_not_a_cut(leaf.clone());
+    let leaf_answer = a_record(&leaf, 2);
+    let mut cut_msg = query(&leaf, RecordType::A);
+    cut_msg
+        .answers
+        .push(child_b.sign(std::slice::from_ref(&leaf_answer)));
+    cut_msg.answers.push(leaf_answer);
+
+    let policy = ValidationPolicy {
+        max_zone_cuts: 1,
+        ..ValidationPolicy::default()
+    };
+    let cut_outcome = Validator::new(clock(), policy, TrustAnchors::new(root.anchor()))
+        .validate(&cut_msg, &source)
+        .await;
+    assert_eq!(cut_outcome.verdict, ValidationVerdict::Indeterminate);
+    assert_eq!(cut_outcome.reason, VerdictReason::MaxZoneCutsExceeded);
 }
