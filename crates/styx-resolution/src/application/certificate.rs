@@ -56,8 +56,7 @@ where
                 Ok(Some(self.reader.load_pin(cert_path).await?))
             }
             CertificateSource::SelfSigned { .. } => {
-                let existing = self.store.load_existing(config.self_signed_dir()).await?;
-                Ok(existing.map(|identity| identity.pin()))
+                self.store.load_pin(config.self_signed_dir()).await
             }
         }
     }

@@ -13,8 +13,8 @@ use time::OffsetDateTime;
 use tokio::io::AsyncWriteExt;
 
 use crate::domain::error::CertificateError;
-use crate::domain::tls::{CertificateOrigin, SelfSignedStore, ServingIdentity};
-use crate::infrastructure::cert_fs::PemPair;
+use crate::domain::tls::{CertificateOrigin, SelfSignedStore, ServingIdentity, SpkiPin};
+use crate::infrastructure::cert_fs::{read_cert_pin, PemPair};
 
 /// File name of the persisted self-signed certificate.
 pub const SELF_SIGNED_CERT_FILE: &str = "cert.pem";
@@ -56,6 +56,14 @@ impl SelfSignedStore for SelfSignedGenerator {
         let pair = PemPair::read_cert_with_key(&cert_path, &key_path, key_pem).await?;
         pair.identity(CertificateOrigin::SelfSigned, false)
             .map(Some)
+    }
+
+    async fn load_pin(&self, dir: &Path) -> Result<Option<SpkiPin>, CertificateError> {
+        let cert_path = dir.join(SELF_SIGNED_CERT_FILE);
+        if !exists(&cert_path).await? {
+            return Ok(None);
+        }
+        read_cert_pin(&cert_path).await.map(Some)
     }
 
     async fn generate(

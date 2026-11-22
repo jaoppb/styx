@@ -90,6 +90,10 @@ impl SelfSignedStore for FakeStore {
         Ok(self.existing.clone())
     }
 
+    async fn load_pin(&self, _dir: &Path) -> Result<Option<SpkiPin>, CertificateError> {
+        Ok(self.existing.as_ref().map(ServingIdentity::pin))
+    }
+
     async fn generate(
         &self,
         _dir: &Path,
@@ -340,6 +344,12 @@ impl SelfSignedStore for FailingStore {
         })
     }
 
+    async fn load_pin(&self, _dir: &Path) -> Result<Option<SpkiPin>, CertificateError> {
+        Ok(Some(
+            identity(b"pin-only", CertificateOrigin::SelfSigned, false).pin(),
+        ))
+    }
+
     async fn generate(
         &self,
         _dir: &Path,
@@ -378,4 +388,25 @@ async fn unreadable_stale_self_signed_material_logs_its_error_separately() {
         "{warnings:?}"
     );
     assert!(warnings[0].contains("chmod 600"), "{warnings:?}");
+}
+
+#[tokio::test]
+async fn existing_pin_on_self_signed_uses_load_pin_without_loading_the_key() {
+    let clock = Arc::new(TestClock::new());
+    clock.set_utc(epoch_plus(5));
+    let provisioner = CertificateProvisioner::new(
+        clock,
+        FakeLoader {
+            serves: None,
+            loads: Arc::new(AtomicUsize::new(0)),
+        },
+        FailingStore,
+    );
+
+    let pin = provisioner.existing_pin(&config(false)).await.unwrap();
+
+    assert_eq!(
+        pin,
+        Some(identity(b"pin-only", CertificateOrigin::SelfSigned, false).pin())
+    );
 }

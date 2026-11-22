@@ -49,15 +49,19 @@ impl OperatorCertificateLoader for FilesystemCertificateReader {
     }
 
     async fn load_pin(&self, cert_path: &Path) -> Result<SpkiPin, CertificateError> {
-        let cert_pem = read_file(cert_path).await?;
-        let chain = parse_chain(cert_path, &cert_pem)?;
-        let leaf = chain
-            .first()
-            .ok_or_else(|| CertificateError::NoCertificateInFile {
-                path: cert_path.to_path_buf(),
-            })?;
-        Ok(leaf_facts(cert_path, leaf)?.pin)
+        read_cert_pin(cert_path).await
     }
+}
+
+pub(super) async fn read_cert_pin(cert_path: &Path) -> Result<SpkiPin, CertificateError> {
+    let cert_pem = read_file(cert_path).await?;
+    let chain = parse_chain(cert_path, &cert_pem)?;
+    let leaf = chain
+        .first()
+        .ok_or_else(|| CertificateError::NoCertificateInFile {
+            path: cert_path.to_path_buf(),
+        })?;
+    Ok(leaf_facts(cert_path, leaf)?.pin)
 }
 
 /// A certificate file and its key file, both read into memory.

@@ -292,9 +292,10 @@ pub trait OperatorCertificateLoader: Send + Sync + 'static {
 
 /// Startup port: the self-signed directory, read and written.
 ///
-/// Obligation: `load_existing` never generates; `generate` writes the key owner-only and
-/// returns an identity marked freshly generated; material found readable by group or
-/// others is refused.
+/// Obligation: `load_existing` and `load_pin` never generate; `generate` writes the key
+/// owner-only and returns an identity marked freshly generated; `load_existing` refuses
+/// material found readable by group or others, while `load_pin` reads only the public
+/// certificate without opening the key or checking directory ownership.
 /// Implemented by: `infrastructure::cert_fs::SelfSignedGenerator` (Phase 7).
 /// Why it exists: generation happens once and is reused, so the pin the operator
 /// distributed stays valid across restarts.
@@ -304,6 +305,15 @@ pub trait SelfSignedStore: Send + Sync + 'static {
         &self,
         dir: &Path,
     ) -> impl Future<Output = Result<Option<ServingIdentity>, CertificateError>> + Send;
+
+    /// Reads only the persisted certificate in `dir` and derives its leaf's pin, or `None`
+    /// when no certificate exists yet. The private key is never opened and directory/key
+    /// ownership checks are skipped so `styx pin` works under any user permitted to read
+    /// `cert.pem` (including `root` via `sudo`).
+    fn load_pin(
+        &self,
+        dir: &Path,
+    ) -> impl Future<Output = Result<Option<SpkiPin>, CertificateError>> + Send;
 
     /// Generates, persists and returns a new identity valid from `now`.
     fn generate(

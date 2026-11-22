@@ -278,3 +278,35 @@ async fn the_pin_is_read_from_the_certificate_alone() {
     let pin = reader.load_pin(&cert).await.unwrap();
     assert_eq!(pin, served.pin(), "no key file is needed to print the pin");
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn self_signed_load_pin_reads_only_the_certificate_without_dir_or_key_checks() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = Scratch::new();
+    let store = SelfSignedGenerator::new();
+    assert_eq!(store.load_pin(scratch.dir()).await.unwrap(), None);
+
+    let generated = store
+        .generate(scratch.dir(), &names(), fixture_now())
+        .await
+        .unwrap();
+    let key_path = scratch.path(SELF_SIGNED_KEY_FILE);
+    tokio::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644))
+        .await
+        .unwrap();
+    tokio::fs::set_permissions(scratch.dir(), std::fs::Permissions::from_mode(0o770))
+        .await
+        .unwrap();
+    assert!(store.load_existing(scratch.dir()).await.is_err());
+
+    let pin = store.load_pin(scratch.dir()).await.unwrap();
+    assert_eq!(pin, Some(generated.pin()));
+
+    tokio::fs::remove_file(&key_path).await.unwrap();
+    let pin_without_key = store.load_pin(scratch.dir()).await.unwrap();
+    assert_eq!(pin_without_key, Some(generated.pin()));
+
+    let _ = tokio::fs::set_permissions(scratch.dir(), std::fs::Permissions::from_mode(0o700)).await;
+}
