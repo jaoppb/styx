@@ -33,7 +33,6 @@ use styx_core::{Clock, Sleeper};
 
 use crate::application::terminal::TerminalHandler;
 use crate::domain::error::DohError;
-use crate::domain::limits::TCP_WRITE_TIMEOUT;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
@@ -46,7 +45,7 @@ use crate::infrastructure::connection_bounds::{
 use crate::infrastructure::doh::request::{accept_body, extract_head, DohHead, DohRequestForm};
 use crate::infrastructure::doh::response::DohResponse;
 use crate::infrastructure::malformed_warning::MalformedWarning;
-use crate::infrastructure::stream_query::{EncodedAnswer, QueryTask};
+use crate::infrastructure::stream_query::{EncodedAnswer, QueryTask, StreamOutcome};
 use crate::infrastructure::tls::accept_tls;
 
 /// Cap on the decoded request header block per stream.
@@ -99,6 +98,7 @@ pub(crate) struct DohEndpoint<L, F, O, C, T, S> {
     shared: ListenerShared<L, F, O, C, T, S>,
     malformed_warning: Arc<MalformedWarning<C, S>>,
     limits: EncryptedLimits,
+    write_timeout: Duration,
     settings: DohSettings,
 }
 
@@ -115,12 +115,14 @@ where
         shared: ListenerShared<L, F, O, C, T, S>,
         malformed_warning: Arc<MalformedWarning<C, S>>,
         limits: EncryptedLimits,
+        write_timeout: Duration,
         settings: DohSettings,
     ) -> Self {
         Self {
             shared,
             malformed_warning,
             limits,
+            write_timeout,
             settings,
         }
     }
@@ -189,7 +191,11 @@ where
             Transport::Doh,
             received_at,
         );
-        task.respond(wire).await.ok_or(DohError::Unanswerable)
+        match task.respond(wire).await {
+            StreamOutcome::Answered(answer) => Ok(answer),
+            StreamOutcome::Dropped => Err(DohError::Unanswerable),
+            StreamOutcome::EncodeFailed => Err(DohError::EncodeFailed),
+        }
     }
 }
 
@@ -308,12 +314,13 @@ where
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let abort = self.endpoint.shared.abort.clone();
         let stalled = self.send_stalled.clone();
+        let write_timeout = self.endpoint.write_timeout;
         let peer = self.peer;
         self.endpoint.shared.tasks.spawn(async move {
             tokio::select! {
                 () = abort.cancelled() => {}
                 _ = cancel_rx => {}
-                () = tokio::time::sleep(TCP_WRITE_TIMEOUT) => {
+                () = tokio::time::sleep(write_timeout) => {
                     tracing::debug!(%peer, transport = Transport::Doh.name(), "DoH response send timed out; closing");
                     stalled.cancel();
                 }

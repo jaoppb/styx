@@ -106,6 +106,7 @@ where
                     encrypted.setup.doh(),
                     self.shared.clone(),
                     limits,
+                    self.concurrency,
                     settings.clone(),
                 )
             },

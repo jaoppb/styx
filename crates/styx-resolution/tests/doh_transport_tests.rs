@@ -657,3 +657,121 @@ async fn a_doh_request_waiting_on_the_global_query_budget_gets_its_full_query_ti
         .await
         .expect("server must shut down");
 }
+
+#[tokio::test]
+async fn a_zero_window_client_honors_the_configured_tcp_write_timeout() {
+    use styx_resolution::ConcurrencyLimits;
+
+    let defaults = ConcurrencyLimits::default_limits();
+    let settings = harness::server::ServerSettings {
+        limits: ConcurrencyLimits::new(
+            defaults.max_in_flight_queries(),
+            defaults.max_tcp_connections(),
+            defaults.max_in_flight_per_connection(),
+            defaults.udp_sockets_per_addr(),
+            Duration::from_millis(200),
+        ),
+        ..harness::server::ServerSettings::default()
+    };
+    let mut server = EncryptedTestServer::boot_with_server_settings(
+        Arc::new(AnsweringTerminal),
+        EncryptedOptions::default(),
+        settings,
+    )
+    .await;
+
+    let tls = tls_connect(server.doh(), &server.certificate, &[b"h2"])
+        .await
+        .unwrap();
+    let (mut sender, mut connection) = h2::client::Builder::new()
+        .initial_window_size(0)
+        .handshake::<_, hyper::body::Bytes>(tls)
+        .await
+        .unwrap();
+    let request = hyper::Request::builder()
+        .method("GET")
+        .uri(format!(
+            "{DOH}?dns={}",
+            URL_SAFE_NO_PAD.encode(query("example.com."))
+        ))
+        .body(())
+        .unwrap();
+    let (response, _) = sender.send_request(request, true).unwrap();
+    let res = tokio::time::timeout(PROMPTLY, async {
+        tokio::select! {
+            response = response => response.unwrap(),
+            _ = &mut connection => panic!("connection closed before response headers"),
+        }
+    })
+    .await
+    .expect("response headers arrive promptly");
+    assert_eq!(res.status(), 200);
+
+    // The 200ms configured tcp_write_timeout must close the stalled connection well before
+    // the 5s TCP_WRITE_TIMEOUT default and 30s idle timeout.
+    let _keep = (sender, res);
+    let closed = tokio::time::timeout(Duration::from_secs(2), &mut connection).await;
+    assert!(
+        closed.is_ok(),
+        "zero-window connection must close at the configured 200ms write timeout"
+    );
+    server.shutdown().await;
+}
+
+struct OversizedTerminal;
+
+impl styx_resolution::TerminalHandler for OversizedTerminal {
+    async fn handle_terminal(
+        &self,
+        ctx: &styx_resolution::RequestContext,
+    ) -> Result<styx_resolution::ResolutionResponse, styx_resolution::PipelineError> {
+        use styx_proto::domain::rdata::basic::TxtRdata;
+        use styx_proto::domain::rdata::CharacterString;
+        use styx_proto::{
+            Message, RData, RecordClass, RecordType, ResourceRecord, ResponseCode, Ttl,
+        };
+        use styx_resolution::{ResolutionOutcome, ResolvedSource};
+
+        let question = ctx.query.questions.first().cloned().unwrap();
+        let mut response = Message::response_to(ctx.query.header.id, question.clone());
+        let txt = CharacterString::new(vec![b'x'; 200]);
+        for _ in 0..400 {
+            response.answers.push(ResourceRecord::new(
+                question.qname.clone(),
+                RecordType::TXT,
+                RecordClass::In,
+                Ttl::from_secs(60),
+                RData::Txt(TxtRdata::new(vec![txt.clone()])),
+            ));
+        }
+        let outcome = ResolutionOutcome::Resolved {
+            source: ResolvedSource::Upstream,
+            rcode: ResponseCode::NOERROR,
+            cacheable: false,
+            authentic_data: false,
+        };
+        Ok(styx_resolution::ResolutionResponse::new(response, outcome))
+    }
+}
+
+#[tokio::test]
+async fn a_server_encode_failure_answers_with_500_while_inbound_response_gets_400() {
+    let mut server =
+        EncryptedTestServer::boot(Arc::new(OversizedTerminal), EncryptedOptions::default()).await;
+    let mut client = DohClient::connect(server.doh(), &server.certificate).await;
+
+    let encode_failed = client.post(&query("example.com.")).await;
+    assert_eq!(encode_failed.status, 500);
+    assert!(encode_failed.body.is_empty());
+
+    let mut inbound_response = Message::new(0x1234, MessageType::Response, OpCode::Query);
+    inbound_response.add_query(Query::query(
+        Name::from_ascii("example.com.").unwrap(),
+        RecordType::A,
+    ));
+    let unanswerable = client.post(&inbound_response.to_vec().unwrap()).await;
+    assert_eq!(unanswerable.status, 400);
+    assert!(unanswerable.body.is_empty());
+
+    server.shutdown().await;
+}

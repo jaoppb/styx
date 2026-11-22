@@ -28,6 +28,16 @@ pub(crate) struct EncodedAnswer {
     pub(crate) min_ttl: Option<Ttl>,
 }
 
+/// Outcome of handling one stream query.
+pub(crate) enum StreamOutcome {
+    /// An encoded DNS response ready to send.
+    Answered(EncodedAnswer),
+    /// No response should be sent (for example, an inbound response `QR=1`).
+    Dropped,
+    /// Serializing the DNS response failed on the server.
+    EncodeFailed,
+}
+
 /// One query, answered on its own task: decoded, run through the pipeline and encoded the
 /// same way for every stream transport, DoH included.
 pub(crate) struct QueryTask<L, F, O, C, T, S> {
@@ -64,8 +74,8 @@ where
         }
     }
 
-    /// The encoded answer to `bytes`, or `None` when the message gets no answer at all.
-    pub(crate) async fn respond(&self, bytes: &[u8]) -> Option<EncodedAnswer> {
+    /// The outcome for `bytes`: an encoded answer, a silent drop, or an encode failure.
+    pub(crate) async fn respond(&self, bytes: &[u8]) -> StreamOutcome {
         let mut decoder = Decoder::new(bytes);
         let query = match decoder.decode_message() {
             Ok(msg) => msg,
@@ -82,7 +92,7 @@ where
 
         if query.header.kind == MessageKind::Response {
             tracing::debug!(peer = %self.peer, transport = self.transport.name(), "silently dropping inbound response (QR=1)");
-            return None;
+            return StreamOutcome::Dropped;
         }
 
         let client = ClientId::from_socket_addr(self.peer);
@@ -101,7 +111,9 @@ where
             .await
         {
             Ok(msg) => msg,
-            Err(crate::domain::error::PipelineError::InboundResponse) => return None,
+            Err(crate::domain::error::PipelineError::InboundResponse) => {
+                return StreamOutcome::Dropped
+            }
             Err(err) => error_reply(&ctx.query, err.response_code()),
         };
         self.encode(response, &ctx)
@@ -109,16 +121,16 @@ where
 
     /// Encodes `reply` to a query that never reached the pipeline, or drops it when there is
     /// no reply to give.
-    fn reply_early(&self, reply: Option<Message>) -> Option<EncodedAnswer> {
+    fn reply_early(&self, reply: Option<Message>) -> StreamOutcome {
         let Some(reply) = reply else {
             tracing::debug!(peer = %self.peer, transport = self.transport.name(), "silently dropping unanswerable message");
-            return None;
+            return StreamOutcome::Dropped;
         };
         self.encode_error_reply(reply)
     }
 
     /// Encodes a reply to a query that never reached the pipeline.
-    fn encode_error_reply(&self, resp: Message) -> Option<EncodedAnswer> {
+    fn encode_error_reply(&self, resp: Message) -> StreamOutcome {
         let client = ClientId::from_socket_addr(self.peer);
         let ctx = RequestContext::new(
             resp.clone(),
@@ -131,13 +143,13 @@ where
         self.encode(resp, &ctx)
     }
 
-    fn encode(&self, message: Message, ctx: &RequestContext) -> Option<EncodedAnswer> {
+    fn encode(&self, message: Message, ctx: &RequestContext) -> StreamOutcome {
         let min_ttl = min_ttl_of(&message);
         match ResponseWriter::new().write(message, ctx) {
-            Ok(wire) => Some(EncodedAnswer { wire, min_ttl }),
+            Ok(wire) => StreamOutcome::Answered(EncodedAnswer { wire, min_ttl }),
             Err(err) => {
                 tracing::error!(peer = %self.peer, transport = self.transport.name(), %err, "failed to serialize stream response");
-                None
+                StreamOutcome::EncodeFailed
             }
         }
     }

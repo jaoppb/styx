@@ -13,6 +13,7 @@ use styx_core::{Clock, Sleeper, SystemSleeper};
 
 use crate::application::terminal::{RefusedTerminal, TerminalHandler};
 use crate::domain::error::ListenerError;
+use crate::domain::limits::ConcurrencyLimits;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::QueryObserver;
@@ -75,6 +76,7 @@ where
         acceptor: TlsAcceptor,
         shared: ListenerShared<L, F, O, C, T, S>,
         limits: EncryptedLimits,
+        concurrency: ConcurrencyLimits,
         settings: DohSettings,
     ) -> Result<Self, ListenerError> {
         let connections = ConnectionBudget::new(limits.max_connections);
@@ -84,6 +86,7 @@ where
                 shared.clone(),
                 malformed_warning,
                 limits,
+                concurrency.tcp_write_timeout(),
                 settings,
             ));
             DohServe { acceptor, endpoint }

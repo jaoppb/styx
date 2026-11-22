@@ -24,7 +24,7 @@ use crate::infrastructure::connection_bounds::{
 };
 use crate::infrastructure::framing::{read_frame, send_frame, SendFrameError};
 use crate::infrastructure::malformed_warning::MalformedWarning;
-use crate::infrastructure::stream_query::QueryTask;
+use crate::infrastructure::stream_query::{QueryTask, StreamOutcome};
 
 /// An encoded response on its way to the writer, carrying its in-flight slot.
 #[derive(Debug)]
@@ -236,9 +236,9 @@ async fn answer_frame<L, F, O, C, T, S>(
     T: TerminalHandler + Send + Sync + 'static,
     S: Sleeper + Send + Sync + 'static,
 {
-    let answer = query.respond(&frame).await;
+    let outcome = query.respond(&frame).await;
     drop(permit);
-    let Some(answer) = answer else {
+    let StreamOutcome::Answered(answer) = outcome else {
         return;
     };
     if frames

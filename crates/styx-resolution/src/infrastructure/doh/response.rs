@@ -86,6 +86,7 @@ const fn status(error: &DohError) -> StatusCode {
         | DohError::Unanswerable => StatusCode::BAD_REQUEST,
         DohError::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         DohError::BodyReadTimeout => StatusCode::REQUEST_TIMEOUT,
+        DohError::EncodeFailed => StatusCode::INTERNAL_SERVER_ERROR,
         DohError::StreamBudgetExceeded | DohError::ShuttingDown => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
@@ -107,6 +108,7 @@ mod tests {
             (DohError::EmptyBody, 400),
             (DohError::MalformedBody, 400),
             (DohError::Unanswerable, 400),
+            (DohError::EncodeFailed, 500),
             (DohError::StreamBudgetExceeded, 503),
             (DohError::ShuttingDown, 503),
         ];

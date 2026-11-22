@@ -50,6 +50,10 @@ pub enum DohError {
     #[error("message not answered")]
     Unanswerable,
 
+    /// The server failed to serialize the DNS response.
+    #[error("failed to encode DNS response")]
+    EncodeFailed,
+
     /// The connection's query ceiling is spent.
     #[error("connection query budget exceeded")]
     StreamBudgetExceeded,
