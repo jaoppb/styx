@@ -28,28 +28,36 @@ fn rsa_components(public_key: &[u8]) -> Option<RsaPublicKeyComponents<&[u8]>> {
     })
 }
 
-/// Verifies an RSA/SHA-256 signature (RFC 5702).
-fn verify_rsa_signature(public_key: &[u8], signed_data: &[u8], signature: &[u8]) -> bool {
+/// Verifies an RSA PKCS#1 v1.5 signature (RFC 5702).
+fn verify_rsa_signature(
+    standard: &'static signature::RsaParameters,
+    legacy: &'static signature::RsaParameters,
+    public_key: &[u8],
+    signed_data: &[u8],
+    signature: &[u8],
+) -> bool {
     let Some(key) = rsa_components(public_key) else {
         return false;
     };
-    let algorithm = if key.n.len() >= 256 {
-        &signature::RSA_PKCS1_2048_8192_SHA256
-    } else {
-        &signature::RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY
-    };
+    let algorithm = if key.n.len() >= 256 { standard } else { legacy };
     key.verify(algorithm, signed_data, signature).is_ok()
 }
 
-/// Verifies an ECDSA P-256/SHA-256 signature (RFC 6605).
-fn verify_ecdsa_p256_signature(public_key: &[u8], signed_data: &[u8], signature: &[u8]) -> bool {
-    if public_key.len() != 64 {
+/// Verifies an uncompressed raw-coordinate ECDSA signature (RFC 6605).
+fn verify_ecdsa_signature(
+    expected_key_len: usize,
+    algorithm: &'static signature::EcdsaVerificationAlgorithm,
+    public_key: &[u8],
+    signed_data: &[u8],
+    signature: &[u8],
+) -> bool {
+    if public_key.len() != expected_key_len {
         return false;
     }
-    let mut uncompressed = Vec::with_capacity(65);
+    let mut uncompressed = Vec::with_capacity(expected_key_len.saturating_add(1));
     uncompressed.push(0x04);
     uncompressed.extend_from_slice(public_key);
-    signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, &uncompressed)
+    signature::UnparsedPublicKey::new(algorithm, &uncompressed)
         .verify(signed_data, signature)
         .is_ok()
 }
@@ -68,7 +76,11 @@ impl DnssecAlgorithm {
     #[must_use]
     pub const fn support(self) -> AlgorithmSupport {
         match self {
-            Self::RSASHA256 | Self::ECDSAP256SHA256 | Self::ED25519 => AlgorithmSupport::Supported,
+            Self::RSASHA256
+            | Self::RSASHA512
+            | Self::ECDSAP256SHA256
+            | Self::ECDSAP384SHA384
+            | Self::ED25519 => AlgorithmSupport::Supported,
             _ => AlgorithmSupport::Unsupported,
         }
     }
@@ -110,10 +122,34 @@ fn verify_crypto_signature(
     signature: &[u8],
 ) -> bool {
     match algorithm {
-        DnssecAlgorithm::RSASHA256 => verify_rsa_signature(public_key, signed_data, signature),
-        DnssecAlgorithm::ECDSAP256SHA256 => {
-            verify_ecdsa_p256_signature(public_key, signed_data, signature)
-        }
+        DnssecAlgorithm::RSASHA256 => verify_rsa_signature(
+            &signature::RSA_PKCS1_2048_8192_SHA256,
+            &signature::RSA_PKCS1_1024_8192_SHA256_FOR_LEGACY_USE_ONLY,
+            public_key,
+            signed_data,
+            signature,
+        ),
+        DnssecAlgorithm::RSASHA512 => verify_rsa_signature(
+            &signature::RSA_PKCS1_2048_8192_SHA512,
+            &signature::RSA_PKCS1_1024_8192_SHA512_FOR_LEGACY_USE_ONLY,
+            public_key,
+            signed_data,
+            signature,
+        ),
+        DnssecAlgorithm::ECDSAP256SHA256 => verify_ecdsa_signature(
+            64,
+            &signature::ECDSA_P256_SHA256_FIXED,
+            public_key,
+            signed_data,
+            signature,
+        ),
+        DnssecAlgorithm::ECDSAP384SHA384 => verify_ecdsa_signature(
+            96,
+            &signature::ECDSA_P384_SHA384_FIXED,
+            public_key,
+            signed_data,
+            signature,
+        ),
         DnssecAlgorithm::ED25519 => verify_ed25519_signature(public_key, signed_data, signature),
         _ => false,
     }
@@ -164,12 +200,12 @@ pub(crate) fn check_rrsig_metadata<C: Clock>(
     }) {
         return Err(VerdictReason::NoValidRrsig);
     }
-    let sig_algorithm = DnssecAlgorithm::new(rrsig.algorithm());
-    if sig_algorithm.support() == AlgorithmSupport::Unsupported {
+    let signature_algorithm = DnssecAlgorithm::new(rrsig.algorithm());
+    if signature_algorithm.support() == AlgorithmSupport::Unsupported {
         return Err(VerdictReason::UnsupportedAlgorithm);
     }
     check_validity_window(rrsig, clock)?;
-    Ok(sig_algorithm)
+    Ok(signature_algorithm)
 }
 
 /// Whether `dnskey` at `dnskey_owner` can verify `rrsig`.
@@ -208,10 +244,10 @@ pub fn verify_rrsig_record<C: Clock>(
     if !key_matches_rrsig(rrsig, dnskey, dnskey_owner) {
         return Err(VerdictReason::NoValidRrsig);
     }
-    let sig_algorithm = check_rrsig_metadata(rrsig, rrset, clock)?;
+    let signature_algorithm = check_rrsig_metadata(rrsig, rrset, clock)?;
     let signed_data =
         build_canonical_signed_data(rrsig, rrset).map_err(|_| VerdictReason::NoValidRrsig)?;
-    if verify_rrsig_bytes(sig_algorithm, dnskey, &signed_data, rrsig.signature()) {
+    if verify_rrsig_bytes(signature_algorithm, dnskey, &signed_data, rrsig.signature()) {
         Ok(())
     } else {
         Err(VerdictReason::NoValidRrsig)

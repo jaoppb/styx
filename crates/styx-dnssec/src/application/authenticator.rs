@@ -39,7 +39,7 @@ impl VerificationBudget {
     }
 
     fn consume_attempt(&mut self) -> Result<(), VerdictReason> {
-        if self.verifications_remaining == 0 || self.failures_remaining == 0 {
+        if self.verifications_remaining == 0 {
             return Err(VerdictReason::SignatureBudgetExceeded);
         }
         self.verifications_remaining = self.verifications_remaining.saturating_sub(1);
@@ -47,10 +47,10 @@ impl VerificationBudget {
     }
 
     fn record_failure(&mut self) -> Result<(), VerdictReason> {
-        self.failures_remaining = self.failures_remaining.saturating_sub(1);
         if self.failures_remaining == 0 {
             return Err(VerdictReason::SignatureBudgetExceeded);
         }
+        self.failures_remaining = self.failures_remaining.saturating_sub(1);
         Ok(())
     }
 }

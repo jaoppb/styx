@@ -17,8 +17,12 @@ impl DnssecAlgorithm {
     pub const RSASHA1_NSEC3_SHA1: Self = Self(7);
     /// RSA/SHA-256 (RFC 5702).
     pub const RSASHA256: Self = Self(8);
+    /// RSA/SHA-512 (RFC 5702).
+    pub const RSASHA512: Self = Self(10);
     /// ECDSA P-256 with SHA-256 (RFC 6605).
     pub const ECDSAP256SHA256: Self = Self(13);
+    /// ECDSA P-384 with SHA-384 (RFC 6605).
+    pub const ECDSAP384SHA384: Self = Self(14);
     /// Ed25519 (RFC 8080).
     pub const ED25519: Self = Self(15);
 
