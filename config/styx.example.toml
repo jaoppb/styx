@@ -112,8 +112,8 @@ addr = "9.9.9.9:53"
 # negative_ttl_ceiling_secs = 300
 
 # Infrastructure for the recursor, shared by every recursor member as its default. The
-# root-hints file is the only source of root servers: a missing or unparseable file stops
-# styx at startup.
+# root-hints file is the only source of root servers; it is loaded and checked when the
+# pool has a recursor member, and a missing or unparseable file then stops styx at startup.
 [recursion]
 root_hints = "config/named.root"
 # This path is relative to the directory styx is started from, so run styx from the
