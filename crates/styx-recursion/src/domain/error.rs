@@ -191,6 +191,9 @@ mod tests {
             format_recursion_member_table(r#"a"b\c"#),
             r#"[recursion.members."a\"b\\c"]"#
         );
-        assert_eq!(format_recursion_member_table(""), r#"[recursion.members.""]"#);
+        assert_eq!(
+            format_recursion_member_table(""),
+            r#"[recursion.members.""]"#
+        );
     }
 }
