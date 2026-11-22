@@ -145,19 +145,19 @@ pub fn longest_common_ancestor(left: &Name, right: &Name) -> Name {
 /// Checks whether an NSEC record covers `qname` in canonical order.
 #[must_use]
 pub fn nsec_covers_name(owner: &Name, next: &Name, qname: &Name) -> bool {
-    let cmp_owner_next = canonical_name_cmp(owner, next);
-    let cmp_owner_q = canonical_name_cmp(owner, qname);
-    let cmp_q_next = canonical_name_cmp(qname, next);
+    let owner_versus_next = canonical_name_cmp(owner, next);
+    let owner_versus_query = canonical_name_cmp(owner, qname);
+    let query_versus_next = canonical_name_cmp(qname, next);
 
-    if cmp_owner_next == Ordering::Less {
+    if owner_versus_next == Ordering::Less {
         // Normal span: owner < qname < next
-        cmp_owner_q == Ordering::Less && cmp_q_next == Ordering::Less
-    } else if cmp_owner_next == Ordering::Greater {
+        owner_versus_query == Ordering::Less && query_versus_next == Ordering::Less
+    } else if owner_versus_next == Ordering::Greater {
         // Apex wrap-around: owner > next
-        cmp_owner_q == Ordering::Less || cmp_q_next == Ordering::Less
+        owner_versus_query == Ordering::Less || query_versus_next == Ordering::Less
     } else {
         // RFC 4035 §5.4: single NSEC in zone covers all names except owner itself
-        cmp_owner_q != Ordering::Equal
+        owner_versus_query != Ordering::Equal
     }
 }
 

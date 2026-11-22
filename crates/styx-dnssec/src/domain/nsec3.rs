@@ -64,17 +64,17 @@ pub fn hash_nsec3_name(
 /// Checks whether an NSEC3 record covers a target hash in hash order.
 #[must_use]
 pub fn nsec3_covers_hash(owner: &[u8], next: &[u8], target: &[u8]) -> bool {
-    let cmp_owner_next = owner.cmp(next);
-    let cmp_owner_target = owner.cmp(target);
-    let cmp_target_next = target.cmp(next);
+    let owner_versus_next = owner.cmp(next);
+    let owner_versus_target = owner.cmp(target);
+    let target_versus_next = target.cmp(next);
 
-    if cmp_owner_next == Ordering::Less {
-        cmp_owner_target == Ordering::Less && cmp_target_next == Ordering::Less
-    } else if cmp_owner_next == Ordering::Greater {
-        cmp_owner_target == Ordering::Less || cmp_target_next == Ordering::Less
+    if owner_versus_next == Ordering::Less {
+        owner_versus_target == Ordering::Less && target_versus_next == Ordering::Less
+    } else if owner_versus_next == Ordering::Greater {
+        owner_versus_target == Ordering::Less || target_versus_next == Ordering::Less
     } else {
         // RFC 5155 §7.2.1: single NSEC3 in zone covers all other hashes
-        cmp_owner_target != Ordering::Equal
+        owner_versus_target != Ordering::Equal
     }
 }
 
