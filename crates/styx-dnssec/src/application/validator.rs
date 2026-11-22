@@ -15,6 +15,7 @@ use crate::application::descent::{
 };
 use crate::domain::answer_chain::{AnswerChain, ChainEnd, ChainLink};
 use crate::domain::denial::DenialStrength;
+use crate::domain::node_types::OwnerTypes;
 use crate::domain::policy::ValidationPolicy;
 use crate::domain::ports::ChainSource;
 use crate::domain::trust_anchor::TrustAnchors;
@@ -233,10 +234,9 @@ impl<C: Clock> Validator<C> {
             .filter(|record| matches!(record.rdata, RData::Rrsig(_)))
             .collect();
         for rrset in rrsets {
-            let Some(first) = rrset.first() else {
+            let Some(search) = authority_signer_search_name(&rrset) else {
                 continue;
             };
-            let search = signer_search_name(&first.owner, first.rtype);
             let secure = self
                 .descend(&search, chain_source, budget, zone_cache)
                 .await?;
@@ -291,6 +291,28 @@ impl<C: Clock> Validator<C> {
         }
         Ok(strength)
     }
+}
+
+/// Returns the name whose zone signs an authority RRset: NSEC3 records belong to their
+/// parent zone (RFC 5155 §3), and NSEC records at a delegation point (NS without SOA)
+/// are parent-side (RFC 4035 §2.3).
+fn authority_signer_search_name(rrset: &[&ResourceRecord]) -> Option<Name> {
+    let first = rrset.first()?;
+    if first.rtype == RecordType::NSEC3 {
+        return Some(first.owner.parent().unwrap_or_else(|| first.owner.clone()));
+    }
+    if first.rtype == RecordType::NSEC {
+        let is_delegation = rrset.iter().any(|record| {
+            matches!(
+                record.rdata,
+                RData::Nsec(ref nsec) if OwnerTypes::new(&record.owner, nsec.types()).is_delegation()
+            )
+        });
+        if is_delegation {
+            return Some(first.owner.parent().unwrap_or_else(|| first.owner.clone()));
+        }
+    }
+    Some(signer_search_name(&first.owner, first.rtype))
 }
 
 /// The weaker of two outcomes: Bogus, then Indeterminate, then Insecure, then Secure.
