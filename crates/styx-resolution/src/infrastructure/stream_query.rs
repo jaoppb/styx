@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use styx_proto::application::Decoder;
-use styx_proto::{DecodeError, Message, MessageKind};
+use styx_proto::{DecodeError, Message, MessageKind, Ttl};
 
 use styx_core::{Clock, Sleeper};
 
@@ -25,7 +25,7 @@ use crate::infrastructure::response::ResponseWriter;
 /// An encoded DNS response alongside its smallest answer/authority TTL.
 pub(crate) struct EncodedAnswer {
     pub(crate) wire: Vec<u8>,
-    pub(crate) min_ttl: Option<u32>,
+    pub(crate) min_ttl: Option<Ttl>,
 }
 
 /// One query, answered on its own task: decoded, run through the pipeline and encoded the
@@ -143,20 +143,20 @@ where
     }
 }
 
-fn min_ttl_of(message: &Message) -> Option<u32> {
+fn min_ttl_of(message: &Message) -> Option<Ttl> {
     let section = if message.answers.is_empty() {
         &message.authorities
     } else {
         &message.answers
     };
-    section.iter().map(|record| record.ttl.seconds()).min()
+    section.iter().map(|record| record.ttl).min()
 }
 
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
 
-    use styx_proto::{Header, Name, Opcode, RData, RecordClass, RecordType, ResourceRecord, Ttl};
+    use styx_proto::{Header, Name, Opcode, RData, RecordClass, RecordType, ResourceRecord};
 
     use super::*;
 
@@ -177,10 +177,10 @@ mod tests {
 
         msg.authorities.push(a_record(120));
         msg.authorities.push(a_record(45));
-        assert_eq!(min_ttl_of(&msg), Some(45));
+        assert_eq!(min_ttl_of(&msg), Some(Ttl::from_secs(45)));
 
         msg.answers.push(a_record(300));
         msg.answers.push(a_record(90));
-        assert_eq!(min_ttl_of(&msg), Some(90));
+        assert_eq!(min_ttl_of(&msg), Some(Ttl::from_secs(90)));
     }
 }

@@ -5,6 +5,7 @@ use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::header::{HeaderValue, ALLOW, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
 use hyper::{Response, StatusCode};
+use styx_proto::Ttl;
 
 use crate::domain::error::DohError;
 use crate::infrastructure::doh::request::DNS_MESSAGE_MEDIA_TYPE;
@@ -17,7 +18,7 @@ pub enum DohResponse {
         /// The encoded message.
         wire: Vec<u8>,
         /// `Cache-Control: max-age`, the smallest TTL the message carries.
-        max_age: Option<u32>,
+        max_age: Option<Ttl>,
     },
     /// An HTTP error with no DNS body.
     Error(DohError),
@@ -27,7 +28,7 @@ impl DohResponse {
     /// Wraps an encoded answer with `max_age` (RFC 8484 §5.1): the smallest TTL in the
     /// answer section, or in the authority section for a negative answer.
     #[must_use]
-    pub fn answer(wire: Vec<u8>, max_age: Option<u32>) -> Self {
+    pub fn answer(wire: Vec<u8>, max_age: Option<Ttl>) -> Self {
         Self::Answer { wire, max_age }
     }
 
@@ -41,7 +42,7 @@ impl DohResponse {
     }
 }
 
-fn answer_response(wire: Vec<u8>, max_age: Option<u32>) -> Response<Full<Bytes>> {
+fn answer_response(wire: Vec<u8>, max_age: Option<Ttl>) -> Response<Full<Bytes>> {
     let length = HeaderValue::from(wire.len());
     let mut response = Response::new(Full::new(Bytes::from(wire)));
     let headers = response.headers_mut();
@@ -50,7 +51,8 @@ fn answer_response(wire: Vec<u8>, max_age: Option<u32>) -> Response<Full<Bytes>>
         HeaderValue::from_static(DNS_MESSAGE_MEDIA_TYPE),
     );
     headers.insert(CONTENT_LENGTH, length);
-    if let Some(seconds) = max_age {
+    if let Some(ttl) = max_age {
+        let seconds = ttl.seconds();
         if let Ok(value) = HeaderValue::from_str(&format!("max-age={seconds}")) {
             headers.insert(CACHE_CONTROL, value);
         }
@@ -121,5 +123,14 @@ mod tests {
 
         let not_found = DohResponse::Error(DohError::PathNotFound).into_http();
         assert!(!not_found.headers().contains_key(ALLOW));
+    }
+
+    #[test]
+    fn answer_writes_cache_control_from_ttl_and_omits_when_absent() {
+        let with_ttl = DohResponse::answer(vec![1, 2], Some(Ttl::from_secs(300))).into_http();
+        assert_eq!(with_ttl.headers()[CACHE_CONTROL], "max-age=300");
+
+        let without_ttl = DohResponse::answer(vec![1, 2], None).into_http();
+        assert!(!without_ttl.headers().contains_key(CACHE_CONTROL));
     }
 }
