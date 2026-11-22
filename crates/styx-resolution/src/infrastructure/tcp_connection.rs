@@ -6,7 +6,8 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -77,16 +78,26 @@ where
         }
     }
 
-    /// Serves the connection until it is closed, idles out, or the server shuts down.
-    ///
-    /// The reader and the writer run as two halves of this one task. Once the reader
-    /// stops, outstanding queries still finish and the writer drains their responses
-    /// before the connection closes.
+    /// Serves a plaintext TCP connection using lock-free `TcpStream::into_split`.
+    pub(crate) async fn run_tcp(self, stream: TcpStream) {
+        let (read_half, write_half) = stream.into_split();
+        self.run_halves(read_half, write_half).await;
+    }
+
+    /// Serves a stream (such as a TLS stream) that must be split via `tokio::io::split`.
     pub(crate) async fn run<St>(self, stream: St)
     where
         St: AsyncRead + AsyncWrite + Send + 'static,
     {
         let (read_half, write_half) = tokio::io::split(stream);
+        self.run_halves(read_half, write_half).await;
+    }
+
+    async fn run_halves<R, W>(self, read_half: R, write_half: W)
+    where
+        R: AsyncRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
         let limiter = ConnectionLimiter::new(
             self.settings.max_in_flight,
             QueryCeiling::new(self.settings.query_limit),
@@ -99,9 +110,9 @@ where
         );
     }
 
-    async fn read_loop<R: AsyncRead>(
+    async fn read_loop<R: AsyncRead + Unpin>(
         &self,
-        mut read_half: ReadHalf<R>,
+        mut read_half: R,
         frames: mpsc::Sender<OutboundFrame>,
         limiter: &ConnectionLimiter,
     ) {
@@ -129,9 +140,9 @@ where
     }
 
     /// Reads the next frame; the idle timer runs only while nothing is outstanding.
-    async fn next_frame<R: AsyncRead>(
+    async fn next_frame<R: AsyncRead + Unpin>(
         &self,
-        read_half: &mut ReadHalf<R>,
+        read_half: &mut R,
         limiter: &ConnectionLimiter,
     ) -> Option<Vec<u8>> {
         tokio::select! {
@@ -191,9 +202,9 @@ where
     }
 
     /// Writes frames in completion order until every sender is gone or a write fails.
-    async fn write_loop<W: AsyncWrite>(
+    async fn write_loop<W: AsyncWrite + Unpin>(
         &self,
-        mut write_half: WriteHalf<W>,
+        mut write_half: W,
         mut outbound: mpsc::Receiver<OutboundFrame>,
     ) {
         while let Some(frame) = outbound.recv().await {
@@ -236,6 +247,8 @@ async fn answer_frame<L, F, O, C, T, S>(
     T: TerminalHandler + Send + Sync + 'static,
     S: Sleeper + Send + Sync + 'static,
 {
+    let peer = query.peer();
+    let transport = query.transport().name();
     let outcome = query.respond(&frame).await;
     drop(permit);
     let StreamOutcome::Answered(answer) = outcome else {
@@ -249,6 +262,6 @@ async fn answer_frame<L, F, O, C, T, S>(
         .await
         .is_err()
     {
-        tracing::debug!("connection writer gone; dropping response");
+        tracing::debug!(%peer, transport, "connection writer gone; dropping response");
     }
 }

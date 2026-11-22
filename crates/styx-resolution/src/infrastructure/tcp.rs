@@ -57,7 +57,7 @@ where
             peer,
         );
         async move {
-            connection.run(stream).await;
+            connection.run_tcp(stream).await;
         }
     }
 }

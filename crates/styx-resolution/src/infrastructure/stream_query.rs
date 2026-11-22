@@ -74,6 +74,14 @@ where
         }
     }
 
+    pub(crate) fn peer(&self) -> SocketAddr {
+        self.peer
+    }
+
+    pub(crate) const fn transport(&self) -> Transport {
+        self.transport
+    }
+
     /// The outcome for `bytes`: an encoded answer, a silent drop, or an encode failure.
     pub(crate) async fn respond(&self, bytes: &[u8]) -> StreamOutcome {
         let mut decoder = Decoder::new(bytes);
