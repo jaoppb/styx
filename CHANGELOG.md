@@ -18,9 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no records, without asking an upstream and without caching the reply, so clients fall
   back to IPv4. Local records and blocked names keep their own answers. Off by default.
   HTTPS and SVCB answers may still carry an `ipv6hint`.
+- `allow_networks` and `deny_networks` at the top of `styx.toml` decide which client
+  addresses are answered. A source outside the allowed networks, or inside a denied one,
+  gets no UDP reply and has its TCP connection closed. The default allows loopback, the
+  RFC 1918 and RFC 4193 private ranges and link-local; allowing `0.0.0.0/0` or `::/0` on
+  a non-loopback address logs a warning at startup.
 
 ### Changed
 
+- **Breaking:** styx no longer answers public source addresses by default. A listener
+  reachable from the internet needs those networks in `allow_networks`.
 - **Breaking:** the default `query_timeout_secs` is now 5 (it was 2). A dead upstream can
   take up to 5 seconds to answer SERVFAIL, and graceful shutdown can wait up to 5
   seconds. The deadline still has to exceed every pool member's own timeout.
