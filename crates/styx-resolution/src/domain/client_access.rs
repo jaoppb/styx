@@ -30,6 +30,9 @@ pub enum ClientNetworkError {
 impl ClientNetwork {
     /// Creates a network from its address and prefix length.
     ///
+    /// A network written in IPv4-mapped form (`::ffff:10.0.0.0/104`) becomes the IPv4
+    /// network it denotes (`10.0.0.0/8`), because peers are matched in their canonical form.
+    ///
     /// # Errors
     /// Returns [`ClientNetworkError::InvalidPrefix`] when `prefix` exceeds the family's
     /// width and [`ClientNetworkError::HostBitsSet`] when `address` has bits set past it.
@@ -41,7 +44,20 @@ impl ClientNetwork {
         if masked(address, prefix) != address_bits(address) {
             return Err(ClientNetworkError::HostBitsSet(display()));
         }
-        Ok(Self { address, prefix })
+        Ok(Self { address, prefix }.canonical())
+    }
+
+    fn canonical(self) -> Self {
+        let IpAddr::V6(v6) = self.address else {
+            return self;
+        };
+        match v6.to_ipv4_mapped() {
+            Some(v4) if self.prefix >= MAPPED_PREFIX => Self {
+                address: IpAddr::V4(v4),
+                prefix: self.prefix.saturating_sub(MAPPED_PREFIX),
+            },
+            _ => self,
+        }
     }
 
     /// Returns `true` when `peer` lies inside this network.
@@ -64,13 +80,10 @@ impl ClientNetwork {
             .map(|&(address, prefix)| Self { address, prefix })
             .collect()
     }
-
-    /// Returns `true` for a `/0`, which matches every address of its family.
-    #[must_use]
-    pub const fn is_whole_family(&self) -> bool {
-        self.prefix == 0
-    }
 }
+
+/// Length of the `::ffff:0:0/96` prefix that carries an IPv4 address inside IPv6.
+const MAPPED_PREFIX: u8 = 96;
 
 impl FromStr for ClientNetwork {
     type Err = ClientNetworkError;
@@ -148,12 +161,20 @@ impl ClientAccess {
         inside(&self.allow) && !inside(&self.deny)
     }
 
-    /// Returns `true` when the allow-list holds a `/0`, admitting a whole address family.
+    /// Returns `true` when an address on the public internet would be admitted.
+    ///
+    /// Two well-known public resolvers stand in for "the internet", so an allow-list that
+    /// covers it in pieces (`0.0.0.0/1` plus `128.0.0.0/1`) counts as well as a `/0`.
     #[must_use]
-    pub fn allows_whole_family(&self) -> bool {
-        self.allow.iter().any(ClientNetwork::is_whole_family)
+    pub fn admits_public_addresses(&self) -> bool {
+        PUBLIC_PROBES.iter().any(|&probe| self.admits(probe))
     }
 }
+
+const PUBLIC_PROBES: [IpAddr; 2] = [
+    IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+    IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888)),
+];
 
 /// Kept as raw pairs so the list can be a `const`; a test checks each one passes
 /// [`ClientNetwork::new`].
@@ -296,9 +317,29 @@ mod tests {
     }
 
     #[test]
-    fn whole_family_allow_is_reported() {
-        assert!(!ClientAccess::default().allows_whole_family());
-        let open = ClientAccess::new(vec![network("::/0")], Vec::new()).expect("valid");
-        assert!(open.allows_whole_family());
+    fn public_reach_is_reported_however_the_allow_list_spells_it() {
+        assert!(!ClientAccess::default().admits_public_addresses());
+        for allow in [
+            vec![network("::/0")],
+            vec![network("0.0.0.0/0")],
+            vec![network("0.0.0.0/1"), network("128.0.0.0/1")],
+        ] {
+            let open = ClientAccess::new(allow.clone(), Vec::new()).expect("valid");
+            assert!(open.admits_public_addresses(), "{allow:?}");
+        }
+    }
+
+    #[test]
+    fn ipv4_mapped_networks_match_as_ipv4() {
+        assert_eq!(network("::ffff:10.0.0.0/104"), network("10.0.0.0/8"));
+        assert_eq!(network("::ffff:0:0/96"), network("0.0.0.0/0"));
+        let access = ClientAccess::new(
+            vec![network("0.0.0.0/0")],
+            vec![network("::ffff:10.0.0.0/104")],
+        )
+        .expect("valid");
+        assert!(!access.admits(ip("10.1.1.1")));
+        assert!(!access.admits(ip("::ffff:10.1.1.1")));
+        assert!(access.admits(ip("11.1.1.1")));
     }
 }

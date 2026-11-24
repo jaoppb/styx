@@ -160,8 +160,11 @@ async fn test_default_config_answers_loopback() {
     let udp = udp_addr(&server).expect("udp addr");
     let tcp = tcp_addr(&server).expect("tcp addr");
 
-    assert!(is_reply(udp_query_from(DENIED, udp).await));
-    assert!(is_reply(tcp_query_from(ALLOWED, tcp).await));
+    // 127.0.0.2 is refused by the tests above only because they narrow the allow-list;
+    // the default allows all of 127.0.0.0/8.
+    let other_loopback = DENIED;
+    assert!(is_reply(udp_query_from(other_loopback, udp).await));
+    assert!(is_reply(tcp_query_from(other_loopback, tcp).await));
 
     server.shutdown().await.expect("shutdown");
 }
@@ -176,7 +179,7 @@ fn test_access_keys_reject_malformed_networks_and_an_empty_allow_list() {
 }
 
 #[test]
-fn test_open_resolver_is_flagged_only_for_a_whole_family_on_a_public_bind() {
+fn test_open_resolver_is_flagged_only_for_public_reach_on_a_public_bind() {
     let exposes = |lines: &str| {
         ServerConfig::from_toml_str(lines)
             .expect("parses")
@@ -187,6 +190,9 @@ fn test_open_resolver_is_flagged_only_for_a_whole_family_on_a_public_bind() {
     ));
     assert!(exposes(
         "listen_addrs = [\"[::]:53\"]\nallow_networks = [\"::/0\"]"
+    ));
+    assert!(exposes(
+        "listen_addrs = [\"0.0.0.0:53\"]\nallow_networks = [\"0.0.0.0/1\", \"128.0.0.0/1\"]"
     ));
     assert!(!exposes(
         "listen_addrs = [\"127.0.0.1:53\"]\nallow_networks = [\"0.0.0.0/0\"]"

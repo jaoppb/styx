@@ -166,8 +166,8 @@ impl ServerConfig {
         }
         if config.exposes_open_resolver() {
             tracing::warn!(
-                "a listener binds a non-loopback address and allow_networks admits every \
-                 address of a family; styx is an open resolver to anyone who can reach it"
+                "a listener binds a non-loopback address and allow_networks admits public \
+                 addresses; styx is an open resolver to anyone who can reach it"
             );
         }
 
@@ -175,10 +175,10 @@ impl ServerConfig {
     }
 
     /// Returns `true` when a listener binds a non-loopback address while the allow-list
-    /// admits a whole address family (`0.0.0.0/0` or `::/0`).
+    /// admits public addresses.
     #[must_use]
     pub fn exposes_open_resolver(&self) -> bool {
-        self.client_access.allows_whole_family()
+        self.client_access.admits_public_addresses()
             && self
                 .listen_addrs
                 .iter()

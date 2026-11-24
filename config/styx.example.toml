@@ -36,8 +36,10 @@ query_timeout_secs = 5
 # Client networks the listeners answer, in CIDR notation. Any other source gets no UDP
 # reply and its TCP connection is closed, before the query is read. The default is
 # loopback, the RFC 1918 and RFC 4193 private ranges, and link-local, so styx bound to a
-# public address does not become an open resolver. An empty list is a startup error, and
-# allowing 0.0.0.0/0 or ::/0 on a non-loopback address logs a warning at startup.
+# public address does not become an open resolver. IPv6 clients on your LAN that use a
+# global address, and CGNAT or Tailscale peers (100.64.0.0/10), are outside the default:
+# add your delegated prefix or those networks here. An empty list is a startup error, and
+# allowing public addresses on a non-loopback address logs a warning at startup.
 # allow_networks = ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10"]
 # Networks refused even when allow_networks covers them.
 # deny_networks = []
