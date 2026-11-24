@@ -79,6 +79,28 @@ addr = "9.9.9.9:53"
 # qtype = "A"
 # timeout_ms = 2000
 
+# Conditional forwarding: names in `domains`, and every name below them, go to this
+# entry's members instead of the pool above. Typically the router that runs DHCP owns the
+# LAN's names and its reverse zone. When entries overlap, the longest domain wins, and a
+# domain may appear in only one entry. Members are forwarders, tried in order, with the
+# same keys as a pool member; the probe and circuit settings below apply to them too.
+# [[upstream.conditional]]
+# domains = ["lan", "1.168.192.in-addr.arpa"]
+#
+# [[upstream.conditional.members]]
+# name = "router"
+# kind = "forwarder"
+# addr = "192.168.1.1:53"
+# weight = 1
+# edns_buffer = 1232
+# udp_timeout_ms = 2000
+# tcp_timeout_ms = 3000
+#
+# [upstream.conditional.members.canary]
+# qname = "probe.canary.invalid."
+# qtype = "A"
+# timeout_ms = 2000
+
 # Active probing of members that have been idle or are marked down.
 # [upstream.probe]
 # idle_window_secs = 60

@@ -7,6 +7,7 @@
 
 use styx_testkit::{ExampleDocument, SchemaTable};
 
+use super::conditional::RawConditionalConfig;
 use super::{RawCanaryConfig, RawCircuitConfig, RawPoolConfig, RawProbeConfig, RawUpstreamConfig};
 
 const EXAMPLE: &str = include_str!(concat!(
@@ -36,6 +37,26 @@ const SCHEMA: &[SchemaTable] = &[
         keys: &["qname", "qtype", "timeout_ms"],
     },
     SchemaTable {
+        header: "[[upstream.conditional]]",
+        keys: &["domains"],
+    },
+    SchemaTable {
+        header: "[[upstream.conditional.members]]",
+        keys: &[
+            "name",
+            "kind",
+            "addr",
+            "weight",
+            "edns_buffer",
+            "udp_timeout_ms",
+            "tcp_timeout_ms",
+        ],
+    },
+    SchemaTable {
+        header: "[upstream.conditional.members.canary]",
+        keys: &["qname", "qtype", "timeout_ms"],
+    },
+    SchemaTable {
         header: "[upstream.probe]",
         keys: &["idle_window_secs", "down_retry_secs", "tick_secs"],
     },
@@ -55,6 +76,14 @@ fn pool_fields(raw: &RawPoolConfig) {
         members: _,
         probe: _,
         circuit: _,
+        conditional: _,
+    } = raw;
+}
+
+fn conditional_fields(raw: &RawConditionalConfig) {
+    let RawConditionalConfig {
+        domains: _,
+        members: _,
     } = raw;
 }
 
@@ -97,6 +126,7 @@ fn circuit_fields(raw: &RawCircuitConfig) {
 
 const _: fn(&RawPoolConfig) = pool_fields;
 const _: fn(&RawUpstreamConfig) = member_fields;
+const _: fn(&RawConditionalConfig) = conditional_fields;
 const _: fn(&RawCanaryConfig) = canary_fields;
 const _: fn(&RawProbeConfig) = probe_fields;
 const _: fn(&RawCircuitConfig) = circuit_fields;

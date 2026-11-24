@@ -25,9 +25,10 @@ use styx_recursion::infrastructure::do53_transport::{Do53Transport, DNS_PORT};
 use styx_recursion::infrastructure::infra_cache::MemoryInfraCache;
 use styx_recursion::infrastructure::sinks::{DiagnosticsStore, DiscardChainMaterial};
 use styx_resolution::{
-    AllowAllFilter, CacheConfig, CacheStage, CacheStatsLogger, CanaryConfig, ConfiguredStrategy,
-    DiscardObserver, Do53Forwarder, NoLocalRecords, Pipeline, PoolConfig, PoolMember, ProbePolicy,
-    ProbeScheduler, Server, ServerConfig, ShardedAnswerCache, UpstreamConfig, UpstreamPool,
+    AllowAllFilter, CacheConfig, CacheStage, CacheStatsLogger, CanaryConfig, ConditionalRoute,
+    ConditionalRoutes, ConfiguredStrategy, DiscardObserver, Do53Forwarder, NoLocalRecords,
+    Pipeline, PoolConfig, PoolMember, ProbePolicy, ProbeScheduler, Server, ServerConfig,
+    ShardedAnswerCache, StrategyName, UpstreamConfig, UpstreamPool,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -75,10 +76,10 @@ async fn main() -> anyhow::Result<()> {
         Some(recursion) => Some(RecursionWiring::load(recursion).await?),
         None => None,
     };
-    let pool = build_pool(pool_config, recursion.as_ref(), &clock)?;
+    let pools = Pools::build(pool_config, recursion.as_ref(), &clock)?;
     let answer_cache = build_cache(clock.clone(), &cache)?;
     let pipeline = build_pipeline(
-        pool.clone(),
+        pools.clone(),
         clock.clone(),
         &config,
         answer_cache.clone(),
@@ -87,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
 
     let sleeper = Arc::new(SystemSleeper::new());
     let background = BackgroundTasks::spawn(
-        ProbeScheduler::new(pool, clock.clone(), pool_config.probe.tick),
+        pools.probe_schedulers(&clock, pool_config.probe.tick),
         CacheStatsLogger::new(answer_cache, sleeper.clone(), CACHE_STATS_INTERVAL)?,
     );
 
@@ -112,18 +113,22 @@ async fn main() -> anyhow::Result<()> {
 /// The tasks that run beside the listeners, sharing one shutdown token.
 struct BackgroundTasks {
     shutdown: CancellationToken,
-    probe_scheduler: JoinHandle<()>,
+    probe_schedulers: Vec<JoinHandle<()>>,
     cache_stats: JoinHandle<()>,
 }
 
 impl BackgroundTasks {
+    /// Starts one probe scheduler per pool: the main one and each conditional one.
     fn spawn(
-        scheduler: ProbeScheduler<ConfiguredStrategy, PoolUpstream, SystemClock>,
+        schedulers: Vec<ProbeScheduler<ConfiguredStrategy, PoolUpstream, SystemClock>>,
         stats_logger: CacheStatsLogger<ConcreteCache, SystemSleeper>,
     ) -> Self {
         let shutdown = CancellationToken::new();
         Self {
-            probe_scheduler: tokio::spawn(scheduler.run(shutdown.clone())),
+            probe_schedulers: schedulers
+                .into_iter()
+                .map(|scheduler| tokio::spawn(scheduler.run(shutdown.clone())))
+                .collect(),
             cache_stats: tokio::spawn(stats_logger.run(shutdown.clone())),
             shutdown,
         }
@@ -132,8 +137,14 @@ impl BackgroundTasks {
     /// Cancels every task and waits for all of them, even when one of them failed.
     async fn stop(self) -> anyhow::Result<()> {
         self.shutdown.cancel();
-        let (probe_scheduler, cache_stats) = tokio::join!(self.probe_scheduler, self.cache_stats);
-        probe_scheduler.context("probe scheduler task failed")?;
+        let mut probe_schedulers = Vec::with_capacity(self.probe_schedulers.len());
+        for probe_scheduler in self.probe_schedulers {
+            probe_schedulers.push(probe_scheduler.await);
+        }
+        let cache_stats = self.cache_stats.await;
+        for probe_scheduler in probe_schedulers {
+            probe_scheduler.context("probe scheduler task failed")?;
+        }
         cache_stats.context("cache stats logger task failed")
     }
 }
@@ -214,13 +225,16 @@ fn build_upstream(
     }
 }
 
+/// Builds a pool of `members` that shares `[upstream]`'s circuit and probe settings.
 fn build_pool(
     pool_config: &PoolConfig,
+    members_config: &[UpstreamConfig],
+    strategy: StrategyName,
     recursion: Option<&RecursionWiring>,
     clock: &Arc<SystemClock>,
 ) -> anyhow::Result<Arc<ConcretePool>> {
-    let mut members = Vec::with_capacity(pool_config.members.len());
-    for member_cfg in &pool_config.members {
+    let mut members = Vec::with_capacity(members_config.len());
+    for member_cfg in members_config {
         let id = UpstreamId::new(member_cfg.name.as_str());
         let upstream = build_upstream(member_cfg, &id, recursion, clock)?;
         let canary = member_cfg
@@ -229,7 +243,7 @@ fn build_pool(
             .unwrap_or_else(|| CanaryConfig::for_kind(member_cfg.kind));
         members.push(PoolMember::new(id, upstream, member_cfg.weight, canary));
     }
-    let strategy = ConfiguredStrategy::from_name(pool_config.strategy);
+    let strategy = ConfiguredStrategy::from_name(strategy);
     Ok(Arc::new(UpstreamPool::new(
         members,
         strategy,
@@ -237,6 +251,67 @@ fn build_pool(
         pool_config.circuit.clone(),
         ProbePolicy::new(pool_config.probe.clone()),
     )))
+}
+
+/// One ordered-failover pool per `[[upstream.conditional]]` entry. Its members are
+/// forwarders only, which `PoolConfig` already checked, so no recursion wiring is passed.
+fn build_conditional_routes(
+    pool_config: &PoolConfig,
+    clock: &Arc<SystemClock>,
+) -> anyhow::Result<ConditionalRoutes<Arc<ConcretePool>>> {
+    let mut routes = Vec::with_capacity(pool_config.conditional.len());
+    for entry in &pool_config.conditional {
+        let target = build_pool(
+            pool_config,
+            &entry.members,
+            StrategyName::OrderedFailover,
+            None,
+            clock,
+        )?;
+        routes.push(ConditionalRoute {
+            domains: entry.domains.clone(),
+            target,
+        });
+    }
+    Ok(ConditionalRoutes::new(routes))
+}
+
+/// The main pool and the conditional pools the cache stage sends its misses to.
+#[derive(Clone)]
+struct Pools {
+    main: Arc<ConcretePool>,
+    conditional: ConditionalRoutes<Arc<ConcretePool>>,
+}
+
+impl Pools {
+    fn build(
+        pool_config: &PoolConfig,
+        recursion: Option<&RecursionWiring>,
+        clock: &Arc<SystemClock>,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            main: build_pool(
+                pool_config,
+                &pool_config.members,
+                pool_config.strategy,
+                recursion,
+                clock,
+            )?,
+            conditional: build_conditional_routes(pool_config, clock)?,
+        })
+    }
+
+    /// One probe scheduler per pool, so every member's health is measured.
+    fn probe_schedulers(
+        &self,
+        clock: &Arc<SystemClock>,
+        tick: Duration,
+    ) -> Vec<ProbeScheduler<ConfiguredStrategy, PoolUpstream, SystemClock>> {
+        std::iter::once(&self.main)
+            .chain(self.conditional.targets())
+            .map(|pool| ProbeScheduler::new(Arc::clone(pool), Arc::clone(clock), tick))
+            .collect()
+    }
 }
 
 fn build_cache(
@@ -249,19 +324,22 @@ fn build_cache(
 }
 
 fn build_pipeline(
-    pool: Arc<ConcretePool>,
+    pools: Pools,
     clock: Arc<SystemClock>,
     config: &ServerConfig,
     cache: Arc<ConcreteCache>,
     cache_config: &CacheConfig,
 ) -> Arc<ConcretePipeline> {
-    let cache_stage = Arc::new(CacheStage::from_config(
-        cache,
-        pool,
-        cache_config,
-        clock.clone(),
-        config.query_timeout,
-    ));
+    let cache_stage = Arc::new(
+        CacheStage::from_config(
+            cache,
+            pools.main,
+            cache_config,
+            clock.clone(),
+            config.query_timeout,
+        )
+        .with_conditional(pools.conditional),
+    );
     Arc::new(
         Pipeline::new(
             Arc::new(NoLocalRecords::new()),

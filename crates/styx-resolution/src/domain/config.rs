@@ -15,6 +15,10 @@ use crate::domain::probe::{CanaryConfig, ProbeConfig};
 use crate::domain::selection::StrategyName;
 use crate::domain::weight::Weight;
 
+mod conditional;
+
+pub use conditional::ConditionalConfig;
+
 /// Timeout budgets for an upstream provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timeouts {
@@ -63,6 +67,8 @@ pub struct PoolConfig {
     pub probe: ProbeConfig,
     /// Circuit breaker policy configuration.
     pub circuit: CircuitConfig,
+    /// Zones forwarded to their own pool instead of `members`.
+    pub conditional: Vec<ConditionalConfig>,
 }
 
 impl PoolConfig {
@@ -107,6 +113,7 @@ impl PoolConfig {
             members,
             probe: resolve_probe(raw.probe),
             circuit: resolve_circuit(raw.circuit),
+            conditional: conditional::parse_conditionals(raw.conditional)?,
         })
     }
 }
@@ -220,6 +227,8 @@ struct RawPoolConfig {
     probe: RawProbeConfig,
     #[serde(default)]
     circuit: RawCircuitConfig,
+    #[serde(default)]
+    conditional: Vec<conditional::RawConditionalConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

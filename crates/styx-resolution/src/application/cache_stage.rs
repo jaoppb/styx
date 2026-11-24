@@ -16,6 +16,7 @@ use crate::domain::cache::error::CacheError;
 use crate::domain::cache::key::CacheKey;
 use crate::domain::cache::port::{AnswerCache, Lookup};
 use crate::domain::cache::ttl::TtlPolicy;
+use crate::domain::conditional::ConditionalRoutes;
 use crate::domain::error::PipelineError;
 use crate::domain::request::RequestContext;
 use crate::domain::selection::SelectionStrategy;
@@ -24,6 +25,7 @@ use crate::domain::selection::SelectionStrategy;
 pub struct CacheStage<A, S, U, C> {
     cache: Arc<A>,
     pool: Arc<UpstreamPool<S, U, C>>,
+    conditional: ConditionalRoutes<Arc<UpstreamPool<S, U, C>>>,
     admission: Admission,
     clock: Arc<C>,
     query_timeout: Duration,
@@ -47,6 +49,7 @@ where
         Self {
             cache,
             pool,
+            conditional: ConditionalRoutes::default(),
             admission: Admission::new(TtlPolicy::default()),
             clock,
             query_timeout,
@@ -84,10 +87,22 @@ where
         Self {
             cache,
             pool,
+            conditional: ConditionalRoutes::default(),
             admission,
             clock,
             query_timeout,
         }
+    }
+
+    /// Sends a question under a conditional domain to that route's pool instead of the main
+    /// one. The answer is cached and admitted like any other.
+    #[must_use]
+    pub fn with_conditional(
+        mut self,
+        routes: ConditionalRoutes<Arc<UpstreamPool<S, U, C>>>,
+    ) -> Self {
+        self.conditional = routes;
+        self
     }
 
     /// Returns a reference to the inner answer cache.
@@ -100,6 +115,12 @@ where
     #[must_use]
     pub fn pool(&self) -> &Arc<UpstreamPool<S, U, C>> {
         &self.pool
+    }
+
+    fn pool_for(&self, question: &styx_proto::Question) -> &UpstreamPool<S, U, C> {
+        self.conditional
+            .route(&question.qname)
+            .unwrap_or(&self.pool)
     }
 
     fn handle_cache_hit(&self, entry: &CacheEntry) -> Result<ResolutionResponse, PipelineError> {
@@ -123,7 +144,7 @@ where
         question: &styx_proto::Question,
         deadline: std::time::Instant,
     ) -> Result<ResolutionResponse, PipelineError> {
-        let upstream_resp = self.pool.resolve(question, deadline).await?;
+        let upstream_resp = self.pool_for(question).resolve(question, deadline).await?;
         let message = upstream_resp.message;
 
         let source = match upstream_resp.kind {
@@ -146,7 +167,7 @@ where
         question: &styx_proto::Question,
         deadline: std::time::Instant,
     ) -> Result<ResolutionResponse, PipelineError> {
-        let upstream_resp = self.pool.resolve(question, deadline).await?;
+        let upstream_resp = self.pool_for(question).resolve(question, deadline).await?;
         let now = self.clock.now_monotonic();
 
         let answer_source = match upstream_resp.kind {
