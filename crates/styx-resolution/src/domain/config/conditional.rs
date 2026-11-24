@@ -74,7 +74,9 @@ fn parse_conditional(raw: RawConditionalConfig) -> Result<ConditionalConfig, Con
 }
 
 /// The root would send every name to the conditional pool, which is what
-/// `[upstream].members` is for.
+/// `[upstream].members` is for. A domain matches by suffix, never as a pattern, so a `*`
+/// label would match only a literal `*` and leave the names it seems to cover on the main
+/// pool, leaking them.
 fn parse_domain(text: &str) -> Result<Name, ConfigError> {
     let domain = Name::from_ascii(text)
         .map_err(|error| ConfigError::Invalid(format!("invalid conditional domain: {error}")))?;
@@ -83,12 +85,25 @@ fn parse_domain(text: &str) -> Result<Name, ConfigError> {
             "a conditional domain cannot be the root; configure [upstream].members instead".into(),
         ));
     }
+    if domain.labels().any(|label| label.as_bytes() == b"*") {
+        return Err(ConfigError::Invalid(format!(
+            "conditional domain `{text}` has a `*` label; list the domain itself, which \
+             already covers every name below it"
+        )));
+    }
     Ok(domain)
 }
 
 /// A recursor walks down from the root, and the root has never heard of a home
-/// network's private names, so only forwarders may answer for them.
+/// network's private names, so only forwarders may answer for them. Members are tried in
+/// order, so a `weight` would have no effect and is refused rather than ignored.
 fn parse_forwarder(raw: RawUpstreamConfig) -> Result<UpstreamConfig, ConfigError> {
+    if raw.weight.is_some() {
+        return Err(ConfigError::Invalid(format!(
+            "conditional member `{}` cannot set weight; members are tried in order",
+            raw.name
+        )));
+    }
     let member = parse_member(raw)?;
     if member.kind != UpstreamKind::Forwarder {
         return Err(ConfigError::Invalid(format!(
@@ -145,6 +160,35 @@ mod tests {
     #[test]
     fn a_file_without_entries_has_none() {
         assert!(pool_with("").expect("valid pool").conditional.is_empty());
+    }
+
+    #[test]
+    fn a_wildcard_label_is_rejected() {
+        assert!(rejected(
+            r#"
+            [[conditional]]
+            domains = ["*.lan"]
+            [[conditional.members]]
+            name = "a"
+            kind = "forwarder"
+            addr = "192.168.1.1:53"
+            "#
+        ));
+    }
+
+    #[test]
+    fn a_member_weight_is_rejected() {
+        assert!(rejected(
+            r#"
+            [[conditional]]
+            domains = ["lan"]
+            [[conditional.members]]
+            name = "a"
+            kind = "forwarder"
+            addr = "192.168.1.1:53"
+            weight = 2
+            "#
+        ));
     }
 
     #[test]

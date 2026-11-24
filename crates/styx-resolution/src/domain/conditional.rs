@@ -27,7 +27,8 @@ impl<T> ConditionalRoutes<T> {
     /// Builds the table from routes whose domains are pairwise distinct.
     ///
     /// Distinct domains are what makes the longest match unique; `PoolConfig` rejects a
-    /// file that repeats one.
+    /// file that repeats one. Should a caller repeat a domain anyway, the route listed last
+    /// wins for it.
     #[must_use]
     pub const fn new(routes: Vec<ConditionalRoute<T>>) -> Self {
         Self { routes }
@@ -91,6 +92,21 @@ mod tests {
         assert_eq!(routes().route(&name("bulb.iot.lan.")), Some(&"hub"));
         let reversed = ConditionalRoutes::new(routes().routes.into_iter().rev().collect());
         assert_eq!(reversed.route(&name("bulb.iot.lan.")), Some(&"hub"));
+    }
+
+    #[test]
+    fn a_repeated_domain_takes_the_route_listed_last() {
+        let repeated = ConditionalRoutes::new(vec![
+            ConditionalRoute {
+                domains: vec![name("lan")],
+                target: "first",
+            },
+            ConditionalRoute {
+                domains: vec![name("lan")],
+                target: "last",
+            },
+        ]);
+        assert_eq!(repeated.route(&name("nas.lan.")), Some(&"last"));
     }
 
     #[test]

@@ -12,7 +12,7 @@ mod harness;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use harness::{CommandableUpstream, FakeNameServer, FakeRole, ZoneScript};
+use harness::{CommandableUpstream, FakeNameServer, FakeRole, UpstreamBehavior, ZoneScript};
 use styx_core::{Clock, SystemClock, UpstreamId};
 use styx_proto::{Header, Message, Name, Opcode, Question, RecordClass, RecordType, ResponseCode};
 use styx_resolution::{
@@ -265,6 +265,38 @@ async fn a_conditional_answer_is_cached_like_any_other() {
         upstreams.counts(),
         [0, 1, 0],
         "the second question is a cache hit"
+    );
+}
+
+#[tokio::test]
+async fn a_failing_conditional_pool_fails_the_query_without_asking_the_main_pool() {
+    let upstreams = Upstreams::start().await;
+    upstreams.router.set_behavior(UpstreamBehavior::Servfail);
+    let clock = Arc::new(SystemClock::new());
+    let stage = stage(&upstreams.config(), &clock);
+    let mut query = Message::new(Header::new_query(0x1234, Opcode::Query, true));
+    query.questions.push(Question::new(
+        Name::from_ascii("nas.lan.").expect("valid name"),
+        RecordType::A,
+        RecordClass::In,
+    ));
+    let ctx = RequestContext::new(
+        query,
+        ClientId::from_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        Transport::Udp,
+        MaxResponseSize::classic(),
+        MaxResponseSize::classic(),
+        clock.now_monotonic(),
+    );
+
+    let result = stage.handle_terminal(&ctx).await;
+
+    let rcode = result.err().map(|error| error.response_code());
+    assert_eq!(rcode, Some(ResponseCode::SERVFAIL));
+    assert_eq!(
+        upstreams.counts(),
+        [0, 1, 0],
+        "the name never falls back to the main pool, which would leak it"
     );
 }
 

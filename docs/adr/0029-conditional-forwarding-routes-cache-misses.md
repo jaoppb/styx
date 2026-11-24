@@ -45,8 +45,11 @@ reply judgement of ADR 0024, admission and bailiwick checks of ADR 0017 and ADR 
 the global cache key of ADR 0016. A name has one route, so a cached answer was always asked
 of the same pool that would be asked again.
 
-**A domain appears in at most one entry, and the root is refused.** Distinct domains make
-the longest match unique; the root as a domain would replace `[upstream].members`.
+**A domain appears in at most one entry, and the root and `*` labels are refused.** Distinct
+domains make the longest match unique; the root as a domain would replace
+`[upstream].members`; a `*` label would match only a literal `*`, since a domain already
+covers every name below it. A member `weight` is refused too, because members are tried in
+order and it would have no effect.
 
 ## Consequences
 

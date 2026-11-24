@@ -46,7 +46,6 @@ const SCHEMA: &[SchemaTable] = &[
             "name",
             "kind",
             "addr",
-            "weight",
             "edns_buffer",
             "udp_timeout_ms",
             "tcp_timeout_ms",
