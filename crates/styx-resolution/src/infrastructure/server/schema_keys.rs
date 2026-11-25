@@ -26,6 +26,8 @@ const SCHEMA: &[SchemaTable] = &[
             "max_in_flight_queries",
             "max_tcp_connections",
             "filter_aaaa",
+            "allow_networks",
+            "deny_networks",
         ],
     },
     SchemaTable {
@@ -47,6 +49,8 @@ fn server_fields(raw: &RawConfig) {
         max_in_flight_queries: _,
         max_tcp_connections: _,
         filter_aaaa: _,
+        allow_networks: _,
+        deny_networks: _,
         supervisor: _,
         upstream: _,
         other: _,
