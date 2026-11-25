@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::domain::client_access::{ClientAccess, ClientNetwork};
 use crate::domain::config::PoolConfig;
 use crate::domain::error::ConfigError;
 use crate::domain::limits::{
@@ -57,6 +58,10 @@ pub(super) struct RawConfig {
     #[serde(default)]
     pub(super) filter_aaaa: bool,
     #[serde(default)]
+    pub(super) allow_networks: Option<Vec<String>>,
+    #[serde(default)]
+    pub(super) deny_networks: Vec<String>,
+    #[serde(default)]
     pub(super) supervisor: Option<RawSupervisorConfig>,
     #[serde(default)]
     pub(super) upstream: Option<toml::Value>,
@@ -92,6 +97,8 @@ pub struct ServerConfig {
     pub limits: ConcurrencyLimits,
     /// Whether `AAAA` questions are answered NODATA without asking upstream.
     pub filter_aaaa: bool,
+    /// Which client addresses the listeners answer; every other peer is dropped unread.
+    pub client_access: ClientAccess,
     /// Policy controlling supervisor retry backoff and healthy run reset.
     pub supervisor: SupervisorBackoffPolicy,
     /// Upstream pool configuration, if present in TOML.
@@ -120,6 +127,7 @@ impl ServerConfig {
         }
 
         let supervisor = parse_supervisor_policy(raw.supervisor)?;
+        let client_access = parse_client_access(raw.allow_networks, &raw.deny_networks)?;
         let upstream = match raw.upstream {
             Some(val) => Some(PoolConfig::from_toml_value(val)?),
             None => None,
@@ -148,6 +156,7 @@ impl ServerConfig {
                 TCP_WRITE_TIMEOUT,
             ),
             filter_aaaa: raw.filter_aaaa,
+            client_access,
             supervisor,
             upstream,
         };
@@ -155,9 +164,47 @@ impl ServerConfig {
         if let Some(pool) = &config.upstream {
             config.check_deadline_covers(pool)?;
         }
+        if config.exposes_open_resolver() {
+            tracing::warn!(
+                "a listener binds a non-loopback address and allow_networks admits public \
+                 addresses; styx is an open resolver to anyone who can reach it"
+            );
+        }
 
         Ok(config)
     }
+
+    /// Returns `true` when a listener binds a non-loopback address while the allow-list
+    /// admits public addresses.
+    #[must_use]
+    pub fn exposes_open_resolver(&self) -> bool {
+        self.client_access.admits_public_addresses()
+            && self
+                .listen_addrs
+                .iter()
+                .any(|addr| !addr.ip().is_loopback())
+    }
+}
+
+fn parse_client_access(
+    allow: Option<Vec<String>>,
+    deny: &[String],
+) -> Result<ClientAccess, ConfigError> {
+    let allow = match allow {
+        Some(list) => parse_networks("allow_networks", &list)?,
+        None => ClientNetwork::private_networks(),
+    };
+    let deny = parse_networks("deny_networks", deny)?;
+    ClientAccess::new(allow, deny).map_err(|err| ConfigError::Invalid(err.to_string()))
+}
+
+fn parse_networks(key: &str, list: &[String]) -> Result<Vec<ClientNetwork>, ConfigError> {
+    list.iter()
+        .map(|text| {
+            text.parse()
+                .map_err(|err| ConfigError::Invalid(format!("{key}: {err}")))
+        })
+        .collect()
 }
 
 fn non_zero_cap(

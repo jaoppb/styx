@@ -12,6 +12,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::application::terminal::RefusedTerminal;
 use crate::application::Pipeline;
+use crate::domain::client_access::ClientAccess;
 use crate::domain::request::MaxResponseSize;
 
 /// Minimum spacing between two rate-limited warnings from one listener.
@@ -116,6 +117,8 @@ pub struct ListenerShared<L, F, O, C, T = RefusedTerminal, S = SystemSleeper> {
     pub query_timeout: Duration,
     /// Configured default UDP payload size for EDNS.
     pub udp_payload_size_default: MaxResponseSize,
+    /// Which peers are served; a listener drops every other one before decoding.
+    pub client_access: Arc<ClientAccess>,
 }
 
 impl<L, F, O, C, T, S> Clone for ListenerShared<L, F, O, C, T, S> {
@@ -130,6 +133,7 @@ impl<L, F, O, C, T, S> Clone for ListenerShared<L, F, O, C, T, S> {
             abort: self.abort.clone(),
             query_timeout: self.query_timeout,
             udp_payload_size_default: self.udp_payload_size_default,
+            client_access: Arc::clone(&self.client_access),
         }
     }
 }
