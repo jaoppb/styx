@@ -76,7 +76,9 @@ impl PoolConfig {
     ///
     /// # Errors
     /// Returns [`ConfigError`] on invalid syntax, empty pool, EDNS buffer size below floor,
-    /// or recursor canary that does not require descent.
+    /// recursor canary that does not require descent, or an invalid `[[conditional]]`
+    /// entry: no domains or no members, the root or a `*` label as a domain, a domain
+    /// listed more than once, or a member that is a recursor or sets `weight`.
     pub fn from_toml_str(content: &str) -> Result<Self, ConfigError> {
         let raw: RawPoolConfig = toml::from_str(content)?;
         Self::from_raw(raw)
@@ -86,7 +88,9 @@ impl PoolConfig {
     ///
     /// # Errors
     /// Returns [`ConfigError`] on invalid syntax, empty pool, EDNS buffer size below floor,
-    /// or recursor canary that does not require descent.
+    /// recursor canary that does not require descent, or an invalid `[[conditional]]`
+    /// entry: no domains or no members, the root or a `*` label as a domain, a domain
+    /// listed more than once, or a member that is a recursor or sets `weight`.
     pub fn from_toml_value(val: toml::Value) -> Result<Self, ConfigError> {
         let raw: RawPoolConfig = val.try_into().map_err(ConfigError::from)?;
         Self::from_raw(raw)
