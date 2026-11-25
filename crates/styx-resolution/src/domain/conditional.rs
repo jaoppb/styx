@@ -57,7 +57,7 @@ mod tests {
     use super::*;
 
     fn name(text: &str) -> Name {
-        Name::from_ascii(text).unwrap_or_else(|_| Name::root())
+        Name::from_ascii(text).expect("valid test name")
     }
 
     fn routes() -> ConditionalRoutes<&'static str> {
