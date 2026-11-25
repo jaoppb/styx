@@ -39,17 +39,21 @@ must outlast the conditional members' timeouts as well.
 
 **Routing happens in `CacheStage`, on a cache miss.** `CacheStage::with_conditional` takes a
 `ConditionalRoutes` table, and a miss asks the pool of the route whose domain is the longest
-suffix of the question name, or the main pool when none matches. The stage order of ADR
-0010 and ADR 0028 is unchanged. Everything after the pool call applies unchanged too: the
-reply judgement of ADR 0024, admission and bailiwick checks of ADR 0017 and ADR 0023, and
-the global cache key of ADR 0016. A name has one route, so a cached answer was always asked
-of the same pool that would be asked again.
+suffix of the question name, or the main pool when none matches. An uncacheable question
+(`ANY`, `AXFR`, `IXFR`, `OPT`) is routed the same way by `CacheStage::resolve_uncacheable`.
+The stage order of ADR 0010 and ADR 0028 is unchanged. The reply judgement of ADR 0024
+still runs inside whichever pool answers, and everything after the pool call applies
+unchanged too: admission and bailiwick checks of ADR 0017 and ADR 0023, and the global
+cache key of ADR 0016. A name has one route, so a cached answer was always asked of the
+same pool that would be asked again.
 
-**A domain appears in at most one entry, and the root and `*` labels are refused.** Distinct
-domains make the longest match unique; the root as a domain would replace
-`[upstream].members`; a `*` label would match only a literal `*`, since a domain already
-covers every name below it. A member `weight` is refused too, because members are tried in
-order and it would have no effect.
+**A domain appears once, and the root and `*` labels are refused.** A domain repeated,
+whether across entries or within one, is refused in any letter case. Distinct domains make
+the longest match unique; the root as a domain would replace `[upstream].members`; a `*`
+label would match only a literal `*`, since a domain already covers every name below it.
+An entry with an empty `domains` or `members` is refused, since it routes nothing or
+routes to no one. A member `weight` is refused too, because members are tried in order and
+it would have no effect.
 
 ## Consequences
 

@@ -81,10 +81,11 @@ addr = "9.9.9.9:53"
 
 # Conditional forwarding: names in `domains`, and every name below them, go to this
 # entry's members instead of the pool above. Typically the router that runs DHCP owns the
-# LAN's names and its reverse zone. When entries overlap, the longest domain wins, and a
-# domain may appear in only one entry, and a `*` label is refused: a domain already covers
-# every name below it. Members are forwarders, tried in order, with the same keys as a pool
-# member except `weight`; the probe and circuit settings below apply to them too.
+# LAN's names and its reverse zone. When entries overlap, the longest domain wins. A domain
+# may appear only once across all entries; the root (`.`) and `*` labels are refused, since
+# a domain already covers every name below it. Members are forwarders, tried in order, with
+# the same keys as a pool member except `weight`; the probe and circuit settings below
+# apply to them too.
 # [[upstream.conditional]]
 # domains = ["lan", "1.168.192.in-addr.arpa"]
 #
