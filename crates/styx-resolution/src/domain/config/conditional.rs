@@ -1,5 +1,7 @@
 //! `[[upstream.conditional]]`: zones forwarded to their own small pool.
 
+use std::collections::HashSet;
+
 use serde::Deserialize;
 use styx_proto::Name;
 
@@ -27,21 +29,17 @@ pub(super) fn parse_conditionals(
     raw: Vec<RawConditionalConfig>,
 ) -> Result<Vec<ConditionalConfig>, ConfigError> {
     let mut parsed: Vec<ConditionalConfig> = Vec::with_capacity(raw.len());
+    let mut seen: HashSet<Name> = HashSet::new();
     for entry in raw {
         let conditional = parse_conditional(entry)?;
-        for domain in &conditional.domains {
-            let repeated = parsed
-                .iter()
-                .chain(std::iter::once(&conditional))
-                .flat_map(|other| other.domains.iter())
-                .filter(|other| other.eq_ignore_case(domain))
-                .count()
-                > 1;
-            if repeated {
-                return Err(ConfigError::Invalid(format!(
-                    "conditional domain `{domain}` is listed more than once"
-                )));
-            }
+        if let Some(domain) = conditional
+            .domains
+            .iter()
+            .find(|domain| !seen.insert((*domain).clone()))
+        {
+            return Err(ConfigError::Invalid(format!(
+                "conditional domain `{domain}` is listed more than once"
+            )));
         }
         parsed.push(conditional);
     }
@@ -240,6 +238,20 @@ mod tests {
             name = "b"
             kind = "forwarder"
             addr = "192.168.1.2:53"
+            "#
+        ));
+    }
+
+    #[test]
+    fn a_domain_repeated_within_one_entry_is_rejected_whatever_its_case() {
+        assert!(rejected(
+            r#"
+            [[conditional]]
+            domains = ["lan", "LAN."]
+            [[conditional.members]]
+            name = "a"
+            kind = "forwarder"
+            addr = "192.168.1.1:53"
             "#
         ));
     }
