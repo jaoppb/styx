@@ -1,10 +1,9 @@
 //! `[[upstream.conditional]]`: zones forwarded to their own small pool.
 
 use serde::Deserialize;
-use styx_core::UpstreamKind;
 use styx_proto::Name;
 
-use super::{parse_member, RawUpstreamConfig, UpstreamConfig};
+use super::{parse_member, RawUpstreamConfig, RawUpstreamKind, UpstreamConfig};
 use crate::domain::error::ConfigError;
 
 /// One conditional forwarding entry, validated.
@@ -104,14 +103,13 @@ fn parse_forwarder(raw: RawUpstreamConfig) -> Result<UpstreamConfig, ConfigError
             raw.name
         )));
     }
-    let member = parse_member(raw)?;
-    if member.kind != UpstreamKind::Forwarder {
+    if raw.kind != RawUpstreamKind::Forwarder {
         return Err(ConfigError::Invalid(format!(
             "conditional member `{}` must be a forwarder",
-            member.name
+            raw.name
         )));
     }
-    Ok(member)
+    parse_member(raw)
 }
 
 #[cfg(test)]
@@ -203,6 +201,27 @@ mod tests {
             addr = "0.0.0.0:0"
             "#
         ));
+    }
+
+    #[test]
+    fn a_recursor_member_is_rejected_as_a_recursor_before_its_canary_is_checked() {
+        let error = pool_with(
+            r#"
+            [[conditional]]
+            domains = ["lan"]
+            [[conditional.members]]
+            name = "r"
+            kind = "recursor"
+            addr = "0.0.0.0:0"
+            [conditional.members.canary]
+            qname = "."
+            qtype = "NS"
+            "#,
+        );
+        assert!(
+            matches!(&error, Err(ConfigError::Invalid(text)) if text.contains("must be a forwarder")),
+            "{error:?}"
+        );
     }
 
     #[test]
