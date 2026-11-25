@@ -237,6 +237,37 @@ async fn a_configured_reverse_zone_reaches_its_forwarder() {
     assert_eq!(upstreams.hub.query_count(), 0);
 }
 
+/// `ANY` skips the cache and takes `CacheStage`'s uncacheable path, which must route too.
+#[tokio::test]
+async fn an_uncacheable_question_under_a_conditional_domain_reaches_only_its_forwarder() {
+    let upstreams = Upstreams::start().await;
+    // The commandable fake always echoes a type-A question; an ANY question needs a
+    // scripted zone, whose reply repeats the question as asked.
+    let router = FakeNameServer::start(
+        FakeRole::Authoritative,
+        ZoneScript::new().origin("lan.", 60),
+    )
+    .await
+    .expect("lan router");
+    let clock = Arc::new(SystemClock::new());
+    let stage = stage(&upstreams.config_with_router(router.udp_addr()), &clock);
+
+    ask(&stage, &clock, "nas.lan.", RecordType::ANY).await;
+
+    let asked: Vec<RecordType> = router
+        .received_queries()
+        .iter()
+        .map(|question| question.qtype)
+        .collect();
+    assert_eq!(asked, vec![RecordType::ANY], "the ANY reached the router");
+    assert_eq!(
+        upstreams.main.query_count(),
+        0,
+        "nothing leaked to the main pool"
+    );
+    assert_eq!(upstreams.hub.query_count(), 0);
+}
+
 #[tokio::test]
 async fn the_longest_configured_suffix_wins() {
     let upstreams = Upstreams::start().await;
