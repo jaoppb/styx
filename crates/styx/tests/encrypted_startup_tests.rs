@@ -25,13 +25,24 @@ fn scratch() -> PathBuf {
 }
 
 async fn write_config(dir: &Path, tls: &str) -> PathBuf {
+    write_config_with_section(
+        dir,
+        &format!(
+            "[tls]\nenabled = true\ndot_listen_addrs = [\"127.0.0.1:0\"]\ndoh_listen_addrs = []\n{tls}"
+        ),
+    )
+    .await
+}
+
+/// Writes a config whose `[tls]` part is exactly `tls_section`, which may be empty.
+async fn write_config_with_section(dir: &Path, tls_section: &str) -> PathBuf {
     tokio::fs::create_dir_all(dir).await.unwrap();
     let path = dir.join("styx.toml");
     let config = format!(
         "listen_addrs = [\"127.0.0.1:0\"]\n\n\
          [upstream]\nstrategy = \"ordered_failover\"\n\n\
          [[upstream.members]]\nname = \"local\"\nkind = \"forwarder\"\naddr = \"127.0.0.1:9\"\n\n\
-         [tls]\nenabled = true\ndot_listen_addrs = [\"127.0.0.1:0\"]\ndoh_listen_addrs = []\n{tls}"
+         {tls_section}"
     );
     tokio::fs::write(&path, config).await.unwrap();
     path
@@ -216,4 +227,22 @@ async fn first_boot_logs_the_pin_once_and_second_boot_reuses_without_printing_it
     assert!(pin_output.status.success(), "{}", text(&pin_output.stderr));
     let pin = text(&pin_output.stdout).trim().to_owned();
     assert!(first_logs.contains(&pin), "{pin}\n{first_logs}");
+}
+
+#[tokio::test]
+async fn pin_fails_when_encrypted_inbound_is_absent_or_disabled() {
+    for section in ["", "[tls]\nenabled = false\n"] {
+        let dir = scratch();
+        let config = write_config_with_section(&dir, section).await;
+
+        let output = styx(vec!["pin".into(), config.display().to_string()]).await;
+
+        assert!(!output.status.success(), "{section:?}");
+        assert!(text(&output.stdout).is_empty(), "{section:?}");
+        assert!(
+            text(&output.stderr).contains("encrypted inbound is not enabled"),
+            "{section:?}: {}",
+            text(&output.stderr)
+        );
+    }
 }
