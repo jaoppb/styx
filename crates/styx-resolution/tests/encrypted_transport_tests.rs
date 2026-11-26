@@ -369,7 +369,10 @@ async fn send_pipelined_frames<W: tokio::io::AsyncWrite + Unpin>(
         let body_err = tokio::io::AsyncWriteExt::write_all(&mut writer, &body)
             .await
             .is_err();
-        if len_err || body_err {
+        // tokio-rustls hands plaintext to rustls and reports it written even when the
+        // socket would block; without a flush the records can sit unsent forever.
+        let flush_err = tokio::io::AsyncWriteExt::flush(&mut writer).await.is_err();
+        if len_err || body_err || flush_err {
             break;
         }
     }
@@ -377,10 +380,28 @@ async fn send_pipelined_frames<W: tokio::io::AsyncWrite + Unpin>(
 
 #[tokio::test]
 async fn a_slow_reading_dot_client_is_closed_within_the_write_timeout() {
-    let mut server = boot(EncryptedOptions::default()).await;
+    use styx_resolution::ConcurrencyLimits;
+
+    let defaults = ConcurrencyLimits::default_limits();
+    let settings = harness::server::ServerSettings {
+        limits: ConcurrencyLimits::new(
+            defaults.max_in_flight_queries(),
+            defaults.max_tcp_connections(),
+            defaults.max_in_flight_per_connection(),
+            defaults.udp_sockets_per_addr(),
+            Duration::from_millis(200),
+        ),
+        ..harness::server::ServerSettings::default()
+    };
+    let mut server = EncryptedTestServer::boot_with_server_settings(
+        Arc::new(AnsweringTerminal),
+        EncryptedOptions::default(),
+        settings,
+    )
+    .await;
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
     // Shrink the client receive window and pipeline enough large answers (> 4 MiB) to fill
-    // loopback's send buffer so tokio-rustls flush() blocks and hits the 5s write_timeout.
+    // loopback's send buffer so tokio-rustls flush() blocks and hits the 200ms write_timeout.
     socket.set_recv_buffer_size(4096).unwrap();
     let tcp = socket.connect(server.dot()).await.unwrap();
     let stream = connector(&server.certificate, &[b"dot"])
@@ -392,24 +413,22 @@ async fn a_slow_reading_dot_client_is_closed_within_the_write_timeout() {
         .unwrap();
     let (mut reader, writer) = tokio::io::split(stream);
 
-    const PIPELINED: usize = 600;
     let large = query("large.example.com.", RecordType::TXT);
-    let sender = tokio::spawn(send_pipelined_frames(writer, large, PIPELINED));
+    let sender = tokio::spawn(send_pipelined_frames(writer, large, 600));
 
-    // Never read while the 5s write_timeout expires on the blocked flush.
-    tokio::time::sleep(Duration::from_millis(5500)).await;
-    let mut received = 0usize;
-    while tokio::time::timeout(Duration::from_secs(1), read_frame(&mut reader))
-        .await
-        .unwrap_or(None)
-        .is_some()
-    {
-        received = received.saturating_add(1);
-    }
-    let _ = sender.await;
+    // Never read while the 200ms write_timeout expires on the blocked flush, with a wide
+    // margin so a slow CI runner still sees the deadline pass.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // The server must have closed the connection: what is still in flight drains, then the
+    // stream ends. A server with no write deadline keeps it open and this never finishes.
+    let closed = tokio::time::timeout(PROMPTLY, async {
+        while read_frame(&mut reader).await.is_some() {}
+    })
+    .await;
+    sender.abort();
     assert!(
-        received < PIPELINED,
-        "server must abort the slow-reading DoT connection before sending all {PIPELINED} answers (got {received})"
+        closed.is_ok(),
+        "server must close the slow-reading DoT connection at its write timeout"
     );
     server.shutdown().await;
 }
