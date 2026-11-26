@@ -172,11 +172,10 @@ where
         builder
     }
 
-    /// How long a closing connection may take to finish the streams it already accepted.
+    /// How long a closing connection may take to finish the streams it already accepted:
+    /// one query deadline to answer, then one write deadline to send.
     fn drain_bound(&self) -> Duration {
-        self.shared
-            .query_timeout
-            .saturating_add(self.limits.handshake_timeout.as_duration())
+        self.shared.query_timeout.saturating_add(self.write_timeout)
     }
 
     async fn dispatch(&self, wire: &[u8], peer: SocketAddr) -> Result<EncodedAnswer, DohError> {
@@ -279,8 +278,11 @@ where
             () = self.limiter.budget_spent() => tracing::debug!(peer = %self.peer, "DoH query ceiling reached; closing"),
         }
         connection.as_mut().graceful_shutdown();
-        let drained = tokio::time::timeout(self.endpoint.drain_bound(), connection).await;
-        if let Ok(served) = drained {
+        let drained = tokio::select! {
+            drained = tokio::time::timeout(self.endpoint.drain_bound(), connection) => drained.ok(),
+            () = self.send_stalled.cancelled() => None,
+        };
+        if let Some(served) = drained {
             log_end(self.peer, served);
         }
     }

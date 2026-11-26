@@ -451,57 +451,6 @@ async fn a_stalled_request_body_times_out_with_408_and_releases_the_connection()
     server.shutdown().await;
 }
 
-#[tokio::test]
-async fn a_zero_window_client_that_parks_answers_is_closed_at_the_send_deadline() {
-    let options = EncryptedOptions::default();
-    // Long idle timeout (30s default) so only the 5s per-stream send deadline can close the
-    // connection promptly; meanwhile the held in-flight slot keeps the stream tracked.
-    let mut server = boot(options).await;
-    let tls = tls_connect(server.doh(), &server.certificate, &[b"h2"])
-        .await
-        .unwrap();
-    let (mut sender, mut connection) = h2::client::Builder::new()
-        .initial_window_size(0)
-        .handshake::<_, hyper::body::Bytes>(tls)
-        .await
-        .unwrap();
-    let request = hyper::Request::builder()
-        .method("GET")
-        .uri(format!(
-            "{DOH}?dns={}",
-            URL_SAFE_NO_PAD.encode(query("example.com."))
-        ))
-        .body(())
-        .unwrap();
-    let (response, _) = sender.send_request(request, true).unwrap();
-    let started = std::time::Instant::now();
-    // The response headers arrive with 200, while the body cannot be sent under a 0 window.
-    let res = tokio::time::timeout(PROMPTLY, async {
-        tokio::select! {
-            response = response => response.unwrap(),
-            _ = &mut connection => panic!("connection closed before response headers"),
-        }
-    })
-    .await
-    .expect("response headers arrive promptly");
-    assert_eq!(res.status(), 200);
-
-    // Keep `sender` and `res` (its RecvStream) alive without polling/updating window; the
-    // server must close the stalled connection at the 5s send deadline, well before 30s idle.
-    let _keep = (sender, res);
-    let closed = tokio::time::timeout(Duration::from_secs(8), &mut connection).await;
-    assert!(
-        closed.is_ok(),
-        "zero-window connection must be closed by the send deadline"
-    );
-    assert!(
-        started.elapsed() >= Duration::from_secs(4),
-        "must not close before the 5s send deadline ({:?})",
-        started.elapsed()
-    );
-    server.shutdown().await;
-}
-
 /// Yields via a brief timer so `tokio::time::timeout(Duration::ZERO, ...)` expires if
 /// `received_at` was captured prematurely before body read or budget acquisition.
 struct YieldingTerminal;
@@ -658,12 +607,12 @@ async fn a_doh_request_waiting_on_the_global_query_budget_gets_its_full_query_ti
         .expect("server must shut down");
 }
 
-#[tokio::test]
-async fn a_zero_window_client_honors_the_configured_tcp_write_timeout() {
+/// Server settings with a 200 ms send deadline instead of the 5 s default.
+fn short_write_timeout() -> harness::server::ServerSettings {
     use styx_resolution::ConcurrencyLimits;
 
     let defaults = ConcurrencyLimits::default_limits();
-    let settings = harness::server::ServerSettings {
+    harness::server::ServerSettings {
         limits: ConcurrencyLimits::new(
             defaults.max_in_flight_queries(),
             defaults.max_tcp_connections(),
@@ -672,14 +621,21 @@ async fn a_zero_window_client_honors_the_configured_tcp_write_timeout() {
             Duration::from_millis(200),
         ),
         ..harness::server::ServerSettings::default()
-    };
-    let mut server = EncryptedTestServer::boot_with_server_settings(
-        Arc::new(AnsweringTerminal),
-        EncryptedOptions::default(),
-        settings,
-    )
-    .await;
+    }
+}
 
+type ZeroWindowConnection =
+    h2::client::Connection<tokio_rustls::client::TlsStream<TcpStream>, hyper::body::Bytes>;
+
+/// Opens a zero-window HTTP/2 connection and sends one GET: the 200 headers arrive, the body
+/// cannot. The sender and the response are returned so the caller keeps the stream open.
+async fn park_one_answer(
+    server: &EncryptedTestServer<AnsweringTerminal>,
+) -> (
+    h2::client::SendRequest<hyper::body::Bytes>,
+    ZeroWindowConnection,
+    hyper::Response<h2::RecvStream>,
+) {
     let tls = tls_connect(server.doh(), &server.certificate, &[b"h2"])
         .await
         .unwrap();
@@ -706,16 +662,60 @@ async fn a_zero_window_client_honors_the_configured_tcp_write_timeout() {
     .await
     .expect("response headers arrive promptly");
     assert_eq!(res.status(), 200);
+    (sender, connection, res)
+}
 
-    // The 200ms configured tcp_write_timeout must close the stalled connection well before
-    // the 5s TCP_WRITE_TIMEOUT default and 30s idle timeout.
+#[tokio::test]
+async fn a_zero_window_client_is_closed_at_the_configured_send_deadline() {
+    let mut server = EncryptedTestServer::boot_with_server_settings(
+        Arc::new(AnsweringTerminal),
+        EncryptedOptions::default(),
+        short_write_timeout(),
+    )
+    .await;
+    let started = std::time::Instant::now();
+    let (sender, mut connection, res) = park_one_answer(&server).await;
+
+    // The 200 ms send deadline must close the stalled connection well before the 30 s idle
+    // timeout, and not before the deadline itself.
     let _keep = (sender, res);
     let closed = tokio::time::timeout(Duration::from_secs(2), &mut connection).await;
     assert!(
         closed.is_ok(),
         "zero-window connection must close at the configured 200ms write timeout"
     );
+    assert!(
+        started.elapsed() >= Duration::from_millis(150),
+        "must not close before the send deadline ({:?})",
+        started.elapsed()
+    );
     server.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_draining_connection_still_closes_at_the_send_deadline() {
+    // One query spends the ceiling, so the connection drains right after the first stream.
+    // A long handshake timeout must not stretch that drain: only the send deadline bounds it.
+    let mut options = EncryptedOptions::default();
+    options.limits.max_queries_per_connection = NonZeroU64::MIN;
+    options.limits.handshake_timeout = BoundedTimeout::new(Duration::from_secs(60)).unwrap();
+    let mut server = EncryptedTestServer::boot_with_server_settings(
+        Arc::new(AnsweringTerminal),
+        options,
+        short_write_timeout(),
+    )
+    .await;
+    let (sender, mut connection, res) = park_one_answer(&server).await;
+
+    let _keep = (sender, res);
+    let closed = tokio::time::timeout(Duration::from_secs(2), &mut connection).await;
+    assert!(
+        closed.is_ok(),
+        "a draining connection with a stalled send must close at the 200ms write timeout"
+    );
+    tokio::time::timeout(PROMPTLY, server.shutdown())
+        .await
+        .expect("server must shut down");
 }
 
 struct OversizedTerminal;
