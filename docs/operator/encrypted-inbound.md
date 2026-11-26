@@ -62,7 +62,8 @@ certificate the first time it starts and keeps it in `self_signed_dir`
 - `cert.pem`, and `key.pem`, which is created readable by its owner only. styx refuses to
   start if it finds `key.pem` readable by group or others.
 - The directory itself must be owned by the user styx runs as and not writable by group or
-  others (`0700`); styx creates it that way, and refuses to start if it finds it otherwise.
+  others. styx creates it `0700`, and refuses to start if another user owns it or group or
+  others can write to it.
 - The certificate names come from `self_signed_names` (`["localhost"]` by default). It is
   valid for ten years and reused on every boot. Delete both files to get a new one, and a
   new pin.
