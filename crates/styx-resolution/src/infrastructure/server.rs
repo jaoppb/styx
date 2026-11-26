@@ -93,12 +93,8 @@ where
         let cancel = CancellationToken::new();
         let shared = listener_shared(&config, &pipeline, &clock, sleeper, &cancel);
         let plaintext = bind_plaintext(&config, &shared).await?;
-        let binding = encrypted::Binding {
-            shared: &shared,
-            concurrency: config.limits,
-        };
         let bound = match &encrypted {
-            Some(encrypted) => binding.bind(encrypted).await?,
+            Some(encrypted) => encrypted::bind_encrypted(encrypted, &shared, config.limits).await?,
             None => encrypted::BoundEncrypted::default(),
         };
         let mut listeners = Vec::new();

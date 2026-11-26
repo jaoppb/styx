@@ -55,13 +55,13 @@ impl<L, F, O, C, T, S> Default for BoundEncrypted<L, F, O, C, T, S> {
     }
 }
 
-/// The collaborators every encrypted listener is bound with.
-pub(super) struct Binding<'a, L, F, O, C, T, S> {
-    pub(super) shared: &'a ListenerShared<L, F, O, C, T, S>,
-    pub(super) concurrency: ConcurrencyLimits,
-}
-
-impl<L, F, O, C, T, S> Binding<'_, L, F, O, C, T, S>
+/// Binds every configured DoT and DoH address on the shared collaborators; any bind failure
+/// aborts startup without spawning tasks.
+pub(super) async fn bind_encrypted<L, F, O, C, T, S>(
+    encrypted: &EncryptedListeners,
+    shared: &ListenerShared<L, F, O, C, T, S>,
+    concurrency: ConcurrencyLimits,
+) -> Result<BoundEncrypted<L, F, O, C, T, S>, ServerError>
 where
     L: LocalRecords + Send + Sync + 'static,
     F: FilterPolicy + Send + Sync + 'static,
@@ -70,69 +70,62 @@ where
     T: TerminalHandler + Send + Sync + 'static,
     S: Sleeper + Send + Sync + 'static,
 {
-    /// Binds every configured DoT and DoH address; any bind failure aborts startup without
-    /// spawning tasks.
-    pub(super) async fn bind(
-        &self,
-        encrypted: &EncryptedListeners,
-    ) -> Result<BoundEncrypted<L, F, O, C, T, S>, ServerError> {
-        let mut bound = BoundEncrypted::default();
-        let limits = encrypted.config.limits();
-        let settings = DohSettings::new(
-            encrypted.config.doh_path().clone(),
-            encrypted.config.allow_http1(),
-        );
-        Self::bind_group(
-            encrypted.config.dot_listen_addrs(),
-            |addr| {
-                DotListener::bind(
-                    addr,
-                    encrypted.setup.dot(),
-                    self.shared.clone(),
-                    limits,
-                    self.concurrency,
-                )
-            },
-            DotListener::bound_addr,
-            &mut bound.dot_addrs,
-            &mut bound.dot,
-        )
-        .await?;
-        Self::bind_group(
-            encrypted.config.doh_listen_addrs(),
-            |addr| {
-                DohListener::bind(
-                    addr,
-                    encrypted.setup.doh(),
-                    self.shared.clone(),
-                    limits,
-                    self.concurrency,
-                    settings.clone(),
-                )
-            },
-            DohListener::bound_addr,
-            &mut bound.doh_addrs,
-            &mut bound.doh,
-        )
-        .await?;
-        Ok(bound)
-    }
+    let mut bound = BoundEncrypted::default();
+    let limits = encrypted.config.limits();
+    let settings = DohSettings::new(
+        encrypted.config.doh_path().clone(),
+        encrypted.config.allow_http1(),
+    );
+    bind_group(
+        encrypted.config.dot_listen_addrs(),
+        |addr| {
+            DotListener::bind(
+                addr,
+                encrypted.setup.dot(),
+                shared.clone(),
+                limits,
+                concurrency,
+            )
+        },
+        DotListener::bound_addr,
+        &mut bound.dot_addrs,
+        &mut bound.dot,
+    )
+    .await?;
+    bind_group(
+        encrypted.config.doh_listen_addrs(),
+        |addr| {
+            DohListener::bind(
+                addr,
+                encrypted.setup.doh(),
+                shared.clone(),
+                limits,
+                concurrency,
+                settings.clone(),
+            )
+        },
+        DohListener::bound_addr,
+        &mut bound.doh_addrs,
+        &mut bound.doh,
+    )
+    .await?;
+    Ok(bound)
+}
 
-    async fn bind_group<Li, Fut>(
-        addrs: &[SocketAddr],
-        bind_one: impl Fn(SocketAddr) -> Fut,
-        addr_of: impl Fn(&Li) -> SocketAddr,
-        bound_addrs: &mut Vec<SocketAddr>,
-        listeners: &mut Vec<Li>,
-    ) -> Result<(), ServerError>
-    where
-        Fut: Future<Output = Result<Li, ListenerError>>,
-    {
-        for &addr in addrs {
-            let listener = bind_one(addr).await.map_err(|e| bind_error(addr, e))?;
-            bound_addrs.push(addr_of(&listener));
-            listeners.push(listener);
-        }
-        Ok(())
+async fn bind_group<Li, Fut>(
+    addrs: &[SocketAddr],
+    bind_one: impl Fn(SocketAddr) -> Fut,
+    addr_of: impl Fn(&Li) -> SocketAddr,
+    bound_addrs: &mut Vec<SocketAddr>,
+    listeners: &mut Vec<Li>,
+) -> Result<(), ServerError>
+where
+    Fut: Future<Output = Result<Li, ListenerError>>,
+{
+    for &addr in addrs {
+        let listener = bind_one(addr).await.map_err(|e| bind_error(addr, e))?;
+        bound_addrs.push(addr_of(&listener));
+        listeners.push(listener);
     }
+    Ok(())
 }
