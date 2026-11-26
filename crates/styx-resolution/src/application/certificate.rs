@@ -13,8 +13,8 @@ use time::OffsetDateTime;
 
 use crate::domain::error::CertificateError;
 use crate::domain::tls::{
-    CertificateSource, OperatorCertificateLoader, SelfSignedStore, ServingIdentity,
-    ServingIdentityProvider, SpkiPin, TlsConfig, ValidityState,
+    CertificateSource, OperatorCertificateLoader, SelfSignedStore, ServingIdentity, SpkiPin,
+    TlsConfig, ValidityState,
 };
 
 /// Selects the source, assesses validity, and announces the pin once.
@@ -38,6 +38,27 @@ where
             reader,
             store,
         }
+    }
+
+    /// Resolves the configured source into the one identity to serve: the operator pair when
+    /// configured, otherwise the persisted self-signed pair, generated on first use.
+    ///
+    /// # Errors
+    /// Returns the [`CertificateError`] of configured material that cannot be loaded, or of
+    /// self-signed material that cannot be loaded or generated. Never falls back.
+    pub async fn resolve(&self, config: &TlsConfig) -> Result<ServingIdentity, CertificateError> {
+        let identity = match config.certificate_source() {
+            CertificateSource::OperatorSupplied {
+                cert_path,
+                key_path,
+            } => self.operator_identity(config, cert_path, key_path).await?,
+            CertificateSource::SelfSigned { names } => {
+                self.self_signed_identity(config.self_signed_dir(), names)
+                    .await?
+            }
+        };
+        self.warn_outside_validity(&identity);
+        Ok(identity)
     }
 
     /// The pin of the material `config` would serve, without generating anything.
@@ -146,26 +167,4 @@ where
 /// A validity bound as an operator reads it, in UTC.
 fn utc(time: SystemTime) -> OffsetDateTime {
     OffsetDateTime::from(time)
-}
-
-impl<C, R, G> ServingIdentityProvider for CertificateProvisioner<C, R, G>
-where
-    C: Clock,
-    R: OperatorCertificateLoader,
-    G: SelfSignedStore,
-{
-    async fn resolve(&self, config: &TlsConfig) -> Result<ServingIdentity, CertificateError> {
-        let identity = match config.certificate_source() {
-            CertificateSource::OperatorSupplied {
-                cert_path,
-                key_path,
-            } => self.operator_identity(config, cert_path, key_path).await?,
-            CertificateSource::SelfSigned { names } => {
-                self.self_signed_identity(config.self_signed_dir(), names)
-                    .await?
-            }
-        };
-        self.warn_outside_validity(&identity);
-        Ok(identity)
-    }
 }

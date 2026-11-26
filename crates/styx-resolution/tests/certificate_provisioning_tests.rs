@@ -19,7 +19,7 @@ use styx_resolution::domain::error::CertificateError;
 use styx_resolution::domain::tls::{
     CertificateOrigin, DohResourcePath, EncryptedLimits, OperatorCertificateLoader,
     PrivateKeyEncoding, PrivateKeyMaterial, SelfSignedStore, ServingIdentity, ServingIdentityParts,
-    ServingIdentityProvider, SpkiPin, TlsConfig, TlsConfigParts, ValidityWindow,
+    SpkiPin, TlsConfig, TlsConfigParts, ValidityWindow,
 };
 
 fn epoch_plus(days: u32) -> SystemTime {

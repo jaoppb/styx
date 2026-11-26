@@ -8,8 +8,7 @@ pub mod config;
 
 pub use certificate::{
     CertificateOrigin, OperatorCertificateLoader, PrivateKeyEncoding, PrivateKeyMaterial,
-    SelfSignedStore, ServingIdentity, ServingIdentityParts, ServingIdentityProvider, SpkiPin,
-    ValidityState, ValidityWindow,
+    SelfSignedStore, ServingIdentity, ServingIdentityParts, SpkiPin, ValidityState, ValidityWindow,
 };
 pub use config::{
     BoundedTimeout, CertificateSource, DohResourcePath, EncryptedLimits, StreamConcurrencyLimit,

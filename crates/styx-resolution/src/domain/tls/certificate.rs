@@ -13,7 +13,6 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 
 use crate::domain::error::CertificateError;
-use crate::domain::tls::TlsConfig;
 
 /// SHA-256 over the DER-encoded SubjectPublicKeyInfo of the serving certificate.
 ///
@@ -248,22 +247,6 @@ impl ServingIdentity {
     pub fn freshly_generated(&self) -> bool {
         self.parts.freshly_generated
     }
-}
-
-/// Startup port: hand the listeners one complete serving identity.
-///
-/// Obligation: return a complete identity or a typed error, never a partial one.
-/// Implemented by: `application::certificate::CertificateProvisioner` (Phase 7) in
-/// production; tests use the provisioner over fake loaders.
-/// Why it exists: the listeners depend on "serving material", never on a filesystem, a
-/// key encoding or a TLS library. Called once at startup, before any listener binds, and
-/// never on the hot path.
-pub trait ServingIdentityProvider: Send + Sync + 'static {
-    /// Resolves the configured source into the identity to serve.
-    fn resolve(
-        &self,
-        config: &TlsConfig,
-    ) -> impl Future<Output = Result<ServingIdentity, CertificateError>> + Send;
 }
 
 /// Startup port: read an operator-supplied certificate chain and key.

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::{bail, Context};
 use styx_core::SystemClock;
 use styx_resolution::application::certificate::CertificateProvisioner;
-use styx_resolution::domain::tls::{ServingIdentityProvider, TlsConfig};
+use styx_resolution::domain::tls::TlsConfig;
 use styx_resolution::infrastructure::cert_fs::{FilesystemCertificateReader, SelfSignedGenerator};
 use styx_resolution::{EncryptedListeners, TlsServerSetup};
 
