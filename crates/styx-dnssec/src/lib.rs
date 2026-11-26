@@ -14,8 +14,7 @@ pub mod infrastructure;
 pub use application::validator::Validator;
 pub use domain::chain::{Delegation, SignedRrset, ZoneCutMaterial};
 pub use domain::denial::{
-    ClosestEncloserProof, DenialProof, DenialStrength, Nsec3Flags, Nsec3Params, Nsec3Proof,
-    NsecProof,
+    ClosestEncloserProof, DenialProof, DenialStrength, Nsec3Params, Nsec3Proof, NsecProof,
 };
 pub use domain::error::{AnchorLineError, ChainSourceError, DenialError, TrustAnchorError};
 pub use domain::policy::{

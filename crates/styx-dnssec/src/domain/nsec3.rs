@@ -1,13 +1,12 @@
 //! Iterated salted NSEC3 hashing and closest-encloser derivation (RFC 5155).
 
-use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use data_encoding::BASE32_DNSSEC;
 use styx_proto::domain::rdata::Nsec3Rdata;
 use styx_proto::{Name, RData, RecordType, ResourceRecord};
 
-use crate::domain::denial::{ClosestEncloserProof, DenialStrength, Nsec3Params};
+use crate::domain::denial::{ring_covers, ClosestEncloserProof, DenialStrength, Nsec3Params};
 use crate::domain::error::DenialError;
 use crate::domain::node_types::OwnerTypes;
 use crate::domain::policy::{Nsec3HashAlgorithm, Nsec3IterationsCap};
@@ -64,27 +63,39 @@ pub fn hash_nsec3_name(
 /// Checks whether an NSEC3 record covers a target hash in hash order.
 #[must_use]
 pub fn nsec3_covers_hash(owner: &[u8], next: &[u8], target: &[u8]) -> bool {
-    let owner_versus_next = owner.cmp(next);
-    let owner_versus_target = owner.cmp(target);
-    let target_versus_next = target.cmp(next);
+    ring_covers(owner, next, target, Ord::cmp)
+}
 
-    if owner_versus_next == Ordering::Less {
-        owner_versus_target == Ordering::Less && target_versus_next == Ordering::Less
-    } else if owner_versus_next == Ordering::Greater {
-        owner_versus_target == Ordering::Less || target_versus_next == Ordering::Less
-    } else {
-        // RFC 5155 §7.2.1: single NSEC3 in zone covers all other hashes
-        owner_versus_target != Ordering::Equal
+/// The length of an SHA-1 digest, the only NSEC3 hash defined (RFC 5155 §5, §10.1).
+const SHA1_DIGEST_LENGTH: usize = 20;
+
+/// Extracts the binary owner hash from an NSEC3 record's first label, checking both it
+/// and the next hashed owner against the digest length of a known hash algorithm.
+fn extract_owner_hash(
+    record: &ResourceRecord,
+    hash_algorithm: Nsec3HashAlgorithm,
+) -> Result<Vec<u8>, DenialError> {
+    let RData::Nsec3(ref nsec3) = record.rdata else {
+        return Err(DenialError::DenialProofIncomplete);
+    };
+    let owner_hash = record
+        .owner
+        .labels()
+        .next()
+        .and_then(|label| base32hex_decode(label.as_bytes()))
+        .ok_or(DenialError::DenialProofIncomplete)?;
+    let wrong_length = hash_algorithm == Nsec3HashAlgorithm::SHA1
+        && (owner_hash.len() != SHA1_DIGEST_LENGTH
+            || nsec3.next_hashed_owner().len() != SHA1_DIGEST_LENGTH);
+    if wrong_length {
+        return Err(DenialError::DenialProofIncomplete);
     }
+    Ok(owner_hash)
 }
 
-/// Extracts the binary owner hash from an NSEC3 record's first label.
-fn extract_owner_hash(record: &ResourceRecord) -> Option<Vec<u8>> {
-    let first_label = record.owner.labels().next()?;
-    base32hex_decode(first_label.as_bytes())
-}
-
-fn is_nsec3_in_zone(record: &ResourceRecord, signer_zone: &Name) -> bool {
+/// Whether `record` is an NSEC3 owned directly below `signer_zone`, the only place its
+/// zone can hold one (RFC 5155 §7.1).
+pub(crate) fn is_nsec3_in_zone(record: &ResourceRecord, signer_zone: &Name) -> bool {
     record.owner.label_count() == signer_zone.label_count().saturating_add(1)
         && record
             .owner
@@ -123,7 +134,7 @@ struct EncloserProof {
 pub struct Nsec3Proof {
     params: Nsec3Params,
     records: Vec<ResourceRecord>,
-    owner_hashes: Vec<Option<Vec<u8>>>,
+    owner_hashes: Vec<Vec<u8>>,
 }
 
 impl Nsec3Proof {
@@ -131,7 +142,8 @@ impl Nsec3Proof {
     ///
     /// # Errors
     /// Returns [`DenialError::DenialProofIncomplete`] if `records` is empty, contains
-    /// non-NSEC3 records, or has mismatched hash parameters.
+    /// non-NSEC3 records, has mismatched hash parameters, or an owner name that is not a
+    /// hash of the algorithm's length.
     pub fn from_records(records: &[&ResourceRecord]) -> Result<Self, DenialError> {
         let Some(&first) = records.first() else {
             return Err(DenialError::DenialProofIncomplete);
@@ -156,7 +168,7 @@ impl Nsec3Proof {
             {
                 return Err(DenialError::DenialProofIncomplete);
             }
-            owner_hashes.push(extract_owner_hash(record));
+            owner_hashes.push(extract_owner_hash(record, params.hash_algorithm)?);
             owned_records.push(record.clone());
         }
         Ok(Self {
@@ -182,8 +194,8 @@ impl Nsec3Proof {
         self.records
             .iter()
             .zip(self.owner_hashes.iter())
-            .filter_map(|(record, hash)| match (&record.rdata, hash) {
-                (RData::Nsec3(nsec3), Some(owner_hash)) => Some((owner_hash.as_slice(), nsec3)),
+            .filter_map(|(record, owner_hash)| match record.rdata {
+                RData::Nsec3(ref nsec3) => Some((owner_hash.as_slice(), nsec3)),
                 _ => None,
             })
     }
@@ -385,8 +397,7 @@ impl Nsec3Proof {
             && self
                 .records
                 .iter()
-                .zip(self.owner_hashes.iter())
-                .all(|(record, hash)| is_nsec3_in_zone(record, signer_zone) && hash.is_some());
+                .all(|record| is_nsec3_in_zone(record, signer_zone));
         if valid {
             Ok(())
         } else {

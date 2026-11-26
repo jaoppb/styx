@@ -5,6 +5,7 @@ use styx_proto::{Message, Name, RData, RecordType, ResourceRecord};
 
 use crate::application::authenticator::{Authenticator, VerificationBudget};
 use crate::domain::denial::{DenialProof, DenialStrength};
+use crate::domain::nsec3::is_nsec3_in_zone;
 use crate::domain::verdict::{ValidationOutcome, VerdictReason};
 
 /// Selects NSEC/NSEC3 records and RRSIGs belonging to `signer_zone` from `authorities`.
@@ -30,7 +31,7 @@ fn zone_denial_records<'a>(
     let denial_records = authorities
         .iter()
         .filter(|record| match record.rdata {
-            RData::Nsec3(_) => is_nsec3_record_in_zone(record, signer_zone),
+            RData::Nsec3(_) => is_nsec3_in_zone(record, signer_zone),
             RData::Nsec(_) => {
                 record.owner.is_subdomain_of(signer_zone)
                     && !is_child_signed_only(record, &zone_signatures, &child_signed_owners)
@@ -39,14 +40,6 @@ fn zone_denial_records<'a>(
         })
         .collect();
     (denial_records, zone_signatures)
-}
-
-fn is_nsec3_record_in_zone(record: &ResourceRecord, signer_zone: &Name) -> bool {
-    record.owner.label_count() == signer_zone.label_count().saturating_add(1)
-        && record
-            .owner
-            .parent()
-            .is_some_and(|parent| parent.eq_ignore_case(signer_zone))
 }
 
 fn is_child_signed_only(

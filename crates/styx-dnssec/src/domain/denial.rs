@@ -10,30 +10,6 @@ pub use crate::domain::nsec::NsecProof;
 pub use crate::domain::nsec3::Nsec3Proof;
 use crate::domain::policy::{Nsec3HashAlgorithm, Nsec3IterationsCap};
 
-/// Wrapped NSEC3 flags octet (RFC 5155 §3.1.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Nsec3Flags(u8);
-
-impl Nsec3Flags {
-    /// Constructs a new [`Nsec3Flags`].
-    #[must_use]
-    pub const fn new(raw: u8) -> Self {
-        Self(raw)
-    }
-
-    /// Returns whether the Opt-Out flag (bit 0) is set.
-    #[must_use]
-    pub const fn is_opt_out(&self) -> bool {
-        (self.0 & 0x01) != 0
-    }
-
-    /// Returns the raw flags octet.
-    #[must_use]
-    pub const fn raw(&self) -> u8 {
-        self.0
-    }
-}
-
 /// NSEC3 parameters governing denial hashing and iteration limits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Nsec3Params {
@@ -145,19 +121,25 @@ pub fn longest_common_ancestor(left: &Name, right: &Name) -> Name {
 /// Checks whether an NSEC record covers `qname` in canonical order.
 #[must_use]
 pub fn nsec_covers_name(owner: &Name, next: &Name, qname: &Name) -> bool {
-    let owner_versus_next = canonical_name_cmp(owner, next);
-    let owner_versus_query = canonical_name_cmp(owner, qname);
-    let query_versus_next = canonical_name_cmp(qname, next);
+    ring_covers(owner, next, qname, canonical_name_cmp)
+}
 
-    if owner_versus_next == Ordering::Less {
-        // Normal span: owner < qname < next
-        owner_versus_query == Ordering::Less && query_versus_next == Ordering::Less
-    } else if owner_versus_next == Ordering::Greater {
-        // Apex wrap-around: owner > next
-        owner_versus_query == Ordering::Less || query_versus_next == Ordering::Less
-    } else {
-        // RFC 4035 §5.4: single NSEC in zone covers all names except owner itself
-        owner_versus_query != Ordering::Equal
+/// Whether the span from `owner` to `next` in the circular order `compare` covers
+/// `target`, strictly between the two. NSEC chains (RFC 4035 §5.4) and NSEC3 chains
+/// (RFC 5155 §7.2.1) both close a ring: the last span wraps from the greatest owner back
+/// to the first, and a lone record whose next is itself covers everything but its owner.
+pub(crate) fn ring_covers<T: ?Sized>(
+    owner: &T,
+    next: &T,
+    target: &T,
+    compare: impl Fn(&T, &T) -> Ordering,
+) -> bool {
+    let owner_before_target = compare(owner, target) == Ordering::Less;
+    let target_before_next = compare(target, next) == Ordering::Less;
+    match compare(owner, next) {
+        Ordering::Less => owner_before_target && target_before_next,
+        Ordering::Greater => owner_before_target || target_before_next,
+        Ordering::Equal => compare(owner, target) != Ordering::Equal,
     }
 }
 
