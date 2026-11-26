@@ -6,6 +6,8 @@
 #![allow(dead_code)]
 #![allow(clippy::expect_used)]
 
+pub mod nsec3_chain;
+
 use std::time::{Duration, SystemTime};
 
 use ring::signature::{Ed25519KeyPair, KeyPair};

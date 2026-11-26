@@ -10,6 +10,7 @@ use styx_dnssec::{
     ValidationPolicy, ValidationVerdict, Validator, VerdictReason, ZoneCutMaterial,
 };
 use styx_proto::{Message, Name, RData, RecordClass, RecordType, ResourceRecord, ResponseCode};
+use support::nsec3_chain::{chain, node, opt_out, Node, APEX_TYPES};
 use support::{a_record, clock, name, query, record, ZoneKey, DIGEST_SHA1, DIGEST_SHA256};
 
 /// The root and `example.` signed under it.
@@ -27,6 +28,7 @@ impl Signed {
         source.insert_cut(root.apex_cut());
         source.insert_cut(example.signed_cut(&root));
         source.record_not_a_cut(name("www.example."));
+        source.record_not_a_cut(name("host.example."));
         Self {
             root,
             example,
@@ -229,4 +231,63 @@ async fn an_off_class_authority_record_is_malformed() {
         verdict,
         (ValidationVerdict::Bogus, VerdictReason::MalformedResponse)
     );
+}
+
+fn wildcard_nodes() -> Vec<Node> {
+    vec![
+        node("example.", APEX_TYPES),
+        node("*.example.", &[RecordType::A, RecordType::RRSIG]),
+    ]
+}
+
+/// `host.example. A` expanded from `*.example.`, with every NSEC3 of the zone's chain in
+/// the authority section, each signed as its own RRset.
+fn nsec3_wildcard_answer(zone: &Signed, nodes: &[Node]) -> Message {
+    let host = name("host.example.");
+    let mut message = query(&host, RecordType::A);
+    let answer = vec![a_record(&host, 1)];
+    message.answers.push(zone.example.sign_wildcard(&answer, 1));
+    message.answers.extend(answer);
+    for nsec3 in chain(&name("example."), nodes) {
+        let rrset = vec![nsec3];
+        message.authorities.push(zone.example.sign(&rrset));
+        message.authorities.extend(rrset);
+    }
+    message
+}
+
+#[tokio::test]
+async fn an_nsec3_proven_wildcard_expansion_is_secure() {
+    let zone = Signed::new();
+    let message = nsec3_wildcard_answer(&zone, &wildcard_nodes());
+
+    let verdict = zone.validate(&message).await;
+
+    assert_eq!(verdict.0, ValidationVerdict::Secure);
+}
+
+#[tokio::test]
+async fn an_nsec3_wildcard_expansion_over_an_opt_out_span_is_insecure() {
+    let zone = Signed::new();
+    let message = nsec3_wildcard_answer(&zone, &opt_out(wildcard_nodes()));
+
+    let verdict = zone.validate(&message).await;
+
+    assert_eq!(
+        verdict,
+        (ValidationVerdict::Insecure, VerdictReason::Nsec3OptOut)
+    );
+}
+
+/// The expansion is forged when the qname exists: no NSEC3 span covers it.
+#[tokio::test]
+async fn an_nsec3_wildcard_expansion_over_an_existing_name_is_bogus() {
+    let zone = Signed::new();
+    let mut nodes = wildcard_nodes();
+    nodes.push(node("host.example.", &[RecordType::TXT, RecordType::RRSIG]));
+    let message = nsec3_wildcard_answer(&zone, &nodes);
+
+    let verdict = zone.validate(&message).await;
+
+    assert_eq!(verdict.0, ValidationVerdict::Bogus);
 }
