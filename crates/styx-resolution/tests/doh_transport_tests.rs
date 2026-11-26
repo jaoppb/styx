@@ -778,6 +778,55 @@ async fn a_draining_connection_still_closes_at_the_send_deadline() {
         .expect("server must shut down");
 }
 
+#[tokio::test]
+async fn a_draining_connection_is_cut_at_the_query_and_send_deadlines() {
+    // Two queries spend the ceiling. The first is a POST whose body never finishes, so only
+    // the 30 s idle timeout bounds its read; the second spends the ceiling and starts the
+    // drain. Nothing stalls a send, so only the drain bound (query 2 s + write 200 ms) can
+    // close the connection, and a 60 s handshake timeout must not stretch it.
+    let mut options = EncryptedOptions::default();
+    options.limits.max_queries_per_connection = NonZeroU64::MIN.saturating_add(1);
+    options.limits.handshake_timeout = BoundedTimeout::new(Duration::from_secs(60)).unwrap();
+    let mut server = EncryptedTestServer::boot_with_server_settings(
+        Arc::new(AnsweringTerminal),
+        options,
+        short_write_timeout(),
+    )
+    .await;
+    let tls = tls_connect(server.doh(), &server.certificate, &[b"h2"])
+        .await
+        .unwrap();
+    let (mut sender, mut connection) = h2::client::handshake(tls).await.unwrap();
+    let post = hyper::Request::builder()
+        .method("POST")
+        .uri(DOH)
+        .header(hyper::header::CONTENT_TYPE, "application/dns-message")
+        .body(())
+        .unwrap();
+    let (_stuck, mut body) = sender.send_request(post, false).unwrap();
+    body.send_data(hyper::body::Bytes::from_static(&[0x12, 0x34]), false)
+        .unwrap();
+    let get = hyper::Request::builder()
+        .method("GET")
+        .uri(format!(
+            "{DOH}?dns={}",
+            URL_SAFE_NO_PAD.encode(query("example.com."))
+        ))
+        .body(())
+        .unwrap();
+    let (answered, _) = sender.send_request(get, true).unwrap();
+
+    let closed = tokio::time::timeout(Duration::from_secs(4), &mut connection).await;
+    assert!(
+        closed.is_ok(),
+        "the drain must end at query_timeout + write_timeout, not the handshake timeout"
+    );
+    let _keep = (sender, body, answered);
+    tokio::time::timeout(PROMPTLY, server.shutdown())
+        .await
+        .expect("server must shut down");
+}
+
 struct OversizedTerminal;
 
 impl styx_resolution::TerminalHandler for OversizedTerminal {
