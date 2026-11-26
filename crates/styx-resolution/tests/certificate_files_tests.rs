@@ -9,10 +9,13 @@ use std::time::Duration;
 
 use harness::certificates::{fixture_now, pin_of_key, Scratch, TestCertificate};
 use styx_resolution::domain::error::CertificateError;
-use styx_resolution::domain::tls::{CertificateOrigin, OperatorCertificateLoader, SelfSignedStore};
+use styx_resolution::domain::tls::{
+    CertificateOrigin, OperatorCertificateLoader, PrivateKeyEncoding, SelfSignedStore,
+};
 use styx_resolution::infrastructure::cert_fs::{
     FilesystemCertificateReader, SelfSignedGenerator, SELF_SIGNED_CERT_FILE, SELF_SIGNED_KEY_FILE,
 };
+use styx_resolution::TlsServerSetup;
 
 fn names() -> Vec<String> {
     vec!["localhost".into(), "127.0.0.1".into()]
@@ -147,6 +150,65 @@ async fn half_of_the_self_signed_pair_is_an_error() {
         matches!(error, CertificateError::IncompleteMaterial { .. }),
         "{error}"
     );
+}
+
+#[tokio::test]
+async fn a_self_signed_key_without_its_certificate_is_an_error_naming_both() {
+    let scratch = Scratch::new();
+    tokio::fs::create_dir_all(scratch.dir()).await.unwrap();
+    let key_path = scratch.path(SELF_SIGNED_KEY_FILE);
+    tokio::fs::write(&key_path, TestCertificate::valid().key_pem)
+        .await
+        .unwrap();
+
+    let error = SelfSignedGenerator::new()
+        .load_existing(scratch.dir())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            CertificateError::IncompleteMaterial { ref present, ref missing }
+                if *present == key_path && *missing == scratch.path(SELF_SIGNED_CERT_FILE)
+        ),
+        "{error}"
+    );
+}
+
+/// Operator pairs whose key is not PKCS#8, made once with `openssl` because rcgen only
+/// writes PKCS#8. Test-only material; the keys protect nothing.
+const LEGACY_KEY_PAIRS: [(&str, &str, PrivateKeyEncoding); 2] = [
+    (
+        include_str!("fixtures/rsa_pkcs1_cert.pem"),
+        include_str!("fixtures/rsa_pkcs1_key.pem"),
+        PrivateKeyEncoding::Pkcs1,
+    ),
+    (
+        include_str!("fixtures/ec_sec1_cert.pem"),
+        include_str!("fixtures/ec_sec1_key.pem"),
+        PrivateKeyEncoding::Sec1,
+    ),
+];
+
+#[tokio::test]
+async fn pkcs1_and_sec1_operator_keys_load_and_build_a_tls_setup() {
+    for (cert_pem, key_pem, encoding) in LEGACY_KEY_PAIRS {
+        let scratch = Scratch::new();
+        let (cert, key) = scratch.write_pair(cert_pem, key_pem).await;
+        let identity = FilesystemCertificateReader::new()
+            .load(&cert, &key)
+            .await
+            .unwrap();
+        assert_eq!(identity.key().encoding(), encoding);
+        assert_eq!(
+            identity.subject_names(),
+            ["localhost".to_owned()].as_slice()
+        );
+        assert!(
+            TlsServerSetup::build(&identity, false).is_ok(),
+            "{encoding:?}"
+        );
+    }
 }
 
 #[tokio::test]
