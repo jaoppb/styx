@@ -6,7 +6,7 @@
 mod self_signed;
 
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use rustls::crypto::ring::default_provider;
@@ -187,6 +187,36 @@ fn parse_chain(
         });
     }
     Ok(chain)
+}
+
+/// Opens `path` without following a symlink, and refuses it with `insecure` unless the
+/// effective user owns it and none of the `forbidden` mode bits are set. The checks run on
+/// the opened descriptor, so the path cannot be swapped between the check and the use.
+#[cfg(unix)]
+fn open_owner_checked(
+    path: &Path,
+    flags: rustix::fs::OFlags,
+    forbidden: rustix::fs::Mode,
+    insecure: fn(PathBuf) -> CertificateError,
+) -> Result<rustix::fd::OwnedFd, CertificateError> {
+    use rustix::fs::{fstat, open, Mode, OFlags};
+
+    let unreadable = |error: rustix::io::Errno| CertificateError::PathUnreadable {
+        path: path.to_path_buf(),
+        reason: error.to_string(),
+    };
+    let owned = open(
+        path,
+        flags | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(unreadable)?;
+    let stat = fstat(&owned).map_err(unreadable)?;
+    let euid = rustix::process::geteuid().as_raw();
+    if stat.st_uid != euid || Mode::from_raw_mode(stat.st_mode).intersects(forbidden) {
+        return Err(insecure(path.to_path_buf()));
+    }
+    Ok(owned)
 }
 
 async fn read_file(path: &Path) -> Result<Vec<u8>, CertificateError> {

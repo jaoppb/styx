@@ -14,6 +14,8 @@ use tokio::io::AsyncWriteExt;
 
 use crate::domain::error::CertificateError;
 use crate::domain::tls::{CertificateOrigin, SelfSignedStore, ServingIdentity, SpkiPin};
+#[cfg(unix)]
+use crate::infrastructure::cert_fs::open_owner_checked;
 use crate::infrastructure::cert_fs::{read_cert_pin, PemPair};
 
 /// File name of the persisted self-signed certificate.
@@ -250,28 +252,14 @@ async fn write_new(path: &Path, contents: &[u8], mode: u32) -> Result<(), Certif
 
 #[cfg(unix)]
 fn check_dir_safe(dir: &Path) -> Result<(), CertificateError> {
-    use rustix::fs::{fstat, open, Mode, OFlags};
+    use rustix::fs::{Mode, OFlags};
 
-    let owned = open(
+    open_owner_checked(
         dir,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|error| CertificateError::PathUnreadable {
-        path: dir.to_path_buf(),
-        reason: error.to_string(),
-    })?;
-    let stat = fstat(&owned).map_err(|error| CertificateError::PathUnreadable {
-        path: dir.to_path_buf(),
-        reason: error.to_string(),
-    })?;
-    let euid = rustix::process::geteuid().as_raw();
-    let mode = Mode::from_raw_mode(stat.st_mode);
-    if stat.st_uid != euid || mode.intersects(Mode::WGRP | Mode::WOTH) {
-        return Err(CertificateError::InsecureDirectory {
-            path: dir.to_path_buf(),
-        });
-    }
+        OFlags::RDONLY | OFlags::DIRECTORY,
+        Mode::WGRP | Mode::WOTH,
+        |path| CertificateError::InsecureDirectory { path },
+    )?;
     Ok(())
 }
 
@@ -282,29 +270,12 @@ fn check_dir_safe(_dir: &Path) -> Result<(), CertificateError> {
 
 #[cfg(unix)]
 async fn read_owner_only(key_path: &Path) -> Result<Vec<u8>, CertificateError> {
-    use rustix::fs::{fstat, open, Mode, OFlags};
+    use rustix::fs::{Mode, OFlags};
     use tokio::io::AsyncReadExt;
 
-    let owned = open(
-        key_path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|error| CertificateError::PathUnreadable {
-        path: key_path.to_path_buf(),
-        reason: error.to_string(),
+    let owned = open_owner_checked(key_path, OFlags::RDONLY, Mode::RWXG | Mode::RWXO, |path| {
+        CertificateError::InsecurePermissions { path }
     })?;
-    let stat = fstat(&owned).map_err(|error| CertificateError::PathUnreadable {
-        path: key_path.to_path_buf(),
-        reason: error.to_string(),
-    })?;
-    let euid = rustix::process::geteuid().as_raw();
-    let mode = Mode::from_raw_mode(stat.st_mode);
-    if stat.st_uid != euid || mode.intersects(Mode::RWXG | Mode::RWXO) {
-        return Err(CertificateError::InsecurePermissions {
-            path: key_path.to_path_buf(),
-        });
-    }
     let mut file = tokio::fs::File::from_std(std::fs::File::from(owned));
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
