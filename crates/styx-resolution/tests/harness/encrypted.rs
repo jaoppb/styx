@@ -18,7 +18,7 @@ use styx_resolution::domain::tls::{
 use styx_resolution::infrastructure::cert_fs::FilesystemCertificateReader;
 use styx_resolution::{
     AllowAllFilter, DiscardObserver, EncryptedListeners, NoLocalRecords, Pipeline, Server,
-    TerminalHandler, TlsServerSetup,
+    ServerConfig, TerminalHandler, TlsServerSetup,
 };
 use styx_testkit::{TestClock, TestSleeper};
 
@@ -92,6 +92,15 @@ impl<T: TerminalHandler + Send + Sync + 'static> EncryptedTestServer<T> {
         options: EncryptedOptions,
         server_settings: ServerSettings,
     ) -> Self {
+        Self::boot_with_config(terminal, options, server_settings.server_config()).await
+    }
+
+    /// Boots with a ready `[server]` configuration, for keys `ServerSettings` does not carry.
+    pub async fn boot_with_config(
+        terminal: Arc<T>,
+        options: EncryptedOptions,
+        server_config: ServerConfig,
+    ) -> Self {
         let certificate = TestCertificate::valid();
         let scratch = Scratch::new();
         let (cert_path, key_path) = scratch
@@ -113,7 +122,7 @@ impl<T: TerminalHandler + Send + Sync + 'static> EncryptedTestServer<T> {
         )
         .with_terminal(terminal);
         let server = Server::bind_with_encrypted(
-            server_settings.server_config(),
+            server_config,
             Some(EncryptedListeners::new(config, setup)),
             Arc::new(pipeline),
             Arc::clone(&clock),
