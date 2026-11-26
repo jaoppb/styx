@@ -192,6 +192,9 @@ pub(crate) fn check_rrsig_metadata<C: Clock>(
     let Some(first) = rrset.first() else {
         return Err(VerdictReason::NoValidRrsig);
     };
+    if usize::from(rrsig.labels()) > first.owner.label_count() {
+        return Err(VerdictReason::NoValidRrsig);
+    }
     if rrset.iter().any(|record| {
         !record.owner.eq_ignore_case(&first.owner)
             || record.rclass != first.rclass
@@ -208,14 +211,16 @@ pub(crate) fn check_rrsig_metadata<C: Clock>(
     Ok(signature_algorithm)
 }
 
-/// Whether `dnskey` at `dnskey_owner` can verify `rrsig`.
+/// Whether `dnskey` at `dnskey_owner`, whose key tag is `dnskey_tag`, can verify `rrsig`.
+/// The tag is passed in so a caller matching many RRSIGs computes it once per key.
 pub(crate) fn key_matches_rrsig(
     rrsig: &RrsigRdata,
     dnskey: &DnskeyRdata,
     dnskey_owner: &Name,
+    dnskey_tag: u16,
 ) -> bool {
-    may_sign_data(dnskey)
-        && rrsig.key_tag() == dnskey.key_tag()
+    rrsig.key_tag() == dnskey_tag
+        && may_sign_data(dnskey)
         && rrsig.algorithm() == dnskey.algorithm()
         && rrsig.signer_name() == dnskey_owner
 }
@@ -241,7 +246,7 @@ pub fn verify_rrsig_record<C: Clock>(
     dnskey_owner: &Name,
     clock: &C,
 ) -> Result<(), VerdictReason> {
-    if !key_matches_rrsig(rrsig, dnskey, dnskey_owner) {
+    if !key_matches_rrsig(rrsig, dnskey, dnskey_owner, dnskey.key_tag()) {
         return Err(VerdictReason::NoValidRrsig);
     }
     let signature_algorithm = check_rrsig_metadata(rrsig, rrset, clock)?;

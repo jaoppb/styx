@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use styx_core::Clock;
 use styx_proto::domain::rdata::{DnskeyRdata, DsRdata, RrsigRdata};
-use styx_proto::{Name, RData, RecordType, ResourceRecord};
+use styx_proto::{Name, RData, RecordClass, RecordType, ResourceRecord};
 
 use crate::domain::canonical::build_canonical_signed_data;
 use crate::domain::chain::SignedRrset;
@@ -19,6 +19,25 @@ use crate::domain::verdict::{ValidationOutcome, VerdictReason};
 pub(crate) struct WildcardClaim {
     pub(crate) owner: Name,
     pub(crate) signature_labels: u8,
+}
+
+/// How an RRSIG that verified covers its RRset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignatureMatch {
+    /// The RRset as it stands, at its own owner name.
+    Direct,
+    /// An expansion of the wildcard one label above the RRSIG's `labels` count.
+    Wildcard(u8),
+}
+
+impl SignatureMatch {
+    fn of(owner: &Name, labels: u8) -> Self {
+        if is_expansion(owner, labels) {
+            Self::Wildcard(labels)
+        } else {
+            Self::Direct
+        }
+    }
 }
 
 /// Per-validation budget bounding signature trials and failures (KeyTrap protection).
@@ -87,6 +106,9 @@ impl<C: Clock> Authenticator<C> {
             return Err(ValidationOutcome::bogus(VerdictReason::DsDnskeyMismatch));
         }
         let usable = self.usable_vouchers(vouchers)?;
+        if !is_zone_dnskey_rrset(zone, &dnskey.records) {
+            return Err(ValidationOutcome::bogus(VerdictReason::DsDnskeyMismatch));
+        }
         let vouched: Vec<ResourceRecord> = vouched_keys(zone, &dnskey.records, &usable)
             .cloned()
             .collect();
@@ -96,7 +118,10 @@ impl<C: Clock> Authenticator<C> {
         let records: Vec<&ResourceRecord> = dnskey.records.iter().collect();
         let signatures: Vec<&ResourceRecord> = dnskey.signatures.iter().collect();
         match self.verify_rrset_against_keys(&records, &signatures, &vouched, budget) {
-            Ok(_) => Ok(dnskey.records.clone()),
+            Ok(SignatureMatch::Direct) => Ok(dnskey.records.clone()),
+            Ok(SignatureMatch::Wildcard(_)) => {
+                Err(ValidationOutcome::bogus(VerdictReason::NoValidRrsig))
+            }
             Err(reason) => Err(ValidationOutcome::bogus(reason)),
         }
     }
@@ -134,7 +159,7 @@ impl<C: Clock> Authenticator<C> {
         let signature_list: Vec<&ResourceRecord> = signatures.into_iter().collect();
         let mut wildcard_claims = Vec::new();
         for rrset in rrsets {
-            let Some(labels) =
+            let SignatureMatch::Wildcard(labels) =
                 self.verify_rrset_against_keys(&rrset, &signature_list, keys, budget)?
             else {
                 continue;
@@ -155,10 +180,11 @@ impl<C: Clock> Authenticator<C> {
         signatures: &[&ResourceRecord],
         keys: &[ResourceRecord],
         budget: &mut VerificationBudget,
-    ) -> Result<Option<u8>, VerdictReason> {
+    ) -> Result<SignatureMatch, VerdictReason> {
         let Some(first) = rrset.first() else {
             return Err(VerdictReason::NoValidRrsig);
         };
+        let tagged = tagged_keys(keys);
         let mut last_error = VerdictReason::NoValidRrsig;
         let mut per_tag_algorithm: HashMap<(u16, u8), u8> = HashMap::new();
         for signature_record in signatures {
@@ -178,7 +204,7 @@ impl<C: Clock> Authenticator<C> {
                 continue;
             }
             let matching =
-                matching_keys_for_rrsig(rrsig, keys, usize::from(limit.saturating_sub(*tried)));
+                matching_keys_for_rrsig(rrsig, &tagged, usize::from(limit.saturating_sub(*tried)));
             if matching.is_empty() {
                 continue;
             }
@@ -189,11 +215,10 @@ impl<C: Clock> Authenticator<C> {
                     continue;
                 }
             };
-            match self.verify_rrsig_with_matching_keys(
+            if let Some(found) = self.verify_rrsig_with_matching_keys(
                 rrset, rrsig, algorithm, &matching, tried, budget,
             )? {
-                Some(result) => return Ok(result),
-                None => continue,
+                return Ok(found);
             }
         }
         Err(last_error)
@@ -207,7 +232,7 @@ impl<C: Clock> Authenticator<C> {
         matching: &[&DnskeyRdata],
         tried: &mut u8,
         budget: &mut VerificationBudget,
-    ) -> Result<Option<Option<u8>>, VerdictReason> {
+    ) -> Result<Option<SignatureMatch>, VerdictReason> {
         let Some(first) = rrset.first() else {
             return Err(VerdictReason::NoValidRrsig);
         };
@@ -218,9 +243,7 @@ impl<C: Clock> Authenticator<C> {
             budget.consume_attempt()?;
             *tried = tried.saturating_add(1);
             if verify_rrsig_bytes(algorithm, key, &signed_data, rrsig.signature()) {
-                let expansion =
-                    is_expansion(&first.owner, rrsig.labels()).then_some(rrsig.labels());
-                return Ok(Some(expansion));
+                return Ok(Some(SignatureMatch::of(&first.owner, rrsig.labels())));
             }
             budget.record_failure()?;
         }
@@ -251,18 +274,47 @@ impl<C: Clock> Authenticator<C> {
     }
 }
 
+/// A DNSKEY with its key tag computed once, however many RRSIGs it is matched against.
+struct TaggedKey<'a> {
+    owner: &'a Name,
+    key: &'a DnskeyRdata,
+    tag: u16,
+}
+
+fn tagged_keys(keys: &[ResourceRecord]) -> Vec<TaggedKey<'_>> {
+    keys.iter()
+        .filter_map(|record| match record.rdata {
+            RData::Dnskey(ref key) => Some(TaggedKey {
+                owner: &record.owner,
+                key,
+                tag: key.key_tag(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 fn matching_keys_for_rrsig<'a>(
     rrsig: &RrsigRdata,
-    keys: &'a [ResourceRecord],
+    keys: &[TaggedKey<'a>],
     remaining: usize,
 ) -> Vec<&'a DnskeyRdata> {
     keys.iter()
-        .filter_map(|record| match record.rdata {
-            RData::Dnskey(ref key) if key_matches_rrsig(rrsig, key, &record.owner) => Some(key),
-            _ => None,
-        })
+        .filter(|tagged| key_matches_rrsig(rrsig, tagged.key, tagged.owner, tagged.tag))
+        .map(|tagged| tagged.key)
         .take(remaining)
         .collect()
+}
+
+/// Whether every record of `records` is a DNSKEY of class IN owned by `zone`: the only
+/// RRset a DS or a trust anchor for `zone` can vouch for.
+fn is_zone_dnskey_rrset(zone: &Name, records: &[ResourceRecord]) -> bool {
+    records.iter().all(|record| {
+        record.owner.eq_ignore_case(zone)
+            && record.rclass == RecordClass::In
+            && record.rtype == RecordType::DNSKEY
+            && matches!(record.rdata, RData::Dnskey(_))
+    })
 }
 
 /// Every DNSKEY record in `dnskeys` that one of `vouchers` matches.
@@ -298,7 +350,7 @@ fn is_expansion(owner: &Name, labels: u8) -> bool {
 pub(crate) fn group_into_rrsets<'a>(
     records: impl IntoIterator<Item = &'a ResourceRecord>,
 ) -> Vec<Vec<&'a ResourceRecord>> {
-    let mut rrsets: HashMap<(&Name, styx_proto::RecordClass, RecordType), Vec<&ResourceRecord>> =
+    let mut rrsets: HashMap<(&Name, RecordClass, RecordType), Vec<&ResourceRecord>> =
         HashMap::new();
     for record in records {
         rrsets

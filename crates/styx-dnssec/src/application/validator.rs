@@ -1,7 +1,7 @@
 //! DNSSEC validator walking chains of trust from anchors to responses.
 
 use styx_core::Clock;
-use styx_proto::{Message, Name, Question, RData, RecordType, ResourceRecord};
+use styx_proto::{Message, Name, Question, RData, RecordType, ResourceRecord, ResponseCode};
 use tracing::Instrument;
 
 use crate::application::authenticator::{
@@ -96,11 +96,7 @@ impl<C: Clock> Validator<C> {
         let Some(chain) = AnswerChain::follow(question, &message.answers) else {
             return ValidationOutcome::bogus(VerdictReason::MalformedResponse);
         };
-        if message
-            .authorities
-            .iter()
-            .any(|record| record.rclass != question.qclass)
-        {
+        if !is_consistent(message, question, &chain) {
             return ValidationOutcome::bogus(VerdictReason::MalformedResponse);
         }
 
@@ -141,7 +137,9 @@ impl<C: Clock> Validator<C> {
         combined
     }
 
-    /// Verifies one link's records against the keys of the zone that signs them.
+    /// Verifies one link's records, each RRset against the keys of the zone that signs
+    /// it: an `ANY` answer at a zone apex mixes child-signed data with the parent-signed
+    /// DS, so one signer zone per link would let the child vouch for its own DS.
     async fn verify_link<S: ChainSource>(
         &self,
         link: &ChainLink<'_>,
@@ -150,11 +148,38 @@ impl<C: Clock> Validator<C> {
         budget: &mut VerificationBudget,
         zone_cache: &mut DescentCache,
     ) -> ValidationOutcome {
-        let rtype = link
-            .records()
-            .first()
-            .map_or(RecordType::ANY, |record| record.rtype);
-        let search = signer_search_name(link.owner(), rtype);
+        let mut combined = ValidationOutcome::secure(VerdictReason::AnchorMatched);
+        for rrset in group_into_rrsets(link.records().iter().copied()) {
+            let outcome = self
+                .verify_rrset(
+                    link.owner(),
+                    &rrset,
+                    message,
+                    chain_source,
+                    budget,
+                    zone_cache,
+                )
+                .await;
+            combined = weakest(combined, outcome);
+            if combined.verdict == ValidationVerdict::Bogus {
+                break;
+            }
+        }
+        combined
+    }
+
+    /// Verifies one answer RRset against the keys of the zone that signs it.
+    async fn verify_rrset<S: ChainSource>(
+        &self,
+        owner: &Name,
+        rrset: &[&ResourceRecord],
+        message: &Message,
+        chain_source: &S,
+        budget: &mut VerificationBudget,
+        zone_cache: &mut DescentCache,
+    ) -> ValidationOutcome {
+        let rtype = rrset.first().map_or(RecordType::ANY, |record| record.rtype);
+        let search = signer_search_name(owner, rtype);
         let secure = match self
             .descend(&search, chain_source, budget, zone_cache)
             .await
@@ -167,7 +192,7 @@ impl<C: Clock> Validator<C> {
             .iter()
             .filter(|record| matches!(record.rdata, RData::Rrsig(_)));
         let claims = match self.authenticator.authenticate_rrsets(
-            link.records().iter().copied(),
+            rrset.iter().copied(),
             signatures,
             &secure.keys,
             budget,
@@ -291,6 +316,19 @@ impl<C: Clock> Validator<C> {
         }
         Ok(strength)
     }
+}
+
+/// Whether the unsigned parts of `message` agree with its answer chain: every authority
+/// record in the question's class, and data at the end of the chain only under NOERROR,
+/// since an attacker can rewrite the RCODE freely.
+fn is_consistent(message: &Message, question: &Question, chain: &AnswerChain<'_>) -> bool {
+    let same_class = message
+        .authorities
+        .iter()
+        .all(|record| record.rclass == question.qclass);
+    let rcode_matches =
+        *chain.end() != ChainEnd::Terminal || message.header.rcode == ResponseCode::NOERROR;
+    same_class && rcode_matches
 }
 
 /// Returns the name whose zone signs an authority RRset: NSEC3 records belong to their
