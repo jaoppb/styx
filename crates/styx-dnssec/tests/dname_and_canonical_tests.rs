@@ -248,3 +248,88 @@ async fn test_mixed_case_nsec_next_domain_validates_end_to_end() {
     .await;
     assert_eq!(outcome.verdict, ValidationVerdict::Secure);
 }
+
+/// The RRSIG RDATA prefix of RFC 4034 §3.1.8.1, its signer name already lowercase.
+fn signed_data_prefix(template: &RrsigRdata, signer: &Name) -> Vec<u8> {
+    let mut bytes = template.type_covered().value().to_be_bytes().to_vec();
+    bytes.push(template.algorithm());
+    bytes.push(template.labels());
+    bytes.extend_from_slice(&template.original_ttl().to_be_bytes());
+    bytes.extend_from_slice(&EXPIRATION.to_be_bytes());
+    bytes.extend_from_slice(&INCEPTION.to_be_bytes());
+    bytes.extend_from_slice(&template.key_tag().to_be_bytes());
+    bytes.extend_from_slice(signer.as_wire_bytes());
+    bytes
+}
+
+/// One canonical RR: owner, type, class IN, original TTL 300, RDLENGTH and RDATA.
+fn canonical_rr(owner: &Name, rtype: RecordType, rdata: &[u8]) -> Vec<u8> {
+    let mut bytes = owner.as_wire_bytes().to_vec();
+    bytes.extend_from_slice(&rtype.value().to_be_bytes());
+    bytes.extend_from_slice(&1u16.to_be_bytes());
+    bytes.extend_from_slice(&300u32.to_be_bytes());
+    bytes.extend_from_slice(&u16::try_from(rdata.len()).unwrap().to_be_bytes());
+    bytes.extend_from_slice(rdata);
+    bytes
+}
+
+fn template(type_covered: RecordType, signer: &str) -> RrsigRdata {
+    RrsigRdata::new(
+        type_covered,
+        15,
+        2,
+        300,
+        EXPIRATION,
+        INCEPTION,
+        1,
+        name(signer),
+        Vec::new(),
+    )
+}
+
+/// RFC 4034 §6.2 item 3, kept by RFC 6840 §5.1: the DNAME target and the RRSIG's own
+/// signer name are lowercased in the signed data.
+#[test]
+fn canonical_signed_data_lowercases_the_dname_target_and_the_signer() {
+    let owner = name("old.example.");
+    let dname = dname_record(&owner, &name("NeW.ExAmPlE."));
+    let signature = template(RecordType::DNAME, "ExAmPlE.");
+
+    let signed = build_canonical_signed_data(&signature, &[&dname]).unwrap();
+
+    let mut expected = signed_data_prefix(&signature, &name("example."));
+    let target = name("new.example.");
+    expected.extend(canonical_rr(
+        &owner,
+        RecordType::DNAME,
+        target.as_wire_bytes(),
+    ));
+    assert_eq!(signed, expected);
+}
+
+/// RFC 6840 §5.1: names in RRSIG RDATA are lowercased; only NSEC RDATA keeps its case.
+#[test]
+fn canonical_rrsig_rdata_lowercases_its_signer_name() {
+    let owner = name("a.example.");
+    let covered = RrsigRdata::new(
+        RecordType::A,
+        15,
+        2,
+        300,
+        EXPIRATION,
+        INCEPTION,
+        7,
+        name("ExAmPlE."),
+        vec![0xAA, 0xBB],
+    );
+    let rrsig = record(&owner, RecordType::RRSIG, RData::Rrsig(covered.clone()));
+    let signature = template(RecordType::RRSIG, "example.");
+
+    let signed = build_canonical_signed_data(&signature, &[&rrsig]).unwrap();
+
+    let mut rdata = signed_data_prefix(&covered, &name("example."));
+    rdata.extend_from_slice(covered.signature());
+    let mut expected = signed_data_prefix(&signature, &name("example."));
+    expected.extend(canonical_rr(&owner, RecordType::RRSIG, &rdata));
+    assert_eq!(signed, expected);
+}

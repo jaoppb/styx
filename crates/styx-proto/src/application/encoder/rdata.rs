@@ -104,8 +104,9 @@ impl Encoder {
         self.write_u32(sig.signature_expiration())?;
         self.write_u32(sig.signature_inception())?;
         self.write_u16(sig.key_tag())?;
-        // RFC 6840 §5.1 removes RRSIG RDATA from the RFC 4034 §6.2 item 3 lowercasing rule.
-        self.write_name_preserving_case(sig.signer_name())?;
+        // RFC 6840 §5.1 keeps RRSIG RDATA in the RFC 4034 §6.2 item 3 lowercasing rule;
+        // only NSEC RDATA keeps its case.
+        self.write_name(sig.signer_name())?;
         self.write_slice(sig.signature())?;
         Ok(())
     }
