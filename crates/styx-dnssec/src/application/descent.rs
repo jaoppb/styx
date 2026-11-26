@@ -23,20 +23,28 @@ pub(crate) struct SecureZone {
     pub(crate) keys: Vec<ResourceRecord>,
 }
 
-#[derive(Debug, Clone)]
-enum CachedStep {
-    NotACut,
-    Secure(Vec<ResourceRecord>),
-}
-
 /// Per-validation cache of authenticated cuts and non-cuts along the chain descent.
 #[derive(Debug, Default)]
 pub(crate) struct DescentCache {
-    steps: HashMap<Name, Result<CachedStep, ValidationOutcome>>,
+    steps: HashMap<Name, Result<CutStep, ValidationOutcome>>,
+}
+
+impl DescentCache {
+    fn contains(&self, zone: &Name) -> bool {
+        self.steps.contains_key(zone)
+    }
+
+    fn get(&self, zone: &Name) -> Option<Result<CutStep, ValidationOutcome>> {
+        self.steps.get(zone).cloned()
+    }
+
+    fn insert(&mut self, zone: Name, step: Result<CutStep, ValidationOutcome>) {
+        self.steps.insert(zone, step);
+    }
 }
 
 /// The outcome of stepping across a single candidate zone cut.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum CutStep {
     /// Not a cut; continue descent within the existing zone.
     NotACut,
@@ -103,7 +111,7 @@ pub(crate) async fn walk_chain_descent<C: Clock, S: ChainSource>(
     let mut cuts_crossed = 0u8;
     let mut probes = 0usize;
     while let Some(next_zone) = find_next_zone_cut(qname, &current_zone) {
-        if !cache.steps.contains_key(&next_zone) {
+        if !cache.contains(&next_zone) {
             probes = probes.saturating_add(1);
             if probes > MAX_DESCENT_PROBES {
                 return Err(ValidationOutcome::indeterminate(
@@ -121,7 +129,7 @@ pub(crate) async fn walk_chain_descent<C: Clock, S: ChainSource>(
             cache,
         )
         .await?;
-        if let CachedStep::Secure(child_keys) = step {
+        if let CutStep::Child(child_keys) = step {
             cuts_crossed = cuts_crossed.saturating_add(1);
             if cuts_crossed > authenticator.policy().max_zone_cuts {
                 return Err(ValidationOutcome::indeterminate(
@@ -147,13 +155,12 @@ async fn authenticate_anchored_zone<C: Clock, S: ChainSource>(
     budget: &mut VerificationBudget,
     cache: &mut DescentCache,
 ) -> Result<Vec<ResourceRecord>, ValidationOutcome> {
-    if let Some(cached) = cache.steps.get(&anchored.zone) {
-        return match cached {
-            Ok(CachedStep::Secure(keys)) => Ok(keys.clone()),
-            Ok(CachedStep::NotACut) => Err(ValidationOutcome::indeterminate(
+    if let Some(cached) = cache.get(&anchored.zone) {
+        return match cached? {
+            CutStep::Child(keys) => Ok(keys),
+            CutStep::NotACut => Err(ValidationOutcome::indeterminate(
                 VerdictReason::ChainMaterialUnavailable,
             )),
-            Err(outcome) => Err(outcome.clone()),
         };
     }
     let result = async {
@@ -164,10 +171,7 @@ async fn authenticate_anchored_zone<C: Clock, S: ChainSource>(
         authenticator.authenticate_keys(&anchored.zone, dnskey, &anchored.vouchers, budget)
     }
     .await;
-    cache.steps.insert(
-        anchored.zone.clone(),
-        result.clone().map(CachedStep::Secure),
-    );
+    cache.insert(anchored.zone.clone(), result.clone().map(CutStep::Child));
     result
 }
 
@@ -179,25 +183,22 @@ async fn step_cached<C: Clock, S: ChainSource>(
     chain_source: &S,
     budget: &mut VerificationBudget,
     cache: &mut DescentCache,
-) -> Result<CachedStep, ValidationOutcome> {
-    if let Some(cached) = cache.steps.get(next_zone) {
-        return cached.clone();
+) -> Result<CutStep, ValidationOutcome> {
+    if let Some(cached) = cache.get(next_zone) {
+        return cached;
     }
     let result = async {
         let material = fetch_material(chain_source, next_zone).await?;
-        match step_into_cut(
+        step_into_cut(
             authenticator,
             authoritative_zone,
             &material,
             parent_keys,
             budget,
-        )? {
-            CutStep::NotACut => Ok(CachedStep::NotACut),
-            CutStep::Child(child_keys) => Ok(CachedStep::Secure(child_keys)),
-        }
+        )
     }
     .await;
-    cache.steps.insert(next_zone.clone(), result.clone());
+    cache.insert(next_zone.clone(), result.clone());
     result
 }
 

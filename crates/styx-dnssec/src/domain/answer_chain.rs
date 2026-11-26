@@ -92,6 +92,16 @@ enum StepOutcome {
     Finish(ChainEnd),
 }
 
+/// What a DNAME above the current name does to the chain.
+enum DnameStep {
+    /// No DNAME redirects the current name.
+    NotApplicable,
+    /// A DNAME redirected the current name, and the chain goes on as `StepOutcome` says.
+    Applied(StepOutcome),
+    /// The DNAMEs or their synthesized CNAME do not form one redirection.
+    Malformed,
+}
+
 struct ChainWalk<'a> {
     links: Vec<ChainLink<'a>>,
     visited: Vec<Name>,
@@ -110,8 +120,10 @@ impl<'a> ChainWalk<'a> {
             .copied()
             .filter(|record| record.owner.eq_ignore_case(&self.current))
             .collect();
-        if let Some(outcome) = self.try_dname_step(qtype, data, &at_owner)? {
-            return Some(outcome);
+        match self.try_dname_step(qtype, data, &at_owner) {
+            DnameStep::NotApplicable => {}
+            DnameStep::Applied(outcome) => return Some(outcome),
+            DnameStep::Malformed => return None,
         }
         let terminal: Vec<&ResourceRecord> = at_owner
             .iter()
@@ -146,23 +158,25 @@ impl<'a> ChainWalk<'a> {
         qtype: RecordType,
         data: &[&'a ResourceRecord],
         at_owner: &[&ResourceRecord],
-    ) -> Option<Option<StepOutcome>> {
+    ) -> DnameStep {
         let (dname, next) = match find_dname_redirection(&self.current, data) {
-            DnameLookup::None => return Some(None),
-            DnameLookup::Malformed => return None,
+            DnameLookup::None => return DnameStep::NotApplicable,
+            DnameLookup::Malformed => return DnameStep::Malformed,
             DnameLookup::Match(dname, next) => (dname, next),
         };
-        let consumed = matching_synthesized_cname(at_owner, &next)?;
+        let Some(consumed) = matching_synthesized_cname(at_owner, &next) else {
+            return DnameStep::Malformed;
+        };
         self.synthesized_cnames = self.synthesized_cnames.saturating_add(consumed);
         self.links.push(ChainLink {
             owner: dname.owner.to_canonical(),
             records: vec![dname],
         });
         if qtype == RecordType::CNAME && consumed == 1 {
-            return Some(Some(StepOutcome::Finish(ChainEnd::Terminal)));
+            return DnameStep::Applied(StepOutcome::Finish(ChainEnd::Terminal));
         }
         self.current = next;
-        Some(Some(StepOutcome::Continue))
+        DnameStep::Applied(StepOutcome::Continue)
     }
 
     fn complete(self, end: ChainEnd, data_records: usize) -> Option<AnswerChain<'a>> {
