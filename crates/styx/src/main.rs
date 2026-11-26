@@ -10,13 +10,15 @@
 //! pipeline, and graceful shutdown. The Leptos SSR handler is wired in
 //! Phase 11.
 
+mod pools;
 mod upstream;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
-use styx_core::{SystemClock, SystemSleeper, UpstreamId, UpstreamKind};
+use pools::Pools;
+use styx_core::{SystemClock, SystemSleeper, UpstreamId};
 use styx_net::Do53Client;
 use styx_recursion::application::config::RecursionConfig;
 use styx_recursion::application::recursor::{Recursor, RecursorPorts, RecursorSettings};
@@ -25,10 +27,8 @@ use styx_recursion::infrastructure::do53_transport::{Do53Transport, DNS_PORT};
 use styx_recursion::infrastructure::infra_cache::MemoryInfraCache;
 use styx_recursion::infrastructure::sinks::{DiagnosticsStore, DiscardChainMaterial};
 use styx_resolution::{
-    AllowAllFilter, CacheConfig, CacheStage, CacheStatsLogger, CanaryConfig, ConditionalRoute,
-    ConditionalRoutes, ConfiguredStrategy, DiscardObserver, Do53Forwarder, NoLocalRecords,
-    Pipeline, PoolConfig, PoolMember, ProbePolicy, ProbeScheduler, Server, ServerConfig,
-    ShardedAnswerCache, StrategyName, UpstreamConfig, UpstreamPool,
+    AllowAllFilter, CacheConfig, CacheStage, CacheStatsLogger, ConfiguredStrategy, DiscardObserver,
+    NoLocalRecords, Pipeline, ProbeScheduler, Server, ServerConfig, ShardedAnswerCache,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -43,7 +43,6 @@ const DEFAULT_LOG_FILTER: LevelFilter = LevelFilter::INFO;
 /// before the Phase 10 telemetry exists.
 const CACHE_STATS_INTERVAL: Duration = Duration::from_secs(60);
 
-type ConcretePool = UpstreamPool<ConfiguredStrategy, PoolUpstream, SystemClock>;
 type ConcreteCache = ShardedAnswerCache<SystemClock>;
 type ConcreteStage = CacheStage<ConcreteCache, ConfiguredStrategy, PoolUpstream, SystemClock>;
 type ConcretePipeline =
@@ -193,124 +192,6 @@ impl RecursionWiring {
                 infra: Arc::new(MemoryInfraCache::new(self.config.capacity)),
             },
         )
-    }
-}
-
-fn build_upstream(
-    member_cfg: &UpstreamConfig,
-    id: &UpstreamId,
-    recursion: Option<&RecursionWiring>,
-    clock: &Arc<SystemClock>,
-) -> anyhow::Result<PoolUpstream> {
-    match member_cfg.kind {
-        UpstreamKind::Forwarder => Ok(PoolUpstream::Forwarder(Do53Forwarder::new(
-            id.clone(),
-            member_cfg.addr,
-            member_cfg.edns_buffer,
-            member_cfg.timeouts.udp,
-            member_cfg.timeouts.tcp,
-            Arc::clone(clock),
-        ))),
-        UpstreamKind::Recursor => {
-            let Some(recursion) = recursion else {
-                bail!(
-                    "pool member '{}' is a recursor, but the file has no [recursion] section",
-                    member_cfg.name
-                );
-            };
-            Ok(PoolUpstream::Recursor(Arc::new(
-                recursion.recursor(id.clone(), clock),
-            )))
-        }
-    }
-}
-
-/// Builds a pool of `members` that shares `[upstream]`'s circuit and probe settings.
-fn build_pool(
-    pool_config: &PoolConfig,
-    members_config: &[UpstreamConfig],
-    strategy: StrategyName,
-    recursion: Option<&RecursionWiring>,
-    clock: &Arc<SystemClock>,
-) -> anyhow::Result<Arc<ConcretePool>> {
-    let mut members = Vec::with_capacity(members_config.len());
-    for member_cfg in members_config {
-        let id = UpstreamId::new(member_cfg.name.as_str());
-        let upstream = build_upstream(member_cfg, &id, recursion, clock)?;
-        let canary = member_cfg
-            .canary
-            .clone()
-            .unwrap_or_else(|| CanaryConfig::for_kind(member_cfg.kind));
-        members.push(PoolMember::new(id, upstream, member_cfg.weight, canary));
-    }
-    let strategy = ConfiguredStrategy::from_name(strategy);
-    Ok(Arc::new(UpstreamPool::new(
-        members,
-        strategy,
-        Arc::clone(clock),
-        pool_config.circuit.clone(),
-        ProbePolicy::new(pool_config.probe.clone()),
-    )))
-}
-
-/// One ordered-failover pool per `[[upstream.conditional]]` entry. Its members are
-/// forwarders only, which `PoolConfig` already checked, so no recursion wiring is passed.
-fn build_conditional_routes(
-    pool_config: &PoolConfig,
-    clock: &Arc<SystemClock>,
-) -> anyhow::Result<ConditionalRoutes<Arc<ConcretePool>>> {
-    let mut routes = Vec::with_capacity(pool_config.conditional.len());
-    for entry in &pool_config.conditional {
-        let target = build_pool(
-            pool_config,
-            &entry.members,
-            StrategyName::OrderedFailover,
-            None,
-            clock,
-        )?;
-        routes.push(ConditionalRoute {
-            domains: entry.domains.clone(),
-            target,
-        });
-    }
-    Ok(ConditionalRoutes::new(routes))
-}
-
-/// The main pool and the conditional pools the cache stage sends its misses to.
-#[derive(Clone)]
-struct Pools {
-    main: Arc<ConcretePool>,
-    conditional: ConditionalRoutes<Arc<ConcretePool>>,
-}
-
-impl Pools {
-    fn build(
-        pool_config: &PoolConfig,
-        recursion: Option<&RecursionWiring>,
-        clock: &Arc<SystemClock>,
-    ) -> anyhow::Result<Self> {
-        Ok(Self {
-            main: build_pool(
-                pool_config,
-                &pool_config.members,
-                pool_config.strategy,
-                recursion,
-                clock,
-            )?,
-            conditional: build_conditional_routes(pool_config, clock)?,
-        })
-    }
-
-    /// One probe scheduler per pool, so every member's health is measured.
-    fn probe_schedulers(
-        &self,
-        clock: &Arc<SystemClock>,
-        tick: Duration,
-    ) -> Vec<ProbeScheduler<ConfiguredStrategy, PoolUpstream, SystemClock>> {
-        std::iter::once(&self.main)
-            .chain(self.conditional.targets())
-            .map(|pool| ProbeScheduler::new(Arc::clone(pool), Arc::clone(clock), tick))
-            .collect()
     }
 }
 
