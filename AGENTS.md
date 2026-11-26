@@ -72,10 +72,11 @@ this document revises.
 - **Dependency and lint versions are declared once**, in `[workspace.dependencies]` and
   `[workspace.lints]`; every member crate opts in with `workspace = true` rather than
   re-declaring either.
-- **Continuous fuzzing on the codec and validator.** `cargo-fuzz` targets live under
-  `fuzz/` in feature crates, running continuously in CI on a scheduled workflow and
-  locally via `just fuzz`. Fuzzing is non-deterministic and requires the nightly
-  compiler, so it is kept outside the hermetic per-push `gate`.
+- **Continuous fuzzing on the codec, the validator and inbound request parsing.**
+  `cargo-fuzz` targets live under `fuzz/` in feature crates — today the wire codec, the
+  inbound stream framing and the DoH request extraction — running continuously in CI on a
+  scheduled workflow and locally via `just fuzz`. Fuzzing is non-deterministic and
+  requires the nightly compiler, so it is kept outside the hermetic per-push `gate`.
 - **No tuples on public interfaces.** Bare tuple types `(A, B)` must not appear on public
   interfaces (port traits, public functions, public structs, or exported type aliases).
   Tuples hide domain semantics, lack named fields, and make signature evolution breaking.

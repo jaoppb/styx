@@ -83,8 +83,8 @@ cause problems, and that lets you disable IPv6.
    `127.0.0.1:53`, which needs elevated rights on most systems. The whole-query deadline,
    `query_timeout_secs`, defaults to 5 seconds and must exceed every upstream member's own
    timeout. A misspelled key is a startup error, not a silently ignored line.
-   `config/styx.example.toml` lists every key the server, supervisor, upstream and
-   recursion sections accept, with its built-in default. Its `root_hints` path is relative
+   `config/styx.example.toml` lists every key the server, supervisor, upstream, recursion,
+   cache and tls sections accept, with its built-in default. Its `root_hints` path is relative
    to the directory styx is started from, so run styx from the repository root or change
    the path to an absolute one.
 

@@ -61,6 +61,8 @@ certificate the first time it starts and keeps it in `self_signed_dir`
 
 - `cert.pem`, and `key.pem`, which is created readable by its owner only. styx refuses to
   start if it finds `key.pem` readable by group or others.
+- The directory itself must be owned by the user styx runs as and not writable by group or
+  others (`0700`); styx creates it that way, and refuses to start if it finds it otherwise.
 - The certificate names come from `self_signed_names` (`["localhost"]` by default). It is
   valid for ten years and reused on every boot. Delete both files to get a new one, and a
   new pin.
@@ -115,11 +117,15 @@ is what authenticates the server.
   carries no `Cache-Control` header. HTTP/1.1 is offered only with `allow_http1 = true`.
 - Set either list to `[]` to turn that transport off. Setting both to `[]` with
   `enabled = true` is a startup error; set `enabled = false` to disable encrypted inbound.
-- DNS over QUIC (DoQ, HTTP/3) is not supported.
+- DNS over QUIC (DoQ) and HTTP/3 are not supported.
 - DoH has its own listener. It does not share a port, a certificate setting or an origin
   with the admin web UI, and it is available in the headless build.
 - A DoH client behind a proxy is seen as the proxy's address. styx reads no forwarding
   header, so per-client policy over DoH applies to whatever address connects.
+- `allow_networks` and `deny_networks` apply to DoT and DoH as they do to TCP: a refused
+  address has its connection closed before the TLS handshake. Allow your clients' networks
+  before exposing either port beyond the LAN. The startup warning about answering public
+  addresses looks only at `listen_addrs`, not at `dot_listen_addrs` or `doh_listen_addrs`.
 
 ## Limits
 
@@ -152,6 +158,8 @@ deadline and close the connection. Lower `max_connections` or
 `max_streams_per_connection` on a small box.
 
 ## Every `[tls]` key
+
+The six limit keys are tabled under [Limits](#limits) above.
 
 | Key | Default | Meaning |
 |---|---|---|
