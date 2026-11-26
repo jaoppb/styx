@@ -13,7 +13,8 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::time_provider::TimeProvider;
 use rustls::{ClientConfig, RootCertStore};
 use styx_resolution::domain::tls::{
-    DohResourcePath, EncryptedLimits, OperatorCertificateLoader, TlsConfig, TlsConfigParts,
+    CertificateSource, DohResourcePath, EncryptedLimits, OperatorCertificateLoader, TlsConfig,
+    TlsConfigParts,
 };
 use styx_resolution::infrastructure::cert_fs::FilesystemCertificateReader;
 use styx_resolution::{
@@ -165,10 +166,11 @@ fn tls_config(options: EncryptedOptions, cert_path: PathBuf, key_path: PathBuf) 
     TlsConfig::new(TlsConfigParts {
         dot_listen_addrs: addrs(options.dot),
         doh_listen_addrs: addrs(options.doh),
-        cert_path: Some(cert_path),
-        key_path: Some(key_path),
+        source: CertificateSource::OperatorSupplied {
+            cert_path,
+            key_path,
+        },
         self_signed_dir: PathBuf::from("unused"),
-        self_signed_names: vec!["localhost".into()],
         doh_path: DohResourcePath::new(DohResourcePath::DEFAULT.into()).unwrap(),
         allow_http1: options.allow_http1,
         limits: options.limits,

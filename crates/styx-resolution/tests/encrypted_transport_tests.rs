@@ -422,7 +422,7 @@ async fn encrypted_fixture(
     harness::certificates::Scratch,
 ) {
     use styx_resolution::domain::tls::{
-        DohResourcePath, OperatorCertificateLoader, TlsConfig, TlsConfigParts,
+        CertificateSource, DohResourcePath, OperatorCertificateLoader, TlsConfig, TlsConfigParts,
     };
     use styx_resolution::infrastructure::cert_fs::FilesystemCertificateReader;
     use styx_resolution::{EncryptedListeners, TlsServerSetup};
@@ -438,10 +438,11 @@ async fn encrypted_fixture(
     let tls_cfg = TlsConfig::new(TlsConfigParts {
         dot_listen_addrs,
         doh_listen_addrs,
-        cert_path: Some(cert_path),
-        key_path: Some(key_path),
+        source: CertificateSource::OperatorSupplied {
+            cert_path,
+            key_path,
+        },
         self_signed_dir: std::path::PathBuf::from("unused"),
-        self_signed_names: vec!["localhost".into()],
         doh_path: DohResourcePath::new(DohResourcePath::DEFAULT.into()).unwrap(),
         allow_http1: false,
         limits: EncryptedLimits::default(),

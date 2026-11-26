@@ -12,8 +12,8 @@ use serde::Deserialize;
 
 use crate::domain::error::ConfigError;
 use crate::domain::tls::{
-    BoundedTimeout, DohResourcePath, EncryptedLimits, StreamConcurrencyLimit, StreamMessageLimit,
-    TlsConfig, TlsConfigParts,
+    BoundedTimeout, CertificateSource, DohResourcePath, EncryptedLimits, StreamConcurrencyLimit,
+    StreamMessageLimit, TlsConfig, TlsConfigParts,
 };
 
 /// Where generated self-signed material is kept when `self_signed_dir` is unset.
@@ -111,18 +111,34 @@ fn parts_from(raw: RawTls) -> Result<TlsConfigParts, ConfigError> {
         doh_listen_addrs: raw
             .doh_listen_addrs
             .unwrap_or_else(default_doh_listen_addrs),
-        cert_path: raw.cert_path,
-        key_path: raw.key_path,
+        source: certificate_source(raw.cert_path, raw.key_path, raw.self_signed_names)?,
         self_signed_dir: raw
             .self_signed_dir
             .unwrap_or_else(|| PathBuf::from(DEFAULT_SELF_SIGNED_DIR)),
-        self_signed_names: raw
-            .self_signed_names
-            .unwrap_or_else(|| vec![DEFAULT_SELF_SIGNED_NAME.to_owned()]),
         doh_path,
         allow_http1: raw.allow_http1.unwrap_or(false),
         limits,
     })
+}
+
+/// Both operator paths select the operator pair; neither selects self-signed material.
+fn certificate_source(
+    cert_path: Option<PathBuf>,
+    key_path: Option<PathBuf>,
+    self_signed_names: Option<Vec<String>>,
+) -> Result<CertificateSource, ConfigError> {
+    match (cert_path, key_path) {
+        (Some(cert_path), Some(key_path)) => Ok(CertificateSource::OperatorSupplied {
+            cert_path,
+            key_path,
+        }),
+        (None, None) => Ok(CertificateSource::SelfSigned {
+            names: self_signed_names.unwrap_or_else(|| vec![DEFAULT_SELF_SIGNED_NAME.to_owned()]),
+        }),
+        _ => Err(ConfigError::Invalid(
+            "[tls]: cert_path and key_path must be set together".to_owned(),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -194,6 +210,7 @@ mod tests {
     fn invalid_values_and_unknown_keys_are_refused() {
         for content in [
             "[tls]\nenabled = true\ncert_path = \"c.pem\"",
+            "[tls]\nenabled = true\nkey_path = \"k.pem\"",
             "[tls]\nenabled = true\ndoh_path = \"dns-query\"",
             "[tls]\nenabled = true\nmax_request_body_bytes = 70000",
             "[tls]\nenabled = true\nmax_connections = 0",

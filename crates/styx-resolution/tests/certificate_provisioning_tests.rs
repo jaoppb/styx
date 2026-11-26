@@ -17,9 +17,9 @@ use tracing_subscriber::Layer;
 use styx_resolution::application::certificate::CertificateProvisioner;
 use styx_resolution::domain::error::CertificateError;
 use styx_resolution::domain::tls::{
-    CertificateOrigin, DohResourcePath, EncryptedLimits, OperatorCertificateLoader,
-    PrivateKeyEncoding, PrivateKeyMaterial, SelfSignedStore, ServingIdentity, ServingIdentityParts,
-    SpkiPin, TlsConfig, TlsConfigParts, ValidityWindow,
+    CertificateOrigin, CertificateSource, DohResourcePath, EncryptedLimits,
+    OperatorCertificateLoader, PrivateKeyEncoding, PrivateKeyMaterial, SelfSignedStore,
+    ServingIdentity, ServingIdentityParts, SpkiPin, TlsConfig, TlsConfigParts, ValidityWindow,
 };
 
 fn epoch_plus(days: u32) -> SystemTime {
@@ -142,14 +142,21 @@ impl Fixture {
 }
 
 fn config(operator_paths: bool) -> TlsConfig {
-    let path = |name: &str| operator_paths.then(|| PathBuf::from(name));
+    let source = if operator_paths {
+        CertificateSource::OperatorSupplied {
+            cert_path: PathBuf::from("fullchain.pem"),
+            key_path: PathBuf::from("privkey.pem"),
+        }
+    } else {
+        CertificateSource::SelfSigned {
+            names: vec!["localhost".into()],
+        }
+    };
     TlsConfig::new(TlsConfigParts {
         dot_listen_addrs: vec!["127.0.0.1:853".parse().unwrap()],
         doh_listen_addrs: Vec::new(),
-        cert_path: path("fullchain.pem"),
-        key_path: path("privkey.pem"),
+        source,
         self_signed_dir: PathBuf::from("tls"),
-        self_signed_names: vec!["localhost".into()],
         doh_path: DohResourcePath::new("/dns-query".into()).unwrap(),
         allow_http1: false,
         limits: EncryptedLimits::default(),

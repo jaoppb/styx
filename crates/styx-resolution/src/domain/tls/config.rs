@@ -294,14 +294,10 @@ pub struct TlsConfigParts {
     pub dot_listen_addrs: Vec<SocketAddr>,
     /// DoH listen addresses; empty disables DoH.
     pub doh_listen_addrs: Vec<SocketAddr>,
-    /// Operator certificate path, if any.
-    pub cert_path: Option<PathBuf>,
-    /// Operator key path, if any.
-    pub key_path: Option<PathBuf>,
+    /// Where the serving certificate comes from.
+    pub source: CertificateSource,
     /// Where self-signed material lives.
     pub self_signed_dir: PathBuf,
-    /// Names minted into a self-signed certificate.
-    pub self_signed_names: Vec<String>,
     /// The DoH resource.
     pub doh_path: DohResourcePath,
     /// Whether DoH also offers HTTP/1.1.
@@ -314,32 +310,23 @@ impl TlsConfig {
     /// Assembles an enabled configuration.
     ///
     /// # Errors
-    /// Returns [`ConfigError::Invalid`] when only one of the certificate and key paths is
-    /// set, when neither DoT nor DoH has an address, or when a self-signed certificate would
-    /// carry no name.
+    /// Returns [`ConfigError::Invalid`] when neither DoT nor DoH has an address, or when a
+    /// self-signed certificate would carry no name.
     pub fn new(parts: TlsConfigParts) -> Result<Self, ConfigError> {
         if parts.dot_listen_addrs.is_empty() && parts.doh_listen_addrs.is_empty() {
             return Err(invalid(
                 "enabled with neither dot_listen_addrs nor doh_listen_addrs",
             ));
         }
-        let source = match (parts.cert_path, parts.key_path) {
-            (Some(cert_path), Some(key_path)) => CertificateSource::OperatorSupplied {
-                cert_path,
-                key_path,
-            },
-            (None, None) if parts.self_signed_names.is_empty() => {
+        if let CertificateSource::SelfSigned { names } = &parts.source {
+            if names.is_empty() {
                 return Err(invalid("self_signed_names must name at least one host"));
             }
-            (None, None) => CertificateSource::SelfSigned {
-                names: parts.self_signed_names,
-            },
-            _ => return Err(invalid("cert_path and key_path must be set together")),
-        };
+        }
         Ok(Self {
             dot_listen_addrs: parts.dot_listen_addrs,
             doh_listen_addrs: parts.doh_listen_addrs,
-            source,
+            source: parts.source,
             self_signed_dir: parts.self_signed_dir,
             doh_path: parts.doh_path,
             allow_http1: parts.allow_http1,
@@ -403,10 +390,10 @@ mod tests {
         TlsConfigParts {
             dot_listen_addrs: vec![SocketAddr::from(([127, 0, 0, 1], 853))],
             doh_listen_addrs: Vec::new(),
-            cert_path: None,
-            key_path: None,
+            source: CertificateSource::SelfSigned {
+                names: vec!["localhost".into()],
+            },
             self_signed_dir: PathBuf::from("tls"),
-            self_signed_names: vec!["localhost".into()],
             doh_path: DohResourcePath::new(DohResourcePath::DEFAULT.into()).unwrap(),
             allow_http1: false,
             limits: EncryptedLimits::default(),
@@ -439,19 +426,12 @@ mod tests {
     }
 
     #[test]
-    fn absence_of_both_paths_means_self_signed() {
-        let config = TlsConfig::new(parts()).unwrap();
-        assert!(matches!(
-            config.certificate_source(),
-            CertificateSource::SelfSigned { .. }
-        ));
-    }
-
-    #[test]
-    fn both_paths_mean_operator_supplied() {
+    fn an_operator_source_keeps_the_self_signed_dir() {
         let mut parts = parts();
-        parts.cert_path = Some("cert.pem".into());
-        parts.key_path = Some("key.pem".into());
+        parts.source = CertificateSource::OperatorSupplied {
+            cert_path: "cert.pem".into(),
+            key_path: "key.pem".into(),
+        };
         let config = TlsConfig::new(parts).unwrap();
         assert!(matches!(
             config.certificate_source(),
@@ -461,14 +441,10 @@ mod tests {
     }
 
     #[test]
-    fn one_path_without_the_other_is_refused() {
-        let mut cert_only = parts();
-        cert_only.cert_path = Some("cert.pem".into());
-        assert!(TlsConfig::new(cert_only).is_err());
-
-        let mut key_only = parts();
-        key_only.key_path = Some("key.pem".into());
-        assert!(TlsConfig::new(key_only).is_err());
+    fn a_self_signed_source_with_no_name_is_refused() {
+        let mut nameless = parts();
+        nameless.source = CertificateSource::SelfSigned { names: Vec::new() };
+        assert!(TlsConfig::new(nameless).is_err());
     }
 
     #[test]
