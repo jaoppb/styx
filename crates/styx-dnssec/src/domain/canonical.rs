@@ -53,35 +53,6 @@ pub fn canonical_owner_for_rrsig(owner: &Name, rrsig_labels: u8) -> Result<Name,
         .map_err(|error| CanonicalError::Encode(EncodeError::from(error)))
 }
 
-/// Encodes one resource record into the canonical wire buffer.
-fn encode_canonical_rr(
-    encoder: &mut Encoder,
-    canonical_owner: &Name,
-    record: &ResourceRecord,
-    original_ttl: u32,
-) -> Result<(), EncodeError> {
-    encoder.write_name(canonical_owner)?;
-    encoder.write_u16(record.rtype.value())?;
-    encoder.write_u16(record.rclass.to_u16())?;
-    encoder.write_u32(original_ttl)?;
-
-    let rdlength_pos = encoder.buf.len();
-    encoder.write_u16(0)?;
-    let rdata_start = encoder.buf.len();
-    encoder.encode_rdata(&record.rdata)?;
-    let rdata_len = encoder.buf.len().saturating_sub(rdata_start);
-    let rdlength_u16 =
-        u16::try_from(rdata_len).map_err(|_| EncodeError::RdLengthOverflow(rdata_len))?;
-    let rdlength_bytes = rdlength_u16.to_be_bytes();
-    if let Some(slot) = encoder
-        .buf
-        .get_mut(rdlength_pos..rdlength_pos.saturating_add(2))
-    {
-        slot.copy_from_slice(&rdlength_bytes);
-    }
-    Ok(())
-}
-
 /// Builds the RFC 4034 canonical byte stream that an RRSIG signature was computed over.
 ///
 /// # Errors
@@ -109,7 +80,7 @@ pub fn build_canonical_signed_data(
     // 3. Serialize sorted records with canonical owner and original TTL
     for record in sorted_records {
         let canonical_owner = canonical_owner_for_rrsig(&record.owner, rrsig.labels())?;
-        encode_canonical_rr(&mut encoder, &canonical_owner, record, rrsig.original_ttl())?;
+        encoder.encode_record_with_owner_ttl(&canonical_owner, record, rrsig.original_ttl())?;
     }
 
     Ok(encoder.buf)

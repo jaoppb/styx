@@ -155,10 +155,22 @@ impl Encoder {
 
     /// Encodes a single resource record.
     pub fn encode_record(&mut self, rr: &ResourceRecord) -> Result<(), EncodeError> {
-        self.write_name(&rr.owner)?;
+        self.encode_record_with_owner_ttl(&rr.owner, rr, rr.ttl.seconds())
+    }
+
+    /// Encodes `rr` under `owner` and `ttl` in place of its own: the form RFC 4034
+    /// §3.1.8.1 signs, where a wildcard expansion is rewritten to its `*` owner and every
+    /// record carries the RRSIG's original TTL.
+    pub fn encode_record_with_owner_ttl(
+        &mut self,
+        owner: &Name,
+        rr: &ResourceRecord,
+        ttl: u32,
+    ) -> Result<(), EncodeError> {
+        self.write_name(owner)?;
         self.write_u16(rr.rtype.value())?;
         self.write_u16(rr.rclass.to_u16())?;
-        self.write_u32(rr.ttl.seconds())?;
+        self.write_u32(ttl)?;
 
         let rdlength_pos = self.buf.len();
         self.write_u16(0)?; // placeholder
