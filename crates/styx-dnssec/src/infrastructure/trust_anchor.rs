@@ -255,4 +255,30 @@ mod tests {
             Err(TrustAnchorError::Empty)
         ));
     }
+
+    #[tokio::test]
+    async fn an_anchor_file_on_disk_is_read_and_parsed() {
+        let path = std::env::temp_dir().join(format!("styx-anchor-{}.txt", std::process::id()));
+        tokio::fs::write(&path, format!(". 172800 IN DS 38696 8 2 {ROOT_2024}\n"))
+            .await
+            .unwrap();
+
+        let loaded = FileTrustAnchor::load_from_path(&path).await;
+        tokio::fs::remove_file(&path).await.unwrap();
+
+        let anchors = loaded.unwrap().anchors();
+        let [anchor] = anchors.as_slice() else {
+            panic!("expected one anchor");
+        };
+        assert_eq!(anchor.ds().key_tag(), 38696);
+    }
+
+    #[tokio::test]
+    async fn a_missing_anchor_file_is_an_io_error() {
+        let path = std::env::temp_dir().join("styx-anchor-that-does-not-exist.txt");
+
+        let loaded = FileTrustAnchor::load_from_path(&path).await;
+
+        assert!(matches!(loaded, Err(TrustAnchorError::Io(_))));
+    }
 }

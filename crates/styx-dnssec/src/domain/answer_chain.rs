@@ -249,3 +249,106 @@ fn matching_synthesized_cname(
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use styx_proto::domain::rdata::UnknownRdata;
+    use styx_proto::{RecordClass, Ttl};
+
+    use super::*;
+
+    fn name(text: &str) -> Name {
+        Name::from_ascii(text).unwrap()
+    }
+
+    fn record(owner: &str, rtype: RecordType, rdata: RData) -> ResourceRecord {
+        ResourceRecord::new(
+            name(owner),
+            rtype,
+            RecordClass::In,
+            Ttl::from_secs(300),
+            rdata,
+        )
+    }
+
+    fn cname(owner: &str, target: &str) -> ResourceRecord {
+        record(owner, RecordType::CNAME, RData::Cname(name(target)))
+    }
+
+    fn dname(owner: &str, target: &str) -> ResourceRecord {
+        let octets = name(target).as_wire_bytes().to_vec();
+        let rdata = RData::Unknown(UnknownRdata::new(RecordType::DNAME, octets));
+        record(owner, RecordType::DNAME, rdata)
+    }
+
+    fn a(owner: &str) -> ResourceRecord {
+        record(
+            owner,
+            RecordType::A,
+            RData::A(std::net::Ipv4Addr::LOCALHOST),
+        )
+    }
+
+    fn question(qname: &str) -> Question {
+        Question {
+            qname: name(qname),
+            qtype: RecordType::A,
+            qclass: RecordClass::In,
+        }
+    }
+
+    /// `hop0.example.` through `hop<hops>.example.`, one CNAME each, then the data.
+    fn cname_chain(hops: usize) -> Vec<ResourceRecord> {
+        let mut answers: Vec<ResourceRecord> = (0..hops)
+            .map(|hop| {
+                let next = hop.saturating_add(1);
+                cname(
+                    &format!("hop{hop}.example."),
+                    &format!("hop{next}.example."),
+                )
+            })
+            .collect();
+        answers.push(a(&format!("hop{hops}.example.")));
+        answers
+    }
+
+    #[test]
+    fn eight_cname_hops_are_followed_and_nine_are_refused() {
+        let at_cap = cname_chain(MAX_CNAME_HOPS);
+        let chain = AnswerChain::follow(&question("hop0.example."), &at_cap).unwrap();
+        assert_eq!(chain.links().len(), MAX_CNAME_HOPS.saturating_add(1));
+        assert_eq!(chain.end(), &ChainEnd::Terminal);
+
+        let over_cap = cname_chain(MAX_CNAME_HOPS.saturating_add(1));
+        assert_eq!(
+            AnswerChain::follow(&question("hop0.example."), &over_cap),
+            None
+        );
+    }
+
+    /// A DNAME may arrive without the CNAME a server synthesizes from it (RFC 6672 §3.4).
+    #[test]
+    fn a_bare_dname_redirects_to_its_target() {
+        let answers = vec![dname("old.example.", "new.example."), a("www.new.example.")];
+
+        let chain = AnswerChain::follow(&question("www.old.example."), &answers).unwrap();
+
+        let owners: Vec<&Name> = chain.links().iter().map(ChainLink::owner).collect();
+        assert_eq!(owners, [&name("old.example."), &name("www.new.example.")]);
+        assert_eq!(chain.end(), &ChainEnd::Terminal);
+    }
+
+    #[test]
+    fn two_dnames_at_one_owner_are_refused() {
+        let answers = vec![
+            dname("old.example.", "new.example."),
+            dname("old.example.", "other.example."),
+            a("www.new.example."),
+        ];
+
+        assert_eq!(
+            AnswerChain::follow(&question("www.old.example."), &answers),
+            None
+        );
+    }
+}

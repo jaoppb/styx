@@ -111,3 +111,24 @@ fn test_wire_mapping_bogus_hard_fail_returns_servfail_and_clears_all_sections() 
     assert!(msg.authorities.is_empty());
     assert!(msg.additionals.is_empty());
 }
+
+#[test]
+fn test_wire_mapping_indeterminate_warn_only_preserves_response() {
+    let mut msg = Message::new(Header::new_query(1, Opcode::Query, false));
+    msg.header.authentic_data = true;
+    msg.answers.push(ResourceRecord::new(
+        Name::root(),
+        RecordType::A,
+        RecordClass::In,
+        Ttl::from_secs(300),
+        RData::A(std::net::Ipv4Addr::new(1, 1, 1, 1)),
+    ));
+
+    let outcome = ValidationOutcome::indeterminate(VerdictReason::ChainMaterialUnavailable);
+
+    outcome.apply_to_message(&mut msg, FailureMode::WarnOnly);
+
+    assert!(!msg.header.authentic_data);
+    assert_eq!(msg.header.rcode, ResponseCode::NOERROR);
+    assert_eq!(msg.answers.len(), 1);
+}

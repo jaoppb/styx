@@ -291,3 +291,72 @@ async fn an_nsec3_wildcard_expansion_over_an_existing_name_is_bogus() {
 
     assert_eq!(verdict.0, ValidationVerdict::Bogus);
 }
+
+/// A DNSKEY whose protocol is not 3 verifies nothing (RFC 4034 §2.1.2), even when an
+/// anchor names it.
+#[tokio::test]
+async fn a_dnskey_with_a_protocol_other_than_3_is_bogus() {
+    let generated = ZoneKey::generate(&name("example."));
+    let dnskey = styx_proto::domain::rdata::DnskeyRdata::new(
+        257,
+        2,
+        15,
+        generated.dnskey.public_key().to_vec(),
+    );
+    let example = ZoneKey {
+        dnskey,
+        ..generated
+    };
+    let source = InMemoryChainSource::new();
+    source.insert_cut(example.apex_cut());
+    let www = name("www.example.");
+    source.record_not_a_cut(www.clone());
+    let mut message = query(&www, RecordType::A);
+    signed_answer(&mut message, &example, vec![a_record(&www, 1)]);
+
+    let verdict = validate(&message, &source, vec![example.anchor()]).await;
+
+    assert_eq!(
+        verdict,
+        (ValidationVerdict::Bogus, VerdictReason::NoValidRrsig)
+    );
+}
+
+/// A DS with a supported key algorithm but a digest type the validator cannot compute
+/// vouches for nothing it can check: the child is Insecure (RFC 4035 §5.2).
+#[tokio::test]
+async fn a_ds_with_an_unknown_digest_type_is_insecure() {
+    let root = ZoneKey::generate(&Name::root());
+    let example = ZoneKey::generate(&name("example."));
+    let unknown_digest =
+        styx_proto::domain::rdata::DsRdata::new(example.key_tag(), 15, 99, vec![0x5A; 32]);
+    let ds = vec![record(
+        &name("example."),
+        RecordType::DS,
+        RData::Ds(unknown_digest),
+    )];
+    let ds_signatures = vec![root.sign(&ds)];
+    let source = InMemoryChainSource::new();
+    source.insert_cut(root.apex_cut());
+    source.insert_cut(ZoneCutMaterial::new(
+        name("example."),
+        Delegation::Signed {
+            ds: SignedRrset::new(ds, ds_signatures),
+            dnskey: example.dnskey_rrset(),
+        },
+    ));
+    let www = name("www.example.");
+    source.record_not_a_cut(www.clone());
+    let mut message = query(&www, RecordType::A);
+    signed_answer(&mut message, &example, vec![a_record(&www, 1)]);
+
+    let verdict = validate(&message, &source, vec![root.anchor()]).await;
+
+    assert_eq!(
+        verdict,
+        (
+            ValidationVerdict::Insecure,
+            VerdictReason::UnsupportedAlgorithm
+        )
+    );
+}
