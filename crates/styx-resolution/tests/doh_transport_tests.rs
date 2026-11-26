@@ -332,6 +332,44 @@ async fn the_query_ceiling_counts_streams_and_then_closes_the_connection() {
 }
 
 #[tokio::test]
+async fn a_stream_accepted_past_the_query_ceiling_gets_503() {
+    let mut options = EncryptedOptions::default();
+    options.limits.max_queries_per_connection = NonZeroU64::MIN;
+    let mut server = boot(options).await;
+    let tls = tls_connect(server.doh(), &server.certificate, &[b"h2"])
+        .await
+        .unwrap();
+    let (mut sender, connection) = h2::client::handshake(tls).await.unwrap();
+    let get = || {
+        hyper::Request::builder()
+            .method("GET")
+            .uri(format!(
+                "{DOH}?dns={}",
+                URL_SAFE_NO_PAD.encode(query("example.com."))
+            ))
+            .body(())
+            .unwrap()
+    };
+    // Both HEADERS frames leave in the connection's first flush, so the server accepts both
+    // streams before the spent ceiling sends GOAWAY: one is answered, the other is over.
+    let (first, _) = sender.send_request(get(), true).unwrap();
+    let (second, _) = sender.send_request(get(), true).unwrap();
+    let _connection = tokio::spawn(connection);
+    let statuses = tokio::time::timeout(PROMPTLY, async {
+        let mut statuses = [
+            first.await.unwrap().status().as_u16(),
+            second.await.unwrap().status().as_u16(),
+        ];
+        statuses.sort_unstable();
+        statuses
+    })
+    .await
+    .expect("both streams are answered");
+    assert_eq!(statuses, [200, 503]);
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn an_idle_doh_connection_is_closed_at_the_idle_timeout() {
     let mut options = EncryptedOptions::default();
     options.limits.idle_timeout = BoundedTimeout::new(Duration::from_millis(300)).unwrap();
@@ -605,6 +643,28 @@ async fn a_doh_request_waiting_on_the_global_query_budget_gets_its_full_query_ti
     tokio::time::timeout(PROMPTLY, server.shutdown())
         .await
         .expect("server must shut down");
+}
+
+#[tokio::test]
+async fn an_undecodable_dns_message_of_header_length_gets_formerr_in_a_200() {
+    let mut server = boot(EncryptedOptions::default()).await;
+    let mut client = DohClient::connect(server.doh(), &server.certificate).await;
+    // A full header announcing one question that never follows: long enough to be DNS,
+    // too short to decode, so it is a DNS error rather than an HTTP one.
+    let header_only = [0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+    for reply in [
+        client.post(&header_only).await,
+        client.get(&header_only).await,
+    ] {
+        assert_eq!(reply.status, 200);
+        let answer = Message::from_vec(&reply.body).unwrap();
+        assert_eq!(answer.metadata.id, 0x1234);
+        assert_eq!(
+            answer.metadata.response_code,
+            hickory_proto::op::ResponseCode::FormErr
+        );
+    }
+    server.shutdown().await;
 }
 
 /// Server settings with a 200 ms send deadline instead of the 5 s default.
