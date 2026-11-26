@@ -156,6 +156,10 @@ where
                 return Err(ListenerError::Io(err));
             }
         };
+        if !self.shared.client_access.admits(peer.ip()) {
+            tracing::debug!(%peer, "dropping UDP datagram from a client outside allow_networks");
+            return Ok(());
+        }
         let Some(slice) = buf.get(..len) else {
             return Ok(());
         };

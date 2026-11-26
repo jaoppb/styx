@@ -241,6 +241,7 @@ fn listener_shared<L, F, O, C, T, S>(
         abort: CancellationToken::new(),
         query_timeout: config.query_timeout,
         udp_payload_size_default: config.udp_payload_size_default,
+        client_access: Arc::new(config.client_access.clone()),
     }
 }
 

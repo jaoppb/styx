@@ -14,6 +14,7 @@ use tokio_util::task::TaskTracker;
 use styx_core::{Clock, Sleeper};
 
 use crate::application::terminal::TerminalHandler;
+use crate::domain::client_access::ClientAccess;
 use crate::domain::error::ListenerError;
 use crate::domain::ports::filter::FilterPolicy;
 use crate::domain::ports::local::LocalRecords;
@@ -53,6 +54,7 @@ pub(crate) struct StreamListener<H, C> {
     bound_addr: SocketAddr,
     exhaustion_warning: WarnLimiter,
     refusal_warning: WarnLimiter,
+    client_access: Arc<ClientAccess>,
     clock: Arc<C>,
     tasks: TaskTracker,
     abort: CancellationToken,
@@ -79,6 +81,7 @@ where
             bound_addr,
             exhaustion_warning: WarnLimiter::default(),
             refusal_warning: WarnLimiter::default(),
+            client_access: Arc::clone(&shared.client_access),
             clock: Arc::clone(&shared.clock),
             tasks: shared.tasks.clone(),
             abort: shared.abort.clone(),
@@ -122,6 +125,11 @@ where
                 return Err(ListenerError::Io(err));
             }
         };
+        if !self.client_access.admits(peer.ip()) {
+            tracing::debug!(%peer, transport = H::TRANSPORT.name(), "closing connection from a client outside allow_networks");
+            drop(stream);
+            return Ok(());
+        }
         let Some(permit) = self.connections.try_admit() else {
             tracing::debug!(%peer, transport = H::TRANSPORT.name(), "connection ceiling reached; closing");
             self.warn_limited(

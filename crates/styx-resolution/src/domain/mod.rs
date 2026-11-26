@@ -14,6 +14,7 @@ pub mod answer;
 pub mod bad_edns_version;
 pub mod cache;
 pub mod circuit;
+pub mod client_access;
 pub mod client_reply;
 pub mod config;
 pub mod edns;
@@ -40,6 +41,7 @@ pub use cache::{
     RejectReason, RejectedRecord, SecurityStatus, TtlPolicy,
 };
 pub use circuit::{CircuitConfig, CircuitState, FailureCount, TrialId};
+pub use client_access::{ClientAccess, ClientAccessError, ClientNetwork, ClientNetworkError};
 pub use config::{PoolConfig, Timeouts, UpstreamConfig};
 pub use edns::EdnsBufferSize;
 pub use error::{ConfigError, ListenerError, PipelineError, PoolError, ServerError};
