@@ -65,6 +65,12 @@ it would have no effect.
   answer can.
 - The locally served zones of RFC 6303 (#97) must check this table first, so a configured
   reverse zone wins over the built-in NXDOMAIN.
+- DNSSEC validation (Phase 6) must treat a conditional domain as insecure by
+  configuration, as unbound's `domain-insecure` does. A private name such as `lan` has no
+  delegation in the signed root, and the router serves no DS or DNSKEY. Chain material
+  asked of the router leaves every answer `Indeterminate` and logged at `warn`; asked of
+  the main pool, the root's signed denial can make it `Bogus`, a SERVFAIL once validation
+  fails hard.
 - Public surface: `PoolConfig` gains the field `conditional`, so a struct literal of it
   stops compiling; `ConditionalConfig`, `ConditionalRoute`, `ConditionalRoutes` and
   `CacheStage::with_conditional` are new.
