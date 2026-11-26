@@ -214,6 +214,8 @@ mod tests {
             "[tls]\nenabled = true\ndoh_path = \"dns-query\"",
             "[tls]\nenabled = true\nmax_request_body_bytes = 70000",
             "[tls]\nenabled = true\nmax_connections = 0",
+            "[tls]\nenabled = true\nmax_queries_per_connection = 0",
+            "[tls]\nenabled = true\nself_signed_names = []",
             "[tls]\nenabled = true\nmax_streams_per_connection = 0",
             "[tls]\nenabled = true\nhandshake_timeout_secs = 0",
             "[tls]\nenabled = true\nhandshake_timeout_secs = 3601",
