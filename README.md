@@ -27,10 +27,10 @@ policy and a web admin UI, all in a single binary on top of Tokio.
 The project is in early development. v1 is planned as 12 phases in the
 [ROADMAP](ROADMAP.md), and the tree currently covers the first ones: the `styx-proto`
 DNS wire codec (fuzzed, bounds-checked), the UDP/TCP server loop with its socket-level
-test harness, and the upstream pool with the Do53 forwarder, health tracking and circuit
-breaker. The answer cache, recursion, DNSSEC validation, DoT/DoH listeners, filtering,
-storage and the admin UI are still ahead, so styx is not yet ready to replace a running
-resolver.
+test harness, the upstream pool with the Do53 forwarder, health tracking and circuit
+breaker, the sharded answer cache, the iterative recursor, and encrypted inbound (DoT and
+DoH) listeners. DNSSEC validation, filtering, storage and the admin UI are still ahead, so
+styx is not yet ready to replace a running resolver.
 
 Correctness is enforced mechanically: each feature is its own crate with
 `domain`/`application`/`infrastructure` layers, and `just gate` checks formatting,
@@ -83,10 +83,13 @@ cause problems, and that lets you disable IPv6.
    `127.0.0.1:53`, which needs elevated rights on most systems. The whole-query deadline,
    `query_timeout_secs`, defaults to 5 seconds and must exceed every upstream member's own
    timeout. A misspelled key is a startup error, not a silently ignored line.
-   `config/styx.example.toml` lists every key the server, supervisor, upstream and
-   recursion sections accept, with its built-in default. Its `root_hints` path is relative
+   `config/styx.example.toml` lists every key the server, supervisor, upstream, recursion,
+   cache and tls sections accept, with its built-in default. Its `root_hints` path is relative
    to the directory styx is started from, so run styx from the repository root or change
    the path to an absolute one.
+   DoT and DoH are off until `[tls]` enables them; the
+   [encrypted inbound guide](docs/operator/encrypted-inbound.md) covers the certificate,
+   the limits and `styx pin [config]`, which prints the certificate's SPKI pin.
 
 ## 🤝 Contributors
 

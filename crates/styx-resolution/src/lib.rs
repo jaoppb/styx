@@ -47,20 +47,27 @@ pub use domain::probe::{CanaryConfig, ProbeConfig, ProbePolicy};
 pub use domain::refused::RefusedReplies;
 pub use domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 pub use domain::selection::{MemberView, Selection, SelectionStrategy, StrategyName};
+pub use domain::tls::{
+    BoundedTimeout, CertificateSource, DohResourcePath, EncryptedLimits, StreamConcurrencyLimit,
+    StreamMessageLimit, TlsConfig,
+};
 pub use domain::weight::Weight;
 pub use infrastructure::cache::{
     Eviction, EvictionReport, Shard, ShardedAnswerCache, DEFAULT_SHARDS,
 };
 pub use infrastructure::do53::Do53Forwarder;
+pub use infrastructure::doh::{DohListener, DohSettings};
+pub use infrastructure::dot::DotListener;
 pub use infrastructure::filter::AllowAllFilter;
 pub use infrastructure::local::NoLocalRecords;
 pub use infrastructure::observer::DiscardObserver;
 pub use infrastructure::response::ResponseWriter;
-pub use infrastructure::server::{Server, ServerConfig};
+pub use infrastructure::server::{EncryptedListeners, Server, ServerConfig};
 pub use infrastructure::supervisor::{
     run_listener_supervisor, SupervisedListener, SupervisorBackoff, SupervisorBackoffPolicy,
     DEFAULT_HEALTHY_THRESHOLD, DEFAULT_INITIAL_BACKOFF, DEFAULT_MAX_BACKOFF,
 };
 pub use infrastructure::tcp::TcpListener;
+pub use infrastructure::tls::TlsServerSetup;
 pub use infrastructure::udp::UdpListener;
 pub use infrastructure::udp_socket::default_socket_count;

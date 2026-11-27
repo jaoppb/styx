@@ -72,10 +72,11 @@ this document revises.
 - **Dependency and lint versions are declared once**, in `[workspace.dependencies]` and
   `[workspace.lints]`; every member crate opts in with `workspace = true` rather than
   re-declaring either.
-- **Continuous fuzzing on the codec and validator.** `cargo-fuzz` targets live under
-  `fuzz/` in feature crates, running continuously in CI on a scheduled workflow and
-  locally via `just fuzz`. Fuzzing is non-deterministic and requires the nightly
-  compiler, so it is kept outside the hermetic per-push `gate`.
+- **Continuous fuzzing on the codec, the validator and inbound request parsing.**
+  `cargo-fuzz` targets live under `fuzz/` in feature crates — today the wire codec, the
+  inbound stream framing and the DoH request extraction — running continuously in CI on a
+  scheduled workflow and locally via `just fuzz`. Fuzzing is non-deterministic and
+  requires the nightly compiler, so it is kept outside the hermetic per-push `gate`.
 - **No tuples on public interfaces.** Bare tuple types `(A, B)` must not appear on public
   interfaces (port traits, public functions, public structs, or exported type aliases).
   Tuples hide domain semantics, lack named fields, and make signature evolution breaking.
@@ -96,7 +97,8 @@ styx/
 ├── crates/
 │   ├── styx/                   # Composition root binary (startup, CLI, wiring)
 │   │   └── src/                # main.rs; upstream.rs: the pool's forwarder/recursor enum;
-│   │                           # pools.rs: the main and conditional upstream pools
+│   │                           # pools.rs: the main and conditional upstream pools;
+│   │                           # encrypted.rs: certificate, TLS setup and `styx pin`
 │   ├── styx-proto/             # Shared foundation: DNS wire codec (owned domain types)
 │   │   └── src/
 │   │       ├── domain/         # Wire types: Header, Question, Name, Record, RData, EDNS
@@ -115,14 +117,20 @@ styx/
 │   │                           # example-config scanner (config_example)
 │   │   └── src/
 │   ├── styx-resolution/        # DNS resolution engine and upstream forwarding
-│   │   └── src/
-│   │       ├── domain/         # Domain logic, circuit breaker, health, ports/, cache/
-│   │       │                   # (admission, CacheCapacity: per-shard split and byte floor)
-│   │       ├── application/    # Pipeline, selection strategies, probe scheduler,
-│   │       │                   # CacheStage, [cache] config
-│   │       └── infrastructure/ # UDP/TCP listeners, client transports, port adapters,
-│   │                           # cache/ (sharded store, CLOCK ring, eviction),
-│   │                           # throttled malformed-query warning (malformed_warning, warn_gate)
+│   │   ├── src/
+│   │   │   ├── domain/         # Domain logic, circuit breaker, health, ports/, cache/
+│   │   │   │                   # (admission, CacheCapacity: per-shard split and byte floor),
+│   │   │   │                   # tls/ ([tls] values, serving identity, SPKI pin, cert ports)
+│   │   │   ├── application/    # Pipeline, selection strategies, probe scheduler,
+│   │   │   │                   # CacheStage, [cache] and [tls] config, CertificateProvisioner
+│   │   │   └── infrastructure/ # UDP/TCP listeners, client transports, port adapters,
+│   │   │                       # accept, connection_bounds, stream_query, framing
+│   │   │                       # (shared stream length prefix), server/encrypted, tls, dot,
+│   │   │                       # doh/, cert_fs/ (operator PEM reader, self-signed
+│   │   │                       # generator), cache/ (sharded store, CLOCK ring, eviction),
+│   │   │                       # throttled malformed-query warning (malformed_warning,
+│   │   │                       # warn_gate)
+│   │   └── fuzz/               # cargo-fuzz targets: stream framing, DoH request extraction
 │   ├── styx-recursion/         # Iterative recursor behind the Upstream port
 │   │   ├── src/
 │   │   │   ├── domain/         # Descent, minimisation, classification, topology, ports

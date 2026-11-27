@@ -236,10 +236,8 @@ class TlsListenerConfig {
   +bool enabled
   +Vec~SocketAddr~ dot_listen
   +Vec~SocketAddr~ doh_listen
-  +Option~PathBuf~ cert_path
-  +Option~PathBuf~ key_path
+  +CertificateSource source
   +PathBuf self_signed_dir
-  +Vec~String~ self_signed_names
   +DohResourcePath doh_path
   +bool allow_http1
   +ConnectionBudget budget
@@ -277,9 +275,17 @@ class CertificateSource {
   SelfSigned
 }
 
-class ServingIdentityProvider {
+class OperatorCertificateLoader {
   <<interface>>
-  +resolve(TlsListenerConfig) Result~ServingIdentity, CertificateError~
+  +load(Path, Path) Result~ServingIdentity, CertificateError~
+  +load_pin(Path) Result~SpkiPin, CertificateError~
+}
+
+class SelfSignedStore {
+  <<interface>>
+  +load_existing(Path) Result~OptionServingIdentity, CertificateError~
+  +load_pin(Path) Result~OptionSpkiPin, CertificateError~
+  +generate(Path, Vec~String~, SystemTime) Result~ServingIdentity, CertificateError~
 }
 
 class ServingIdentity {
@@ -309,23 +315,23 @@ class SpkiPin {
   +to_pin_directive() String
 }
 
-class FilesystemCertificateReader~C~ {
-  -Arc~C~ clock
-  +read(PathBuf, PathBuf) Result~ServingIdentity, CertificateError~
+class FilesystemCertificateReader {
+  +load(Path, Path) Result~ServingIdentity, CertificateError~
+  +load_pin(Path) Result~SpkiPin, CertificateError~
 }
 
-class SelfSignedGenerator~C~ {
-  -Arc~C~ clock
-  +load_or_generate(PathBuf, Vec~String~) Result~ServingIdentity, CertificateError~
-  -generate(Vec~String~) Result~ServingIdentity, CertificateError~
-  -persist(PathBuf, ServingIdentity) Result~(), CertificateError~
+class SelfSignedGenerator {
+  +load_existing(Path) Result~OptionServingIdentity, CertificateError~
+  +load_pin(Path) Result~OptionSpkiPin, CertificateError~
+  +generate(Path, Vec~String~, SystemTime) Result~ServingIdentity, CertificateError~
 }
 
 class CertificateProvisioner~C~ {
   -Arc~C~ clock
-  -FilesystemCertificateReader~C~ reader
-  -SelfSignedGenerator~C~ generator
+  -OperatorCertificateLoader reader
+  -SelfSignedStore store
   +resolve(TlsListenerConfig) Result~ServingIdentity, CertificateError~
+  +existing_pin(TlsListenerConfig) Result~OptionSpkiPin, CertificateError~
   +announce_pin(ServingIdentity)
 }
 
@@ -493,10 +499,11 @@ class Clock {
 TlsListenerConfig "1" *-- "1" ConnectionBudget : bounds connections with
 TlsListenerConfig "1" *-- "1" DohResourcePath : serves resource at
 ConnectionBudget "1" *-- "1" StreamMessageLimit : caps request body with
-TlsListenerConfig --> CertificateSource : resolves to
-ServingIdentityProvider <|.. CertificateProvisioner : implemented by
-CertificateProvisioner "1" *-- "1" FilesystemCertificateReader : operator path
-CertificateProvisioner "1" *-- "1" SelfSignedGenerator : fallback
+TlsListenerConfig "1" *-- "1" CertificateSource : serves from
+OperatorCertificateLoader <|.. FilesystemCertificateReader : implemented by
+SelfSignedStore <|.. SelfSignedGenerator : implemented by
+CertificateProvisioner "1" *-- "1" OperatorCertificateLoader : operator path
+CertificateProvisioner "1" *-- "1" SelfSignedStore : fallback
 CertificateProvisioner --> ServingIdentity : produces
 CertificateProvisioner --> Clock : reads validity window from
 FilesystemCertificateReader --> CertificateError : fails with
@@ -553,8 +560,9 @@ adapters in `infrastructure`, wiring in the `styx` binary.
 
 - **`domain`** holds the pure concepts: `TlsListenerConfig`, `ConnectionBudget`,
   `StreamMessageLimit`, `DohResourcePath`, the `CertificateSource` enumeration,
-  `ServingIdentity`, `SpkiPin`, `EncryptedTransport`, and the `ServingIdentityProvider`
-  **port** — a trait describing "hand me serving material" without naming a file, a TLS
+  `ServingIdentity`, `SpkiPin`, `EncryptedTransport`, and the two certificate **ports**,
+  `OperatorCertificateLoader` and `SelfSignedStore` — traits describing "read the
+  operator's pair" and "load or mint the self-signed pair" without naming a file, a TLS
   library or a key format. Errors are `thiserror` enums; every fallible step returns
   `Result`. `StreamMessageLimit` and `DohResourcePath` are newtypes for exactly the reason
   AGENTS.md gives: each wraps a primitive that carries a validated invariant, not a
@@ -578,8 +586,12 @@ adapters in `infrastructure`, wiring in the `styx` binary.
 crate.** DoT and DoH are two more variants of the existing listener concept, sitting in
 front of the existing pipeline; a separate crate would have to *name* the crate that owns
 the pipeline, and **feature crates never depend on each other**. Certificate provisioning
-is nonetheless expressed behind the `ServingIdentityProvider` port in `domain`, so if it
-ever does earn its own crate, the binary swaps the adapter and `domain` does not move.
+nonetheless reaches the filesystem only through the `OperatorCertificateLoader` and
+`SelfSignedStore` ports in `domain`, so if it ever does earn its own crate, the binary
+swaps the adapters and `domain` does not move. There is no port *over* provisioning
+itself: only the binary calls `CertificateProvisioner`, once at startup, so a trait with
+one implementation and no generic consumer would be indirection without a seam (dropped
+in review).
 
 ### 2. Data flow, and the one property that matters
 
@@ -808,8 +820,8 @@ suite goes red one morning for reasons unrelated to any change.
      `domain::rdata::dnssec` are already split out of a single `rdata` catch-all in Phase
      1, one concept per file rather than one module accumulating every type in the layer.
    - `domain::tls::certificate` — `CertificateSource`, `ServingIdentity`, `ValidityState`,
-     `SpkiPin`, and the `ServingIdentityProvider` trait: the certificate concern the
-     Entities diagram already calls out as its own half.
+     `SpkiPin`, and the `OperatorCertificateLoader` and `SelfSignedStore` traits: the
+     certificate concern the Entities diagram already calls out as its own half.
    - `domain::tls::transport` — `AlpnProtocol`, `EncryptedTransport`: the small set of
      transport-facing domain enumerations.
    - **All three files**: **no I/O, no async, no TLS-library types in signatures, no
@@ -819,9 +831,10 @@ suite goes red one morning for reasons unrelated to any change.
      transports converge on one pipeline.
    - `domain::error` *(existing)* — gains `CertificateError`, `TlsError`, `DotError`,
      `DohError`, `FramingError`.
-   - `application::certificate` — `CertificateProvisioner`, implementing
-     `ServingIdentityProvider`: source selection, startup validity assessment, and the
-     one-time pin emission through `tracing`. Depends on `domain` only.
+   - `application::certificate` — `CertificateProvisioner`, generic over the two
+     certificate ports and called directly by the binary: source selection, startup
+     validity assessment, the pin lookup behind `styx pin`, and the one-time pin emission
+     through `tracing`. Depends on `domain` only.
    - `application::budget` — connection-budget evaluation as pure values and decisions
      (admit / refuse / close-idle / close-over-budget), testable without a socket.
    - `infrastructure::framing` — `StreamFraming`, the two-octet length prefix,
@@ -854,10 +867,11 @@ suite goes red one morning for reasons unrelated to any change.
 
 ### Trait (port) implementations
 
-1. `ServingIdentityProvider` is implemented by `CertificateProvisioner` (production) and
-   by a fixture provider in the harness that returns a `ServingIdentity` minted against
-   the `TestClock`. **Declared in `domain` so the listeners never name a filesystem or a
-   TLS library type.**
+1. `OperatorCertificateLoader` is implemented by `FilesystemCertificateReader` and
+   `SelfSignedStore` by `SelfSignedGenerator` (production), and both by fakes in
+   `certificate_provisioning_tests`, which drive `CertificateProvisioner` against the
+   `TestClock`. **Declared in `domain` so `application` never names a filesystem or a
+   key encoding.** The listeners take a finished `ServingIdentity` and name neither.
 2. `Clock` *(Phase 2)* is consumed, not redefined. `SelfSignedGenerator` takes its
    `notBefore`/`notAfter` from `Clock::now_utc()`; `FilesystemCertificateReader` uses the
    same source to assess whether a loaded certificate is expired or not yet valid;
@@ -880,8 +894,9 @@ suite goes red one morning for reasons unrelated to any change.
    **This happens before any listener binds.** A `CertificateError` here is a hard startup
    failure.
 3. `CertificateProvisioner` → `TlsListenerConfig::certificate_source()` →
-   - `CertificateSource::OperatorSupplied` → `FilesystemCertificateReader::read`
-   - `CertificateSource::SelfSigned` → `SelfSignedGenerator::load_or_generate`
+   - `CertificateSource::OperatorSupplied` → `OperatorCertificateLoader::load`
+   - `CertificateSource::SelfSigned` → `SelfSignedStore::load_existing`, then
+     `SelfSignedStore::generate` when nothing is persisted yet
 4. `CertificateProvisioner::announce_pin` → `tracing` at info level, **only when
    `ServingIdentity::freshly_generated` is true**; plus a startup warning when
    `validity_state` is not `Valid`.
@@ -913,12 +928,12 @@ suite goes red one morning for reasons unrelated to any change.
    no business rules** and makes no resolution decision.
 2. **Provisioning layer (`application`)** — source selection, validity assessment,
    one-time pin emission, budget decisions, all orchestrated by calling the
-   `infrastructure` adapters behind `ServingIdentityProvider` for the generate-or-load and
-   persistence steps. **No synchronous I/O executes in this layer's own code** — AGENTS.md
-   forbids it in `domain` and `application` alike — and the adapters it calls run at
-   startup only, never on the hot path.
+   `infrastructure` adapters behind `OperatorCertificateLoader` and `SelfSignedStore` for
+   the generate-or-load and persistence steps. **No synchronous I/O executes in this
+   layer's own code** — AGENTS.md forbids it in `domain` and `application` alike — and the
+   adapters it calls run at startup only, never on the hot path.
 3. **Domain layer (`domain`)** — the configuration value types, the two-variant
-   certificate source, the serving identity, the pin, the ALPN set, the port trait and the
+   certificate source, the serving identity, the pin, the ALPN set, the port traits and the
    error taxonomy. Pure: no async, no sockets, no clock reads,
    **no TLS-library type in any public signature**, so the TLS implementation can be
    swapped without touching `domain`.
@@ -960,11 +975,11 @@ suite goes red one morning for reasons unrelated to any change.
      a key pair whether or not the operator wants encrypted inbound.
    - `dot_listen: Vec<SocketAddr>` — documented conventional default 853 when enabled.
    - `doh_listen: Vec<SocketAddr>` — documented conventional default 443 when enabled.
-   - `cert_path: Option<PathBuf>`, `key_path: Option<PathBuf>` — the operator-supplied
-     pair.
+   - `source: CertificateSource` — the operator-supplied pair, or the self-signed names.
+     The TOML keys `cert_path`, `key_path` and `self_signed_names` are flat; parsing
+     (`application::tls_config`) folds them into this one value, so a caller of the
+     validated type never supplies names that an operator pair would ignore.
    - `self_signed_dir: PathBuf` — where generated material is persisted and re-read.
-   - `self_signed_names: Vec<String>` — the subject alternative names minted into the
-     self-signed certificate.
    - `doh_path: DohResourcePath` — the single DNS resource path.
    - `allow_http1: bool` — **default `false`**.
    - `budget: ConnectionBudget`.
@@ -999,8 +1014,9 @@ suite goes red one morning for reasons unrelated to any change.
      `doh_path` absoluteness or the request-body ceiling — `DohResourcePath` and
      `StreamMessageLimit` already make an invalid value unconstructible, and restating the
      check in `validate()` would be the same rule enforced twice.
-   - `certificate_source() -> CertificateSource` — `OperatorSupplied` when **both** paths
-     are present, `SelfSigned` otherwise.
+   - `certificate_source() -> &CertificateSource` — the source parsing chose:
+     `OperatorSupplied` when **both** paths are present, `SelfSigned` with
+     `self_signed_names` when neither is.
 6. **Constraints**:
    - **This block lives in the TOML file and nowhere else.** The hard config boundary is
      that the file owns infrastructure and the database owns policy; no overlap means no
@@ -1014,7 +1030,8 @@ suite goes red one morning for reasons unrelated to any change.
 ### 3. Define `CertificateSource`, `ServingIdentity`, `ValidityState` — `styx-resolution::domain::tls::certificate`
 
 1. **`CertificateSource`**: a closed enum with **exactly two variants** —
-   `OperatorSupplied { cert_path, key_path }` and `SelfSigned { dir }`. Document on the
+   `OperatorSupplied { cert_path, key_path }` and `SelfSigned { names }`; the directory
+   stays on the config as `self_signed_dir`, one value with one home. Document on the
    type itself that **there is deliberately no third variant**: styx owns no PKI and
    implements no ACME client, so there is no "obtain from an authority" path and no
    renewal concept. An ACME client would need inbound reachability or DNS-01 control,
@@ -1059,18 +1076,29 @@ suite goes red one morning for reasons unrelated to any change.
      a re-issue of the same key and is safe to publish.
    - `Display` renders the directive form. There is no way to print the private key.
 
-### 5. Declare the `ServingIdentityProvider` port — `styx-resolution::domain::tls::certificate`
+### 5. Declare the certificate ports — `styx-resolution::domain::tls::certificate`
 
-1. **Trait**: `Send + Sync + 'static`, with
-   `resolve(&self, config: &TlsListenerConfig) -> Result<ServingIdentity, CertificateError>`.
+1. **Traits**, each `Send + Sync + 'static`, with `async` methods (`impl Future + Send`),
+   like root-hints loading:
+   - `OperatorCertificateLoader`: `load(&self, cert_path, key_path) ->
+     Result<ServingIdentity, CertificateError>` and `load_pin(&self, cert_path) ->
+     Result<SpkiPin, CertificateError>`, which never opens the key.
+   - `SelfSignedStore`: `load_existing(&self, dir) -> Result<Option<ServingIdentity>,
+     CertificateError>`, `load_pin(&self, dir) -> Result<Option<SpkiPin>,
+     CertificateError>` and `generate(&self, dir, names, now) -> Result<ServingIdentity,
+     CertificateError>`. Only `generate` writes.
 2. **Doc comment must state**: (a) its obligation — return a complete serving identity or
-   a typed error, never a partially-configured one; (b) who implements it — the
-   `CertificateProvisioner` in `application` for production, a fixture in the harness for
-   tests; (c) why it exists — so the listeners depend on "serving material" and never on a
-   filesystem, a key encoding or a TLS library.
-3. **Constraints**: synchronous, because it is called exactly once at startup and never on
-   the hot path. **The hot path touches no I/O**, and this port is the boundary that keeps
-   certificate loading on the startup side of that line.
+   a typed error naming the file at fault, never a partially-configured one; (b) who
+   implements it — the `infrastructure::cert_fs` adapter in production, a fake in the
+   tests; (c) why it exists — so `application` depends on "serving material" and never on
+   a filesystem, a key encoding or a TLS library.
+3. **Constraints**: called at startup and by `styx pin` only, never on the hot path. **The
+   hot path touches no I/O**, and these ports are the boundary that keeps certificate
+   loading on the startup side of that line.
+4. **No port over provisioning itself.** An earlier draft declared a
+   `ServingIdentityProvider` trait implemented by `CertificateProvisioner`. Nothing
+   consumed it generically — the binary named the concrete provisioner anyway and had to
+   call `announce_pin` beside it — so review removed it and `resolve` is inherent.
 
 ### 6. Define the `thiserror` error taxonomy — `styx-resolution::domain::error`
 
@@ -1134,7 +1162,9 @@ suite goes red one morning for reasons unrelated to any change.
 
 1. **Responsibility**: turn an operator-supplied certificate and key path into a
    `ServingIdentity`.
-2. **Method**: `read(cert_path, key_path) -> Result<ServingIdentity, CertificateError>`.
+2. **Methods** (`OperatorCertificateLoader`): `load(cert_path, key_path) ->
+   Result<ServingIdentity, CertificateError>`, and `load_pin(cert_path)`, which reads the
+   certificate alone.
 3. **Logic**:
    - Read both files. Unreadable → `PathUnreadable { path }` naming **which** file.
    - Parse the certificate chain; empty → `NoCertificateInFile`; malformed →
@@ -1157,8 +1187,10 @@ suite goes red one morning for reasons unrelated to any change.
 ### 9. Implement `SelfSignedGenerator` — `styx-resolution::infrastructure::cert_fs`
 
 1. **Responsibility**: the first-boot fallback, and its persistence.
-2. **Method**:
-   `load_or_generate(dir, names) -> Result<ServingIdentity, CertificateError>`.
+2. **Methods** (`SelfSignedStore`): `load_existing(dir)`, `load_pin(dir)` and
+   `generate(dir, names, now)`. The reuse-or-generate choice below is made by
+   `CertificateProvisioner::resolve`, which calls `load_existing` first and `generate`
+   only on `None`.
 3. **Logic**:
    - If material already exists in `dir`: **load and reuse it silently**, with
      `freshly_generated: false`. Do **not** regenerate and do **not** reprint the pin — or
@@ -1185,14 +1217,17 @@ suite goes red one morning for reasons unrelated to any change.
 
 ### 10. Implement `CertificateProvisioner` — `styx-resolution::application::certificate`
 
-1. **Responsibility**: implement `ServingIdentityProvider`; select the source, assess
-   validity, emit the pin exactly once.
-2. **Method**: `resolve(&self, config) -> Result<ServingIdentity, CertificateError>`.
+1. **Responsibility**: the concrete startup service the binary calls, generic over
+   `OperatorCertificateLoader` and `SelfSignedStore`: select the source, assess validity,
+   emit the pin exactly once, and look the pin up for `styx pin`.
+2. **Method**: `async fn resolve(&self, config) -> Result<ServingIdentity,
+   CertificateError>`, inherent.
 3. **Logic**:
    - `config.certificate_source()`:
-     - `OperatorSupplied { cert_path, key_path }` → `FilesystemCertificateReader::read`.
+     - `OperatorSupplied { cert_path, key_path }` → `OperatorCertificateLoader::load`.
        **Any error here propagates and aborts startup.**
-     - `SelfSigned { dir }` → `SelfSignedGenerator::load_or_generate`.
+     - `SelfSigned { names }` → `SelfSignedStore::load_existing(config.self_signed_dir())`,
+       and `generate` with `names` and `clock.now_utc()` when it returns `None`.
    - **The self-signed path triggers on the absence of a configured path, never on the
      failure to load configured material.** A configured-but-unloadable certificate is a
      startup error. *Why:* silently falling back would keep the daemon up while swapping a
@@ -1215,7 +1250,11 @@ suite goes red one morning for reasons unrelated to any change.
      clients that accept a pin and
      **inadequate for DoT clients such as Android Private DNS**, with the one-line answer:
      *bring a certificate.*
-5. **Constraints**:
+5. **Method**: `async fn existing_pin(&self, config) -> Result<Option<SpkiPin>,
+   CertificateError>` — the pin `styx pin` prints (Operation 11). It calls only the
+   ports' `load_pin`, so it never opens the private key and never generates; `Ok(None)`
+   means the source is self-signed and nothing is persisted yet.
+6. **Constraints**:
    - **Never log the private key**, at any level, in any form.
    - This runs exactly once, at startup, before any listener binds.
 
@@ -1740,8 +1779,9 @@ and expensive to discover later:
 - `domain` contains no async, no sockets, no I/O, no clock reads, and **no TLS- or
   HTTP-library type in any public signature**, so the TLS implementation can be replaced
   without touching it.
-- Certificate provisioning is reached through the `ServingIdentityProvider` port; the
-  listeners never name a filesystem, a key encoding or a TLS library type.
+- Certificate files are reached through the `OperatorCertificateLoader` and
+  `SelfSignedStore` ports; `application` never names a filesystem or a key encoding, and
+  the listeners never name a filesystem, a key encoding or a TLS library type.
 - Feature crates never depend on each other; `styx-proto` is the single exception.
   `arch-lint check` and the independent `cargo tree --edges normal` gate must both pass.
 - **The DoH endpoint is not gated behind the `web` Cargo feature** and does not share a

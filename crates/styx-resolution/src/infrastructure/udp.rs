@@ -22,7 +22,7 @@ use crate::domain::ports::observer::QueryObserver;
 use crate::domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};
 use crate::infrastructure::admission::{ListenerShared, QueryPermit, WarnLimiter};
 use crate::infrastructure::early_reply::{badvers_reply, formerr_reply};
-use crate::infrastructure::malformed_warning::{ListenerKind, MalformedWarning};
+use crate::infrastructure::malformed_warning::MalformedWarning;
 use crate::infrastructure::response::ResponseWriter;
 use crate::infrastructure::udp_socket::bind_reuseport_group;
 
@@ -79,7 +79,7 @@ where
         for socket in sockets {
             let bound_addr = socket.local_addr()?;
             let malformed_warning = MalformedWarning::new(
-                ListenerKind::Udp,
+                Transport::Udp,
                 bound_addr,
                 Arc::clone(&shared.clock),
                 Arc::clone(&shared.sleeper),

@@ -41,3 +41,4 @@ As defined in [`AGENTS.md`](../../AGENTS.md):
 | [0027](0027-partitioned-capacity-and-second-chance-eviction.md) | Partitioned capacity and second-chance eviction | Phase 4 — Answer cache | 2026-10-16 | Accepted |
 | [0028](0028-aaaa-filter-stage.md) | A file-owned switch answers every AAAA question NODATA | Phase 2 — Server loop and test harness | 2026-10-31 | Accepted |
 | [0029](0029-conditional-forwarding-routes-cache-misses.md) | Conditional forwarding is file-owned and routes cache misses by suffix | Phase 3 — Upstream pool and Do53 forwarder | 2026-11-24 | Accepted |
+| [0030](0030-encrypted-inbound-transports-and-the-serving-certificate.md) | Encrypted inbound transports and the serving certificate | Phase 7 — Encrypted inbound (DoT / DoH) | 2026-10-28 | Accepted |

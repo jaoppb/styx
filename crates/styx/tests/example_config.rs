@@ -1,9 +1,10 @@
-//! The example configuration is one file read by two parsers: `styx-resolution` takes the
-//! server, supervisor and upstream tables and `styx-recursion` takes `[recursion]`. Only
-//! the composition root may name both, so only it can prove the whole file parses.
+//! The example configuration is one file read by two crates' parsers: `styx-resolution`
+//! takes the server, supervisor, upstream and `[tls]` tables and `styx-recursion` takes
+//! `[recursion]`. Only the composition root may name both, so only it can prove the whole
+//! file parses.
 
 use styx_recursion::application::config::RecursionSection;
-use styx_resolution::ServerConfig;
+use styx_resolution::{ServerConfig, TlsConfig};
 use styx_testkit::ExampleDocument;
 
 const EXAMPLE_CONFIG: &str = include_str!(concat!(
@@ -14,12 +15,16 @@ const EXAMPLE_CONFIG: &str = include_str!(concat!(
 struct Parsed {
     server: ServerConfig,
     recursion: RecursionSection,
+    tls_enabled: bool,
 }
 
 fn parse_through_both(text: &str) -> Result<Parsed, String> {
     Ok(Parsed {
         server: ServerConfig::from_toml_str(text).map_err(|error| error.to_string())?,
         recursion: RecursionSection::from_toml_str(text).map_err(|error| error.to_string())?,
+        tls_enabled: TlsConfig::from_toml_str(text)
+            .map_err(|error| error.to_string())?
+            .is_some(),
     })
 }
 
@@ -36,6 +41,9 @@ fn problem_with(text: &str) -> Option<String> {
     let recursors = pool.recursor_names();
     if recursors.is_empty() {
         return Some("the example keeps no recursor member".to_owned());
+    }
+    if parsed.tls_enabled {
+        return Some("the example turns encrypted inbound on by default".to_owned());
     }
     parsed
         .recursion

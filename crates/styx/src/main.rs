@@ -6,16 +6,21 @@
 //! injects it. There is no service locator and no reflection — collaborators
 //! are passed to constructors by value at startup.
 //!
-//! Wires DNS listeners (UDP/TCP), server configuration, the resolution
-//! pipeline, and graceful shutdown. The Leptos SSR handler is wired in
-//! Phase 11.
+//! Wires DNS listeners (UDP/TCP, and DoT/DoH when `[tls]` is enabled), server
+//! configuration, the resolution pipeline, and graceful shutdown. The Leptos SSR handler
+//! is wired in Phase 11.
+//!
+//! Usage: `styx [config]` runs the resolver; `styx pin [config]` prints the SPKI pin of
+//! the DoT/DoH certificate and exits.
 
+mod encrypted;
 mod pools;
 #[cfg(test)]
 mod recursion_wiring_tests;
 mod upstream;
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,6 +38,7 @@ use styx_recursion::infrastructure::sinks::{DiagnosticsStore, DiscardChainMateri
 use styx_resolution::{
     AllowAllFilter, CacheConfig, CacheStage, CacheStatsLogger, ConfiguredStrategy, DiscardObserver,
     NoLocalRecords, Pipeline, PoolConfig, ProbeScheduler, Server, ServerConfig, ShardedAnswerCache,
+    TlsConfig,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -52,10 +58,43 @@ type ConcreteStage = CacheStage<ConcreteCache, ConfiguredStrategy, PoolUpstream,
 type ConcretePipeline =
     Pipeline<NoLocalRecords, AllowAllFilter, DiscardObserver, SystemClock, ConcreteStage>;
 
-/// Starts the process and supervises server listeners.
+/// The `pin` subcommand's name, the one argument that is not a config path: a config file
+/// named `pin` is passed as `./pin`.
+const PIN_COMMAND: &str = "pin";
+
+const PIN_USAGE: &str = "usage: styx pin [config]";
+
+/// Dispatches to the resolver or to `styx pin`.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    init_tracing();
+    let mut args = std::env::args().skip(1);
+    match args.next() {
+        Some(command) if command == PIN_COMMAND => pin(args).await,
+        path => run(path).await,
+    }
+}
+
+/// Prints the SPKI pin of the DoT/DoH certificate named by the config, or the usage.
+async fn pin(mut args: impl Iterator<Item = String>) -> anyhow::Result<()> {
+    init_tracing(LogOutput::Stderr);
+    let config = args.next();
+    if args.next().is_some() {
+        bail!("too many arguments; {PIN_USAGE}");
+    }
+    if matches!(config.as_deref(), Some("-h" | "--help")) {
+        writeln!(std::io::stdout().lock(), "{PIN_USAGE}").context("failed to write the usage")?;
+        return Ok(());
+    }
+    let path = config_path(config).await?;
+    let content = read_config(&path).await?;
+    let tls = TlsConfig::from_toml_str(&content)
+        .with_context(|| format!("failed to parse [tls] from {path}"))?;
+    encrypted::print_pin(tls).await
+}
+
+/// Starts the resolver and supervises its listeners until Ctrl-C.
+async fn run(path: Option<String>) -> anyhow::Result<()> {
+    init_tracing(LogOutput::Stdout);
     raise_descriptor_limit();
 
     tracing::info!(
@@ -68,13 +107,18 @@ async fn main() -> anyhow::Result<()> {
         server: config,
         recursion,
         cache,
-    } = load_config().await?;
+        tls,
+    } = load_config(path).await?;
     let pool_config = config
         .upstream
         .as_ref()
         .context("missing [upstream] configuration")?;
 
     let clock = Arc::new(SystemClock::new());
+    let encrypted = match tls {
+        Some(tls) => Some(encrypted::prepare(tls, Arc::clone(&clock)).await?),
+        None => None,
+    };
     let recursion = RecursionWiring::load(recursion, pool_config, config.query_timeout).await?;
     let pools = Pools::build(pool_config, &recursion, &clock)?;
     let answer_cache = build_cache(clock.clone(), &cache)?;
@@ -92,13 +136,11 @@ async fn main() -> anyhow::Result<()> {
         CacheStatsLogger::new(answer_cache, sleeper.clone(), CACHE_STATS_INTERVAL)?,
     );
 
-    let mut server = Server::bind(config, pipeline, clock, sleeper)
+    let mut server = Server::bind_with_encrypted(config, encrypted, pipeline, clock, sleeper)
         .await
         .context("failed to bind server listeners")?;
 
-    for addr in server.local_addrs() {
-        tracing::info!(%addr, "DNS listener active");
-    }
+    log_listeners(&server);
 
     tokio::signal::ctrl_c()
         .await
@@ -146,6 +188,19 @@ impl BackgroundTasks {
             probe_scheduler.context("probe scheduler task failed")?;
         }
         cache_stats.context("cache stats logger task failed")
+    }
+}
+
+/// Logs every bound listener address.
+fn log_listeners<L, F, O, C, T>(server: &Server<L, F, O, C, T>) {
+    for addr in server.local_addrs() {
+        tracing::info!(%addr, "DNS listener active");
+    }
+    for addr in server.dot_addrs() {
+        tracing::info!(%addr, "DNS-over-TLS listener active");
+    }
+    for addr in server.doh_addrs() {
+        tracing::info!(%addr, "DNS-over-HTTPS listener active");
     }
 }
 
@@ -267,24 +322,34 @@ struct LoadedConfig {
     server: ServerConfig,
     recursion: RecursionSection,
     cache: CacheConfig,
+    tls: Option<TlsConfig>,
 }
 
-/// Reads the TOML file once and parses the sections it owns: the server and pool and the
-/// `[cache]` section (`styx-resolution`), and the `[recursion]` section
-/// (`styx-recursion`).
-async fn load_config() -> anyhow::Result<LoadedConfig> {
-    let path = match std::env::args().nth(1) {
-        Some(path) => path,
+/// The config path named on the command line, or `styx.toml` in the current directory.
+async fn config_path(arg: Option<String>) -> anyhow::Result<String> {
+    match arg {
+        Some(path) => Ok(path),
         None if tokio::fs::try_exists("styx.toml").await.unwrap_or_default() => {
-            "styx.toml".to_string()
+            Ok("styx.toml".to_string())
         }
         None => bail!(
             "no configuration file found; please create 'styx.toml' or specify a configuration file path with [upstream] section"
         ),
-    };
-    let content = tokio::fs::read_to_string(&path)
+    }
+}
+
+async fn read_config(path: &str) -> anyhow::Result<String> {
+    tokio::fs::read_to_string(path)
         .await
-        .with_context(|| format!("failed to read config from {path}"))?;
+        .with_context(|| format!("failed to read config from {path}"))
+}
+
+/// Reads the TOML file once and parses the sections it owns: the server and pool, the
+/// `[cache]` and `[tls]` sections (`styx-resolution`), and the `[recursion]` section
+/// (`styx-recursion`).
+async fn load_config(arg: Option<String>) -> anyhow::Result<LoadedConfig> {
+    let path = config_path(arg).await?;
+    let content = read_config(&path).await?;
     let config = ServerConfig::from_toml_str(&content)
         .with_context(|| format!("failed to parse config from {path}"))?;
     if config.upstream.is_none() {
@@ -294,10 +359,13 @@ async fn load_config() -> anyhow::Result<LoadedConfig> {
         .with_context(|| format!("failed to parse [recursion] from {path}"))?;
     let cache = CacheConfig::from_toml_str(&content)
         .with_context(|| format!("failed to parse [cache] from {path}"))?;
+    let tls = TlsConfig::from_toml_str(&content)
+        .with_context(|| format!("failed to parse [tls] from {path}"))?;
     Ok(LoadedConfig {
         server: config,
         recursion,
         cache,
+        tls,
     })
 }
 
@@ -338,8 +406,16 @@ fn raise_descriptor_limit() {
 #[cfg(not(target_os = "linux"))]
 fn raise_descriptor_limit() {}
 
+/// Where log lines go.
+enum LogOutput {
+    /// The resolver logs to stdout.
+    Stdout,
+    /// `styx pin` keeps stdout for the pin alone.
+    Stderr,
+}
+
 /// Installs the `tracing` subscriber, taking its filter from the environment.
-fn init_tracing() {
+fn init_tracing(output: LogOutput) {
     let builder = EnvFilter::builder().with_default_directive(DEFAULT_LOG_FILTER.into());
 
     let (filter, rejected) = match builder.from_env() {
@@ -347,7 +423,11 @@ fn init_tracing() {
         Err(error) => (EnvFilter::new(DEFAULT_LOG_FILTER.to_string()), Some(error)),
     };
 
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let subscriber = tracing_subscriber::fmt().with_env_filter(filter);
+    match output {
+        LogOutput::Stdout => subscriber.init(),
+        LogOutput::Stderr => subscriber.with_writer(std::io::stderr).init(),
+    }
 
     if let Some(error) = rejected {
         tracing::warn!(
