@@ -246,3 +246,34 @@ async fn pin_fails_when_encrypted_inbound_is_absent_or_disabled() {
         );
     }
 }
+
+#[tokio::test]
+async fn pin_help_prints_its_usage_instead_of_reading_a_config_named_help() {
+    for flag in ["-h", "--help"] {
+        let output = styx(vec!["pin".into(), flag.into()]).await;
+
+        assert!(output.status.success(), "{flag}: {}", text(&output.stderr));
+        assert_eq!(text(&output.stdout), "usage: styx pin [config]\n", "{flag}");
+    }
+}
+
+#[tokio::test]
+async fn pin_refuses_surplus_arguments_with_its_usage() {
+    let dir = scratch();
+    let config = write_config(&dir, "").await;
+
+    let output = styx(vec![
+        "pin".into(),
+        config.display().to_string(),
+        "surplus".into(),
+    ])
+    .await;
+
+    assert!(!output.status.success());
+    assert!(text(&output.stdout).is_empty(), "{}", text(&output.stdout));
+    assert!(
+        text(&output.stderr).contains("usage: styx pin [config]"),
+        "{}",
+        text(&output.stderr)
+    );
+}

@@ -17,6 +17,7 @@ mod encrypted;
 mod pools;
 mod upstream;
 
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,24 +53,38 @@ type ConcreteStage = CacheStage<ConcreteCache, ConfiguredStrategy, PoolUpstream,
 type ConcretePipeline =
     Pipeline<NoLocalRecords, AllowAllFilter, DiscardObserver, SystemClock, ConcreteStage>;
 
-/// The `pin` subcommand's name, the one argument that is not a config path.
+/// The `pin` subcommand's name, the one argument that is not a config path: a config file
+/// named `pin` is passed as `./pin`.
 const PIN_COMMAND: &str = "pin";
+
+const PIN_USAGE: &str = "usage: styx pin [config]";
 
 /// Dispatches to the resolver or to `styx pin`.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next() {
-        Some(command) if command == PIN_COMMAND => {
-            init_tracing(LogOutput::Stderr);
-            let path = config_path(args.next()).await?;
-            let content = read_config(&path).await?;
-            let tls = TlsConfig::from_toml_str(&content)
-                .with_context(|| format!("failed to parse [tls] from {path}"))?;
-            encrypted::print_pin(tls).await
-        }
+        Some(command) if command == PIN_COMMAND => pin(args).await,
         path => run(path).await,
     }
+}
+
+/// Prints the SPKI pin of the DoT/DoH certificate named by the config, or the usage.
+async fn pin(mut args: impl Iterator<Item = String>) -> anyhow::Result<()> {
+    init_tracing(LogOutput::Stderr);
+    let config = args.next();
+    if args.next().is_some() {
+        bail!("too many arguments; {PIN_USAGE}");
+    }
+    if matches!(config.as_deref(), Some("-h" | "--help")) {
+        writeln!(std::io::stdout().lock(), "{PIN_USAGE}").context("failed to write the usage")?;
+        return Ok(());
+    }
+    let path = config_path(config).await?;
+    let content = read_config(&path).await?;
+    let tls = TlsConfig::from_toml_str(&content)
+        .with_context(|| format!("failed to parse [tls] from {path}"))?;
+    encrypted::print_pin(tls).await
 }
 
 /// Starts the resolver and supervises its listeners until Ctrl-C.
