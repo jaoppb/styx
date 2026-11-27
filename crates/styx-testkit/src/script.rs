@@ -20,6 +20,18 @@ pub struct ScriptedAnswer {
     pub records: Vec<ResourceRecord>,
 }
 
+/// The authority records of a negative answer to one question: the NSEC or NSEC3
+/// records proving the denial and the RRSIGs over them (RFC 4035 §3.1.3).
+#[derive(Debug, Clone)]
+pub struct ScriptedDenial {
+    /// The question name this denial answers.
+    pub name: String,
+    /// The question type this denial answers.
+    pub rtype: RecordType,
+    /// Records added to the authority section.
+    pub records: Vec<ResourceRecord>,
+}
+
 /// A delegation: an NS record for `zone`, with optional glue.
 #[derive(Debug, Clone)]
 pub struct ScriptedReferral {
@@ -81,6 +93,8 @@ pub struct ScriptedOrigin {
 pub struct ZoneScript {
     /// Records served authoritatively.
     pub answers: Vec<ScriptedAnswer>,
+    /// Authority records attached to negative answers to particular questions.
+    pub denials: Vec<ScriptedDenial>,
     /// Delegations to child zones.
     pub referrals: Vec<ScriptedReferral>,
     /// Address records attached to every response regardless of bailiwick.
@@ -112,6 +126,19 @@ impl ZoneScript {
     #[must_use]
     pub fn answer(mut self, name: &str, rtype: RecordType, records: Vec<ResourceRecord>) -> Self {
         self.answers.push(ScriptedAnswer {
+            name: name.to_string(),
+            rtype,
+            records,
+        });
+        self
+    }
+
+    /// Answers `name`/`rtype` negatively with `records` in the authority section, beside
+    /// the SOA when an [`origin`](Self::origin) is set. The name exists, so the answer
+    /// is NODATA unless a scripted RCODE says otherwise.
+    #[must_use]
+    pub fn denial(mut self, name: &str, rtype: RecordType, records: Vec<ResourceRecord>) -> Self {
+        self.denials.push(ScriptedDenial {
             name: name.to_string(),
             rtype,
             records,

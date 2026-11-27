@@ -192,6 +192,25 @@ fn answer(
     }
     if reply.answers.is_empty() {
         deny(reply, name, script)?;
+        attach_denial(reply, name, question.qtype, script)?;
+    }
+    Ok(())
+}
+
+/// Adds the scripted proof records of a negative answer to `name`/`rtype`.
+fn attach_denial(
+    reply: &mut HMessage,
+    name: &str,
+    rtype: styx_proto::RecordType,
+    script: &ZoneScript,
+) -> Result<(), HarnessError> {
+    let records = script
+        .denials
+        .iter()
+        .filter(|denial| normalise(&denial.name) == name && denial.rtype == rtype)
+        .flat_map(|denial| &denial.records);
+    for record in records {
+        reply.add_authority(hickory_record(record)?);
     }
     Ok(())
 }
@@ -254,6 +273,7 @@ fn deny(reply: &mut HMessage, name: &str, script: &ZoneScript) -> Result<(), Har
         .iter()
         .map(|answer| &answer.name)
         .chain(script.dnames.iter().map(|dname| &dname.owner))
+        .chain(script.denials.iter().map(|denial| &denial.name))
         .any(|owner| is_at_or_below(&normalise(owner), name));
     if !exists {
         reply.metadata.response_code = HResponseCode::NXDomain;
