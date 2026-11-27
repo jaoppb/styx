@@ -1,8 +1,10 @@
 //! `RecursionWiring::load` is the startup step that pairs the pool's recursor members with
 //! their merged `[recursion]` settings and reads each root-hints file from disk.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use styx_core::{SystemClock, UpstreamId};
 use styx_recursion::application::config::{
     InfraCapacity, RecursionSection, DEFAULT_TCP_TIMEOUT, DEFAULT_UDP_TIMEOUT,
 };
@@ -53,12 +55,24 @@ async fn load(recursion: &str) -> anyhow::Result<RecursionWiring> {
     load_with(5, recursion).await
 }
 
+/// Builds both recursor members from `wiring`, as the pool does at startup. A member whose
+/// validated config or loaded root hints `load` failed to key under the same path fails here.
+fn build_every_recursor(wiring: &RecursionWiring) {
+    let clock = Arc::new(SystemClock::new());
+    for name in ["recursor-a", "recursor-b"] {
+        if let Err(error) = wiring.recursor(UpstreamId::new(name), &clock) {
+            panic!("{name} could not be built from the wiring: {error:#}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn recursors_naming_the_same_root_hints_share_one_loaded_copy() {
     let wiring = load("").await.expect("both recursors load");
 
     assert_eq!(wiring.configs.len(), 2);
     assert_eq!(wiring.hints.len(), 1);
+    build_every_recursor(&wiring);
 }
 
 #[tokio::test]
@@ -72,6 +86,7 @@ async fn recursors_naming_equivalent_paths_share_one_loaded_copy() {
 
     assert_eq!(wiring.configs.len(), 2);
     assert_eq!(wiring.hints.len(), 1);
+    build_every_recursor(&wiring);
 }
 
 #[tokio::test]
@@ -93,6 +108,7 @@ async fn recursors_naming_distinct_root_hints_load_separate_entries() {
 
     assert_eq!(wiring.configs.len(), 2);
     assert_eq!(wiring.hints.len(), 2);
+    build_every_recursor(&wiring);
 }
 
 #[tokio::test]
