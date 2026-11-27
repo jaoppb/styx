@@ -359,13 +359,15 @@ fuzz target="all" duration="60":
         echo "Rust nightly toolchain is required for fuzzing. Run: rustup toolchain install nightly" >&2
         exit 1
     fi
-    # Each target is named after the crate whose fuzz/ directory holds it.
-    declare -A crate_of=(
-        [decode_arbitrary]=styx-proto
-        [decode_encode_roundtrip]=styx-proto
-        [stream_framing]=styx-resolution
-        [doh_extract]=styx-resolution
-    )
+    # The crate whose fuzz/ directory holds each target. A `case`, not `declare -A`, so the
+    # recipe also runs under macOS's stock bash 3.2.
+    crate_of() {
+        case "$1" in
+            decode_arbitrary|decode_encode_roundtrip) echo styx-proto ;;
+            stream_framing|doh_extract) echo styx-resolution ;;
+            *) echo "" ;;
+        esac
+    }
     targets=()
     if [[ "{{ target }}" == "all" ]]; then
         targets=("decode_arbitrary" "decode_encode_roundtrip" "stream_framing" "doh_extract")
@@ -373,7 +375,7 @@ fuzz target="all" duration="60":
         targets=("{{ target }}")
     fi
     for t in "${targets[@]}"; do
-        crate="${crate_of[$t]:-}"
+        crate="$(crate_of "$t")"
         if [[ -z "$crate" ]]; then
             echo "unknown fuzz target: $t" >&2
             exit 1
