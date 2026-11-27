@@ -30,5 +30,8 @@ oom-*
 # Local config copied from config/styx.example.toml
 /styx.toml
 
+# Git worktrees
+.worktrees/
+
 # Personal Claude Code settings (permission answers, local overrides)
 **/.claude/settings.local.json
