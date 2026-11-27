@@ -1,5 +1,6 @@
 //! Server configuration error taxonomy.
 
+use styx_core::format_toml_key;
 use thiserror::Error;
 
 /// Errors arising during configuration loading or validation.
@@ -60,36 +61,6 @@ fn recursor_key_advice(member: &str, key: &str) -> String {
     format!("set it under [recursion.members.{formatted}] instead")
 }
 
-fn format_toml_key(name: &str) -> String {
-    if !name.is_empty()
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-    {
-        return name.to_owned();
-    }
-    let mut quoted = String::with_capacity(name.len().saturating_add(2));
-    quoted.push('"');
-    for character in name.chars() {
-        match character {
-            '\\' => quoted.push_str("\\\\"),
-            '"' => quoted.push_str("\\\""),
-            '\u{08}' => quoted.push_str("\\b"),
-            '\t' => quoted.push_str("\\t"),
-            '\n' => quoted.push_str("\\n"),
-            '\u{0C}' => quoted.push_str("\\f"),
-            '\r' => quoted.push_str("\\r"),
-            other if other.is_ascii_control() => {
-                use std::fmt::Write as _;
-                let _ = write!(quoted, "\\u{:04X}", u32::from(other));
-            }
-            other => quoted.push(other),
-        }
-    }
-    quoted.push('"');
-    quoted
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,9 +83,5 @@ mod tests {
         }
         .to_string();
         assert!(bare.contains("[recursion.members.recursor-v4_1]"), "{bare}");
-
-        let escaped = format_toml_key("a\"b\\c");
-        assert_eq!(escaped, r#""a\"b\\c""#);
-        assert_eq!(format_toml_key(""), r#""""#);
     }
 }

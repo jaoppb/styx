@@ -1,5 +1,6 @@
 //! The recursion crate's error types.
 
+use styx_core::format_toml_key;
 use thiserror::Error;
 
 /// Which denial-of-service bound a descent ran into.
@@ -129,36 +130,10 @@ impl ConfigError {
 }
 
 /// Formats `[recursion.members.<name>]` as a valid TOML table header, quoting `member`
-/// whenever it is not a TOML bare key (`[A-Za-z0-9_-]+`).
+/// whenever it is not a TOML bare key.
 #[must_use]
 pub fn format_recursion_member_table(member: &str) -> String {
-    if !member.is_empty()
-        && member
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-    {
-        return format!("[recursion.members.{member}]");
-    }
-    let mut quoted = String::with_capacity(member.len().saturating_add(2));
-    quoted.push('"');
-    for character in member.chars() {
-        match character {
-            '\\' => quoted.push_str("\\\\"),
-            '"' => quoted.push_str("\\\""),
-            '\u{08}' => quoted.push_str("\\b"),
-            '\t' => quoted.push_str("\\t"),
-            '\n' => quoted.push_str("\\n"),
-            '\u{0C}' => quoted.push_str("\\f"),
-            '\r' => quoted.push_str("\\r"),
-            other if other.is_ascii_control() => {
-                use std::fmt::Write as _;
-                let _ = write!(quoted, "\\u{:04X}", u32::from(other));
-            }
-            other => quoted.push(other),
-        }
-    }
-    quoted.push('"');
-    format!("[recursion.members.{quoted}]")
+    format!("[recursion.members.{}]", format_toml_key(member))
 }
 
 #[cfg(test)]
@@ -186,14 +161,6 @@ mod tests {
         assert_eq!(
             ConfigError::UnknownMember("rec.v4".to_owned()).to_string(),
             r#"[recursion.members."rec.v4"] names no recursor member of the pool"#
-        );
-        assert_eq!(
-            format_recursion_member_table(r#"a"b\c"#),
-            r#"[recursion.members."a\"b\\c"]"#
-        );
-        assert_eq!(
-            format_recursion_member_table(""),
-            r#"[recursion.members.""]"#
         );
     }
 }
