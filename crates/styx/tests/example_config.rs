@@ -64,3 +64,28 @@ fn example_with_every_commented_key_switched_on_parses_through_both() {
         None
     );
 }
+
+#[test]
+fn a_file_without_a_pool_is_reported() {
+    assert_eq!(
+        problem_with("query_timeout_secs = 5\n").as_deref(),
+        Some("the example configures no pool")
+    );
+}
+
+#[test]
+fn a_pool_without_a_recursor_member_is_reported() {
+    let forwarders_only = r#"
+[upstream]
+strategy = "ordered_failover"
+
+[[upstream.members]]
+name = "quad9"
+kind = "forwarder"
+addr = "9.9.9.9:53"
+"#;
+    assert_eq!(
+        problem_with(forwarders_only).as_deref(),
+        Some("the example keeps no recursor member")
+    );
+}

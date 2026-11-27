@@ -2,6 +2,10 @@
 //! `[recursion.members.<name>]` overrides, then the shared `[recursion]` section, then the
 //! built-in defaults. The pool's member list belongs to `styx-resolution` and the overrides
 //! to `styx-recursion`, so only the composition root can pair the two.
+//!
+//! This is #75's acceptance test, read from one whole file through both public parsers.
+//! `RecursionWiring`'s own unit tests (`src/recursion_wiring_tests.rs`) cover the same
+//! merge plus the root-hints loading and the recursor each member is built from.
 
 // The helper below sits outside `#[test]` functions, where clippy's expect allowance stops.
 #![allow(clippy::expect_used)]
