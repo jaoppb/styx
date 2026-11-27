@@ -91,6 +91,41 @@ cause problems, and that lets you disable IPv6.
    [encrypted inbound guide](docs/operator/encrypted-inbound.md) covers the certificate,
    the limits and `styx pin [config]`, which prints the certificate's SPKI pin.
 
+### Running as a service
+
+Both packagings read `/etc/styx/styx.toml`. It must set `listen_addrs` to port 53 on the
+addresses clients reach — `0.0.0.0:53` inside a container — and a recursor member needs
+`root_hints` as an absolute path to a `named.root` that exists where styx runs.
+
+**Container.** Each `v*` release publishes `ghcr.io/jaoppb/styx` for `linux/amd64` and
+`linux/arm64`. The image holds only the static binary and runs it as an unprivileged user:
+
+```sh
+docker run -d --name styx \
+  -p 53:53/udp -p 53:53/tcp \
+  -v "$PWD/styx.toml:/etc/styx/styx.toml:ro" \
+  -v "$PWD/config/named.root:/etc/styx/named.root:ro" \
+  ghcr.io/jaoppb/styx:<version>
+```
+
+`docker stop` sends SIGINT, on which styx stops accepting queries and finishes the ones in
+flight. The healthcheck runs `styx health [address]`, which exits 0 when a resolver answers
+at `127.0.0.1:53` (or the address given); with another port, override the healthcheck. A
+self-signed `[tls]` certificate is written to `/var/lib/styx/tls`, so mount a volume the
+container's user (`65532`) can write there before enabling it.
+
+**systemd.** Install the musl binary from the release tarball as `/usr/local/bin/styx`, then
+[`packaging/systemd/styx.service`](packaging/systemd/styx.service):
+
+```sh
+sudo install -m 0644 packaging/systemd/styx.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now styx
+```
+
+The unit runs styx as a transient unprivileged user that holds only the capability to bind
+port 53, restarts it on failure, and keeps `/var/lib/styx` as its only writable path.
+
 ## 🤝 Contributors
 
 <a href="https://github.com/jaoppb/styx/graphs/contributors">

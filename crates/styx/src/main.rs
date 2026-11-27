@@ -11,9 +11,11 @@
 //! is wired in Phase 11.
 //!
 //! Usage: `styx [config]` runs the resolver; `styx pin [config]` prints the SPKI pin of
-//! the DoT/DoH certificate and exits.
+//! the DoT/DoH certificate and exits; `styx health [address]` exits 0 when a resolver
+//! answers there.
 
 mod encrypted;
+mod health;
 mod pools;
 #[cfg(test)]
 mod recursion_wiring_tests;
@@ -64,12 +66,13 @@ const PIN_COMMAND: &str = "pin";
 
 const PIN_USAGE: &str = "usage: styx pin [config]";
 
-/// Dispatches to the resolver or to `styx pin`.
+/// Dispatches to the resolver, to `styx pin` or to `styx health`.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next() {
         Some(command) if command == PIN_COMMAND => pin(args).await,
+        Some(command) if command == health::HEALTH_COMMAND => health::health(args).await,
         path => run(path).await,
     }
 }
