@@ -186,7 +186,9 @@ max_depth = 16
 max_outbound_queries = 64
 max_cname_chain = 8
 wall_clock_ms = 4000
-# Per-query timeouts toward authoritative servers.
+# Per-query timeouts toward authoritative servers. Like a forwarder's, both must stay
+# below `query_timeout_secs`, for every member after its overrides, or styx refuses to
+# start. wall_clock_ms is not checked against it.
 udp_timeout_ms = 800
 tcp_timeout_ms = 1500
 # Set to false on a box with no IPv6 path, so AAAA glue is never tried.

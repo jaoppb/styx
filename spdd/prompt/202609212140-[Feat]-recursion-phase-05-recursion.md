@@ -1174,10 +1174,10 @@ first.**
 3. **Root hints**: loaded from a path in the **TOML file** (file owns infrastructure) —
    the only source; there is no compiled-in copy. The path is part of each recursor
    member's merged settings (Approach §7), and each distinct canonical path is read and
-   parsed once; each recursor gets its own copy. A
-   missing or unparseable file is a `ConfigError` at construction, and the recursor is not
-   built. Priming is **lazy and non-blocking** (`application/priming.rs`): the recursor
-   is constructed from hints alone and serves at once; the first descent's prerequisite
+   parsed once; each recursor gets its own copy. A missing or unparseable file stops
+   startup in the binary's wiring step, naming the member, and the recursor is not built.
+   Priming is **lazy and non-blocking** (`application/priming.rs`): the recursor is
+   constructed from hints alone and serves at once; the first descent's prerequisite
    is a single-flighted priming query whose live root NS set replaces the hints in
    `InfraCache`. A failed prime is retried with backoff while descents keep using the
    hints, and the prime is repeated when the root NS TTL expires. The box boots before
