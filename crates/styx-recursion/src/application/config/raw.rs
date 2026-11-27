@@ -65,11 +65,9 @@ impl RawSettings {
 
     /// The finished settings, built-in defaults filling the gaps.
     pub(super) fn resolve(self) -> Result<RecursionConfig, MemberConfigError> {
-        let root_hints = self
-            .root_hints
-            .clone()
-            .ok_or(MemberConfigError::MissingRootHints)?;
-        let limits = self.limits().map_err(|error| match error {
+        let limits = self.limits();
+        let root_hints = self.root_hints.ok_or(MemberConfigError::MissingRootHints)?;
+        let limits = limits.map_err(|error| match error {
             ConfigError::ZeroLimit(field) => MemberConfigError::ZeroLimit(field),
             other => MemberConfigError::Toml(other.to_string()),
         })?;
