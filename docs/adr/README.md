@@ -42,3 +42,4 @@ As defined in [`AGENTS.md`](../../AGENTS.md):
 | [0028](0028-aaaa-filter-stage.md) | A file-owned switch answers every AAAA question NODATA | Phase 2 — Server loop and test harness | 2026-10-31 | Accepted |
 | [0029](0029-conditional-forwarding-routes-cache-misses.md) | Conditional forwarding is file-owned and routes cache misses by suffix | Phase 3 — Upstream pool and Do53 forwarder | 2026-11-24 | Accepted |
 | [0030](0030-encrypted-inbound-transports-and-the-serving-certificate.md) | Encrypted inbound transports and the serving certificate | Phase 7 — Encrypted inbound (DoT / DoH) | 2026-10-28 | Accepted |
+| [0031](0031-dnssec-validation-on-the-resolution-path.md) | DNSSEC validation on the resolution path | Phase 6 — DNSSEC validation | 2026-11-27 | Accepted |
