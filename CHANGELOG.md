@@ -36,6 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `1.168.192.in-addr.arpa`) to their own forwarders, usually the router, instead of the
   main pool. The longest matching domain wins, answers are cached as usual, and a name
   whose forwarders all fail gets SERVFAIL rather than leaking to the main pool.
+- styx answers locally served names itself, without asking an upstream and without caching
+  the reply: reverse lookups in the RFC 6303 zones (private, loopback, link-local and
+  documentation addresses) get NXDOMAIN, `localhost` and the names below it get `127.0.0.1`
+  and `::1`, and `*.invalid` gets NXDOMAIN. A reverse zone covered by an
+  `[[upstream.conditional]]` entry still goes to that entry's forwarders.
+- `use-application-dns.net` is answered NXDOMAIN, so Firefox keeps its default DNS over
+  HTTPS off and keeps resolving through styx. `doh_canary = false` at the top of
+  `styx.toml` forwards the name instead.
 
 ### Changed
 
