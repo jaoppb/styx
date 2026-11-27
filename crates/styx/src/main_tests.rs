@@ -91,7 +91,20 @@ async fn the_built_pipeline_sends_a_conditional_name_to_its_forwarder_only() {
     let recursion = no_recursors(&config).await;
     let pools = Pools::build(pool_config, &recursion, &clock).expect("pools");
     let cache = build_cache(Arc::clone(&clock), &cache_config).expect("cache");
-    let pipeline = build_pipeline(pools, Arc::clone(&clock), &config, cache, &cache_config);
+    let validator = crate::dnssec::production_validator(
+        Arc::clone(&pools.main),
+        Arc::clone(&recursion.chain_material),
+        &clock,
+        config.query_timeout,
+    );
+    let pipeline = build_pipeline(
+        pools,
+        Arc::clone(&clock),
+        &config,
+        cache,
+        &cache_config,
+        validator,
+    );
 
     pipeline
         .handle(&query("nas.lan.", &clock))

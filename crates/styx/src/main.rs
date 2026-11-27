@@ -13,6 +13,7 @@
 //! Usage: `styx [config]` runs the resolver; `styx pin [config]` prints the SPKI pin of
 //! the DoT/DoH certificate and exits.
 
+mod dnssec;
 mod encrypted;
 mod pools;
 #[cfg(test)]
@@ -26,6 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
+use dnssec::{ProductionValidator, PushedReferrals};
 use pools::Pools;
 use styx_core::{SystemClock, SystemSleeper, UpstreamId};
 use styx_net::Do53Client;
@@ -34,7 +36,7 @@ use styx_recursion::application::recursor::{Recursor, RecursorPorts};
 use styx_recursion::domain::root_hints::RootHints;
 use styx_recursion::infrastructure::do53_transport::{Do53Transport, DNS_PORT};
 use styx_recursion::infrastructure::infra_cache::MemoryInfraCache;
-use styx_recursion::infrastructure::sinks::{DiagnosticsStore, DiscardChainMaterial};
+use styx_recursion::infrastructure::sinks::DiagnosticsStore;
 use styx_resolution::{
     AllowAllFilter, CacheConfig, CacheStage, CacheStatsLogger, ConfiguredStrategy, DiscardObserver,
     NoLocalRecords, Pipeline, PoolConfig, ProbeScheduler, Server, ServerConfig, ShardedAnswerCache,
@@ -54,7 +56,8 @@ const DEFAULT_LOG_FILTER: LevelFilter = LevelFilter::INFO;
 const CACHE_STATS_INTERVAL: Duration = Duration::from_secs(60);
 
 type ConcreteCache = ShardedAnswerCache<SystemClock>;
-type ConcreteStage = CacheStage<ConcreteCache, ConfiguredStrategy, PoolUpstream, SystemClock>;
+type ConcreteStage =
+    CacheStage<ConcreteCache, ConfiguredStrategy, PoolUpstream, SystemClock, ProductionValidator>;
 type ConcretePipeline =
     Pipeline<NoLocalRecords, AllowAllFilter, DiscardObserver, SystemClock, ConcreteStage>;
 
@@ -122,12 +125,19 @@ async fn run(path: Option<String>) -> anyhow::Result<()> {
     let recursion = RecursionWiring::load(recursion, pool_config, config.query_timeout).await?;
     let pools = Pools::build(pool_config, &recursion, &clock)?;
     let answer_cache = build_cache(clock.clone(), &cache)?;
+    let validator = dnssec::production_validator(
+        Arc::clone(&pools.main),
+        Arc::clone(&recursion.chain_material),
+        &clock,
+        config.query_timeout,
+    );
     let pipeline = build_pipeline(
         pools.clone(),
         clock.clone(),
         &config,
         answer_cache.clone(),
         &cache,
+        validator,
     );
 
     let sleeper = Arc::new(SystemSleeper::new());
@@ -205,12 +215,14 @@ fn log_listeners<L, F, O, C, T>(server: &Server<L, F, O, C, T>) {
 }
 
 /// Validated per-member recursion settings, each unique root-hints file loaded once,
-/// and the diagnostics store the admin/web layer will read (Phase 11), shared by every
-/// recursor and keyed by member.
+/// the diagnostics store the admin/web layer will read (Phase 11), shared by every
+/// recursor and keyed by member, and the store every recursor pushes its referrals' DS
+/// RRsets to for the DNSSEC validator.
 struct RecursionWiring {
     configs: BTreeMap<String, RecursionConfig>,
     hints: HashMap<PathBuf, RootHints>,
     diagnostics: Arc<DiagnosticsStore>,
+    chain_material: Arc<PushedReferrals<SystemClock>>,
 }
 
 impl RecursionWiring {
@@ -247,6 +259,7 @@ impl RecursionWiring {
             configs,
             hints,
             diagnostics: Arc::new(DiagnosticsStore::new()),
+            chain_material: Arc::new(PushedReferrals::new(Arc::new(SystemClock::new()))),
         })
     }
 
@@ -278,7 +291,7 @@ impl RecursionWiring {
                 clock: Arc::clone(clock),
                 transport: Arc::new(Do53Transport::new(client, DNS_PORT)),
                 diagnostics: Arc::clone(&self.diagnostics),
-                chain_material: Arc::new(DiscardChainMaterial),
+                chain_material: Arc::clone(&self.chain_material),
                 infra: Arc::new(MemoryInfraCache::new(config.capacity)),
             },
         ))
@@ -306,6 +319,7 @@ fn build_pipeline(
     config: &ServerConfig,
     cache: Arc<ConcreteCache>,
     cache_config: &CacheConfig,
+    validator: ProductionValidator,
 ) -> Arc<ConcretePipeline> {
     let cache_stage = Arc::new(
         CacheStage::from_config(
@@ -315,6 +329,7 @@ fn build_pipeline(
             clock.clone(),
             config.query_timeout,
         )
+        .with_validator(Arc::new(validator))
         .with_conditional(pools.conditional),
     );
     Arc::new(
