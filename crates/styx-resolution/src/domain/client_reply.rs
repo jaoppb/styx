@@ -13,6 +13,9 @@
 //! RA describes styx, not the upstream behind it: it is 1 even when a forwarder answered RA=0
 //! or REFUSED, because styx offers recursion to its clients whatever one pool member does.
 //!
+//! AD survives only for a query that set DO or AD (RFC 6840 §5.8), whichever path built the
+//! reply: the cache keeps the verdict, the client's bits decide whether it is shown.
+//!
 //! Every upstream query asks for DNSSEC records (RFC 4035 §3.2.1), so a reply carries
 //! RRSIG, NSEC and NSEC3 records whatever the client asked. A client that did not set DO gets
 //! them stripped here, except the type its question names.
@@ -29,6 +32,8 @@ pub fn conform_to_query(response: &mut Message, query: &Message) {
     if let Some(question) = query.questions.first() {
         response.questions.push(question.clone());
     }
+    // RFC 6840 §5.8: AD only for a client that showed it understands it, with DO or AD.
+    response.header.authentic_data &= query.header.authentic_data || asks_for_dnssec(query);
     if !asks_for_dnssec(query) {
         strip_unrequested_dnssec(response);
     }
@@ -233,6 +238,47 @@ mod tests {
         conform_to_query(&mut response, &asked);
 
         assert_eq!(types_of(&response), vec![RecordType::A, RecordType::RRSIG]);
+    }
+
+    fn authenticated_reply() -> Message {
+        let mut reply = upstream_reply();
+        reply.header.authentic_data = true;
+        reply
+    }
+
+    #[test]
+    fn test_ad_is_cleared_for_a_query_with_neither_do_nor_ad() {
+        for asked in [query(true, false), with_do(query(true, false), false)] {
+            let mut response = authenticated_reply();
+
+            conform_to_query(&mut response, &asked);
+
+            assert!(!response.header.authentic_data);
+        }
+    }
+
+    #[test]
+    fn test_ad_is_kept_for_a_query_with_do_or_ad() {
+        let mut with_ad = query(true, false);
+        with_ad.header.authentic_data = true;
+        for asked in [with_do(query(true, false), true), with_ad] {
+            let mut response = authenticated_reply();
+
+            conform_to_query(&mut response, &asked);
+
+            assert!(response.header.authentic_data);
+        }
+    }
+
+    #[test]
+    fn test_ad_is_never_set_by_the_query_alone() {
+        let mut asked = with_do(query(true, false), true);
+        asked.header.authentic_data = true;
+        let mut response = upstream_reply();
+
+        conform_to_query(&mut response, &asked);
+
+        assert!(!response.header.authentic_data);
     }
 
     #[test]

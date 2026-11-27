@@ -66,13 +66,29 @@ fn signed_answer(signed_for: u32) -> Vec<ResourceRecord> {
     ]
 }
 
-fn query(checking_disabled: bool) -> Message {
+/// The bits a client sets on its query.
+#[derive(Clone, Copy)]
+struct Asked {
+    dnssec_ok: bool,
+    authentic_data: bool,
+    checking_disabled: bool,
+}
+
+/// A client that validates for itself: DO=1, the usual way to ask for AD.
+const VALIDATING: Asked = Asked {
+    dnssec_ok: true,
+    authentic_data: false,
+    checking_disabled: false,
+};
+
+fn query(asked: Asked) -> Message {
     let mut message = Message::new(Header::new_query(0x1357, Opcode::Query, true));
-    message.header.checking_disabled = checking_disabled;
+    message.header.authentic_data = asked.authentic_data;
+    message.header.checking_disabled = asked.checking_disabled;
     message
         .questions
         .push(Question::new(name(QNAME), RecordType::A, RecordClass::In));
-    message.opt = Some(Opt::new(1232, 0, true, Vec::new()));
+    message.opt = Some(Opt::new(1232, 0, asked.dnssec_ok, Vec::new()));
     message
 }
 
@@ -203,8 +219,16 @@ impl Fixture {
     }
 
     async fn ask(&self, checking_disabled: bool) -> Message {
+        self.ask_as(Asked {
+            checking_disabled,
+            ..VALIDATING
+        })
+        .await
+    }
+
+    async fn ask_as(&self, asked: Asked) -> Message {
         DnsClient::new()
-            .query_udp(self.server.udp_addr(), &query(checking_disabled))
+            .query_udp(self.server.udp_addr(), &query(asked))
             .await
             .expect("reply")
     }
@@ -345,5 +369,49 @@ async fn an_answer_signed_for_less_than_the_ttl_floor_is_not_cached() {
     assert!(second.header.authentic_data);
     assert_eq!(fixture.cache.stats().hits, 0);
     assert_eq!(fixture.upstream_queries(), 2);
+    fixture.shutdown().await;
+}
+
+/// Issue #122: a cache hit shows the stored verdict's AD only to a client that set DO or AD
+/// (RFC 6840 §5.8); a client with neither gets AD=0 from the same entry.
+#[tokio::test]
+async fn a_secure_hit_shows_ad_only_to_a_client_that_set_do_or_ad() {
+    let fixture = Fixture::boot(ScriptedValidator::new(SECURE), 3600).await;
+    assert!(fixture.ask(false).await.header.authentic_data);
+
+    let plain = fixture
+        .ask_as(Asked {
+            dnssec_ok: false,
+            ..VALIDATING
+        })
+        .await;
+    let ad_only = fixture
+        .ask_as(Asked {
+            dnssec_ok: false,
+            authentic_data: true,
+            checking_disabled: false,
+        })
+        .await;
+    let dnssec_ok = fixture.ask_as(VALIDATING).await;
+
+    assert_eq!(fixture.cache.stats().hits, 3);
+    assert!(!plain.header.authentic_data);
+    assert!(ad_only.header.authentic_data);
+    assert!(dnssec_ok.header.authentic_data);
+    fixture.shutdown().await;
+}
+
+/// Issue #122, CD=1: styx validates whatever CD says, so an entry admitted for a CD=0
+/// client carries the same verdict to a CD=1 one; CD only lifts enforcement.
+#[tokio::test]
+async fn a_cd1_client_gets_the_same_verdict_from_an_entry_a_cd0_query_filled() {
+    let fixture = Fixture::boot(ScriptedValidator::new(SECURE), 3600).await;
+    assert!(fixture.ask(false).await.header.authentic_data);
+
+    let checking_disabled = fixture.ask(true).await;
+
+    assert_eq!(fixture.cache.stats().hits, 1);
+    assert!(checking_disabled.header.checking_disabled);
+    assert!(checking_disabled.header.authentic_data);
     fixture.shutdown().await;
 }
