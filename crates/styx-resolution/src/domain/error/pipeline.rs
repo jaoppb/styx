@@ -2,6 +2,8 @@
 
 use styx_proto::{Opcode, RecordClass, ResponseCode};
 
+use crate::domain::cache::dnssec::SecurityStatus;
+
 use thiserror::Error;
 
 /// Errors returned by the request processing pipeline.
@@ -41,6 +43,10 @@ pub enum PipelineError {
     /// The query cannot be resolved in the current phase (phase 2 stub terminal).
     #[error("query not resolvable")]
     NotResolvable,
+
+    /// DNSSEC validation reached a verdict the configured failure mode refuses to serve.
+    #[error("DNSSEC validation refused the answer: {0:?}")]
+    ValidationFailed(SecurityStatus),
 }
 
 impl PipelineError {
@@ -55,7 +61,7 @@ impl PipelineError {
                 ResponseCode::FORMERR
             }
             Self::UnsupportedOpcode(_) | Self::UnsupportedClass(_) => ResponseCode::NOTIMP,
-            Self::Internal(_) | Self::Pool(_) => ResponseCode::SERVFAIL,
+            Self::Internal(_) | Self::Pool(_) | Self::ValidationFailed(_) => ResponseCode::SERVFAIL,
             Self::NotResolvable => ResponseCode::REFUSED,
         }
     }

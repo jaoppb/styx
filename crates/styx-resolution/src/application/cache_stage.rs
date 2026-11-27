@@ -8,9 +8,11 @@ use styx_core::{Clock, Upstream, UpstreamKind};
 use crate::application::cache_config::CacheConfig;
 use crate::application::pool::UpstreamPool;
 use crate::application::terminal::TerminalHandler;
-use crate::domain::answer::{AnswerSource, ResolutionOutcome, ResolutionResponse, ResolvedSource};
+use crate::application::validation::NoValidation;
+use crate::domain::answer::{ResolutionOutcome, ResolutionResponse, ResolvedSource};
 use crate::domain::cache::admission::Admission;
 use crate::domain::cache::admission_request::AdmissionRequest;
+use crate::domain::cache::dnssec::SecurityStatus;
 use crate::domain::cache::entry::CacheEntry;
 use crate::domain::cache::error::CacheError;
 use crate::domain::cache::key::CacheKey;
@@ -18,15 +20,21 @@ use crate::domain::cache::port::{AnswerCache, Lookup};
 use crate::domain::cache::ttl::TtlPolicy;
 use crate::domain::conditional::ConditionalRoutes;
 use crate::domain::error::PipelineError;
+use crate::domain::ports::validation::ResponseValidator;
 use crate::domain::request::RequestContext;
 use crate::domain::selection::SelectionStrategy;
+use crate::domain::signature_lifetime::{cap_ttls, remaining_signature_life};
 
 /// Resolution terminal stage integrating the answer cache with the upstream pool.
-pub struct CacheStage<A, S, U, C> {
+///
+/// Every upstream answer passes the validator `V` before it is admitted or served. Forged
+/// answers never get here: the pipeline answers them before this stage (ADR 0010).
+pub struct CacheStage<A, S, U, C, V = NoValidation> {
     cache: Arc<A>,
     pool: Arc<UpstreamPool<S, U, C>>,
     conditional: ConditionalRoutes<Arc<UpstreamPool<S, U, C>>>,
     admission: Admission,
+    validator: Arc<V>,
     clock: Arc<C>,
     query_timeout: Duration,
 }
@@ -51,6 +59,7 @@ where
             pool,
             conditional: ConditionalRoutes::default(),
             admission: Admission::new(TtlPolicy::default()),
+            validator: Arc::new(NoValidation),
             clock,
             query_timeout,
         }
@@ -89,11 +98,38 @@ where
             pool,
             conditional: ConditionalRoutes::default(),
             admission,
+            validator: Arc::new(NoValidation),
             clock,
             query_timeout,
         }
     }
 
+    /// Validates every upstream answer with `validator` instead of leaving it unvalidated.
+    #[must_use]
+    pub fn with_validator<V2: ResponseValidator>(
+        self,
+        validator: Arc<V2>,
+    ) -> CacheStage<A, S, U, C, V2> {
+        CacheStage {
+            cache: self.cache,
+            pool: self.pool,
+            conditional: self.conditional,
+            admission: self.admission,
+            validator,
+            clock: self.clock,
+            query_timeout: self.query_timeout,
+        }
+    }
+}
+
+impl<A, S, U, C, V> CacheStage<A, S, U, C, V>
+where
+    A: AnswerCache,
+    S: SelectionStrategy,
+    U: Upstream + Clone + 'static,
+    C: Clock,
+    V: ResponseValidator,
+{
     /// Sends a question under a conditional domain to that route's pool instead of the main
     /// one. The answer is cached and admitted like any other.
     #[must_use]
@@ -141,70 +177,98 @@ where
 
     async fn resolve_uncacheable(
         &self,
+        ctx: &RequestContext,
         question: &styx_proto::Question,
         deadline: std::time::Instant,
     ) -> Result<ResolutionResponse, PipelineError> {
-        let upstream_resp = self.pool_for(question).resolve(question, deadline).await?;
-        let message = upstream_resp.message;
-
-        let source = match upstream_resp.kind {
-            UpstreamKind::Forwarder => ResolvedSource::Upstream,
-            UpstreamKind::Recursor => ResolvedSource::Recursion,
-        };
-
-        let outcome = ResolutionOutcome::Resolved {
-            source,
-            rcode: message.header.rcode,
-            cacheable: false,
-            authentic_data: message.header.authentic_data,
-        };
-
-        Ok(ResolutionResponse::new(message, outcome))
+        let validated = self.resolve_validated(ctx, question, deadline).await?;
+        Ok(validated.into_response(false))
     }
 
     async fn resolve_and_admit(
         &self,
+        ctx: &RequestContext,
         question: &styx_proto::Question,
         deadline: std::time::Instant,
     ) -> Result<ResolutionResponse, PipelineError> {
+        let validated = self.resolve_validated(ctx, question, deadline).await?;
+        if validated.cacheable {
+            let now = self.clock.now_monotonic();
+            let request =
+                AdmissionRequest::new(question, &validated.message, validated.source.into(), now)
+                    .map_err(|e| PipelineError::Internal(e.to_string()))?;
+            let _ = self.cache.admit(self.admission.evaluate(request));
+        }
+        Ok(validated.into_response(true))
+    }
+
+    /// Resolves `question` upstream and judges the answer: AD reflects only styx's own
+    /// verdict (RFC 4035 §4.6 has a resolver disregard the upstream's), a verdict the
+    /// failure mode refuses is SERVFAIL unless the client set CD (RFC 4035 §3.2.2), and a
+    /// Secure answer's TTLs are capped by its signatures (see [`signature_lifetime`]).
+    ///
+    /// [`signature_lifetime`]: crate::domain::signature_lifetime
+    async fn resolve_validated(
+        &self,
+        ctx: &RequestContext,
+        question: &styx_proto::Question,
+        deadline: std::time::Instant,
+    ) -> Result<Validated, PipelineError> {
         let upstream_resp = self.pool_for(question).resolve(question, deadline).await?;
-        let now = self.clock.now_monotonic();
-
-        let answer_source = match upstream_resp.kind {
-            UpstreamKind::Forwarder => AnswerSource::Upstream,
-            UpstreamKind::Recursor => AnswerSource::Recursion,
-        };
-
-        let request = AdmissionRequest::new(question, &upstream_resp.message, answer_source, now)
-            .map_err(|e| PipelineError::Internal(e.to_string()))?;
-        let admission_outcome = self.admission.evaluate(request);
-
-        let _ = self.cache.admit(admission_outcome);
-
-        let message = upstream_resp.message;
-
         let source = match upstream_resp.kind {
             UpstreamKind::Forwarder => ResolvedSource::Upstream,
             UpstreamKind::Recursor => ResolvedSource::Recursion,
         };
-
-        let outcome = ResolutionOutcome::Resolved {
+        let mut message = upstream_resp.message;
+        let validation = self.validator.validate(question, &message).await;
+        if validation.rejected && !ctx.query.header.checking_disabled {
+            return Err(PipelineError::ValidationFailed(validation.status));
+        }
+        let secure = validation.status == SecurityStatus::Secure;
+        message.header.authentic_data = secure;
+        let mut cacheable = !validation.rejected;
+        if secure {
+            if let Some(life) = remaining_signature_life(&message, self.clock.now_utc()) {
+                cap_ttls(&mut message, life);
+                cacheable &= life >= self.admission.ttl().floor();
+            }
+        }
+        Ok(Validated {
+            message,
             source,
-            rcode: message.header.rcode,
-            cacheable: true,
-            authentic_data: message.header.authentic_data,
-        };
-
-        Ok(ResolutionResponse::new(message, outcome))
+            cacheable,
+        })
     }
 }
 
-impl<A, S, U, C> TerminalHandler for CacheStage<A, S, U, C>
+/// An upstream answer after validation, ready for the client.
+struct Validated {
+    message: styx_proto::Message,
+    source: ResolvedSource,
+    /// Whether the answer may enter the cache: not a refused verdict served to a CD=1
+    /// client, and not signed for less time than the cache's TTL floor would keep it.
+    cacheable: bool,
+}
+
+impl Validated {
+    fn into_response(self, cacheable: bool) -> ResolutionResponse {
+        let outcome = ResolutionOutcome::Resolved {
+            source: self.source,
+            rcode: self.message.header.rcode,
+            cacheable: cacheable && self.cacheable,
+            authentic_data: self.message.header.authentic_data,
+        };
+        ResolutionResponse::new(self.message, outcome)
+    }
+}
+
+impl<A, S, U, C, V> TerminalHandler for CacheStage<A, S, U, C, V>
 where
     A: AnswerCache + 'static,
     S: SelectionStrategy + 'static,
     U: Upstream + Clone + 'static,
     C: Clock + 'static,
+    V: ResponseValidator,
 {
     async fn handle_terminal(
         &self,
@@ -224,14 +288,14 @@ where
         let key = match CacheKey::from_question(question) {
             Ok(k) => k,
             Err(CacheError::UncacheableQuestion(_)) => {
-                return self.resolve_uncacheable(question, deadline).await;
+                return self.resolve_uncacheable(ctx, question, deadline).await;
             }
             Err(other) => return Err(PipelineError::Internal(other.to_string())),
         };
 
         match self.cache.lookup(&key) {
             Lookup::Hit(entry) => self.handle_cache_hit(&entry),
-            Lookup::Miss | Lookup::Expired => self.resolve_and_admit(question, deadline).await,
+            Lookup::Miss | Lookup::Expired => self.resolve_and_admit(ctx, question, deadline).await,
         }
     }
 }

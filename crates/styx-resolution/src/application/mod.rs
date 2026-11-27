@@ -19,6 +19,7 @@ pub mod strategies;
 pub mod terminal;
 pub mod tls_config;
 pub mod trial_guard;
+pub mod validation;
 
 pub use cache_config::CacheConfig;
 pub use cache_stage::CacheStage;
@@ -29,3 +30,4 @@ pub use probe_scheduler::ProbeScheduler;
 pub use strategies::{ConfiguredStrategy, OrderedFailover, RaceAll, RoundRobin, Weighted};
 pub use terminal::{PoolTerminal, RefusedTerminal, TerminalHandler};
 pub use trial_guard::TrialGuard;
+pub use validation::NoValidation;

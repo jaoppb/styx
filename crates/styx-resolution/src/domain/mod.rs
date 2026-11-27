@@ -27,6 +27,7 @@ pub mod probe;
 pub mod refused;
 pub mod request;
 pub mod selection;
+pub mod signature_lifetime;
 pub mod tls;
 pub mod weight;
 
