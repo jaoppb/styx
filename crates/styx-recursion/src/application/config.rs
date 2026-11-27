@@ -92,8 +92,8 @@ struct RawFile {
 /// [`Self::for_member`] asks for one member.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RecursionSection {
-    defaults: Table,
-    overrides: BTreeMap<String, Table>,
+    defaults: RawSettings,
+    overrides: BTreeMap<String, RawSettings>,
 }
 
 impl RecursionSection {
@@ -110,16 +110,21 @@ impl RecursionSection {
         let Some(raw) = file.recursion else {
             return Ok(Self::default());
         };
-        let defaults: RawSettings = raw.defaults.clone().try_into().map_err(toml_error)?;
+        let defaults: RawSettings = raw.defaults.try_into().map_err(toml_error)?;
         defaults.limits()?;
-        for (member, table) in &raw.members {
-            let _: RawSettings = table.clone().try_into().map_err(|error| {
-                ConfigError::member(member, MemberConfigError::Toml(error.to_string()))
-            })?;
-        }
+        let overrides = raw
+            .members
+            .into_iter()
+            .map(|(member, table)| {
+                let settings: RawSettings = table.try_into().map_err(|error| {
+                    ConfigError::member(&member, MemberConfigError::Toml(error.to_string()))
+                })?;
+                Ok((member, settings))
+            })
+            .collect::<Result<_, ConfigError>>()?;
         Ok(Self {
-            defaults: raw.defaults,
-            overrides: raw.members,
+            defaults,
+            overrides,
         })
     }
 
@@ -131,16 +136,12 @@ impl RecursionSection {
     /// Returns [`ConfigError::Member`] naming `member` when the merged settings name no
     /// root hints or hold a zero limit.
     pub fn for_member(&self, member: &str) -> Result<RecursionConfig, ConfigError> {
-        let mut merged = self.defaults.clone();
-        if let Some(own) = self.overrides.get(member) {
-            // A shallow, per-key merge: correct only while `RawSettings` is flat. A nested
-            // table added later would be replaced whole by an override, not merged.
-            merged.extend(own.clone());
-        }
-        let raw: RawSettings = merged.try_into().map_err(|error| {
-            ConfigError::member(member, MemberConfigError::Toml(error.to_string()))
-        })?;
-        raw.resolve()
+        let merged = match self.overrides.get(member) {
+            Some(own) => own.over(&self.defaults),
+            None => self.defaults.clone(),
+        };
+        merged
+            .resolve()
             .map_err(|reason| ConfigError::member(member, reason))
     }
 

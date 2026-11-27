@@ -17,7 +17,7 @@ use crate::domain::budget::{
 use crate::domain::error::{ConfigError, MemberConfigError};
 
 /// Every key optional: an absent key falls through to the next layer.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawSettings {
     pub(super) root_hints: Option<PathBuf>,
@@ -33,6 +33,25 @@ pub(super) struct RawSettings {
 }
 
 impl RawSettings {
+    /// These settings, each key left unset here taken from `defaults`.
+    pub(super) fn over(&self, defaults: &Self) -> Self {
+        Self {
+            root_hints: self
+                .root_hints
+                .clone()
+                .or_else(|| defaults.root_hints.clone()),
+            max_depth: self.max_depth.or(defaults.max_depth),
+            max_outbound_queries: self.max_outbound_queries.or(defaults.max_outbound_queries),
+            max_cname_chain: self.max_cname_chain.or(defaults.max_cname_chain),
+            wall_clock_ms: self.wall_clock_ms.or(defaults.wall_clock_ms),
+            udp_timeout_ms: self.udp_timeout_ms.or(defaults.udp_timeout_ms),
+            tcp_timeout_ms: self.tcp_timeout_ms.or(defaults.tcp_timeout_ms),
+            use_ipv6: self.use_ipv6.or(defaults.use_ipv6),
+            max_delegations: self.max_delegations.or(defaults.max_delegations),
+            max_servers: self.max_servers.or(defaults.max_servers),
+        }
+    }
+
     /// The four descent bounds, built-in defaults filling the gaps.
     pub(super) fn limits(&self) -> Result<DescentLimits, ConfigError> {
         DescentLimits::new(
