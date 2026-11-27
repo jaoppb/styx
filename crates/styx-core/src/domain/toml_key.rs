@@ -52,4 +52,19 @@ mod tests {
         assert_eq!(format_toml_key("\u{1}"), r#""\u0001""#);
         assert_eq!(format_toml_key(""), r#""""#);
     }
+
+    #[test]
+    fn control_characters_take_their_short_escape_or_a_unicode_escape() {
+        assert_eq!(format_toml_key("a\nb"), r#""a\nb""#);
+        assert_eq!(format_toml_key("\r"), r#""\r""#);
+        assert_eq!(format_toml_key("\u{08}"), r#""\b""#);
+        assert_eq!(format_toml_key("\u{0C}"), r#""\f""#);
+        assert_eq!(format_toml_key("\u{7f}"), r#""\u007F""#);
+    }
+
+    #[test]
+    fn spaces_and_non_ascii_names_are_quoted_but_not_escaped() {
+        assert_eq!(format_toml_key("rec v4"), r#""rec v4""#);
+        assert_eq!(format_toml_key("é"), r#""é""#);
+    }
 }
