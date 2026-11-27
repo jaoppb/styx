@@ -4,10 +4,15 @@
 # compiled here and nothing runs, so one build covers every platform without emulation.
 #
 # The build context holds one binary per platform at <arch>/styx, where <arch> is Docker's
-# name for it (amd64, arm64). The `image` job in .github/workflows/release.yml lays it out.
+# name for it (amd64, arm64), beside packaging/styx.toml and config/named.root. The `image`
+# job in .github/workflows/release.yml lays it out.
 FROM scratch
 ARG TARGETARCH
 COPY --chmod=0755 ${TARGETARCH}/styx /styx
+
+# A working recursor-only default; a file mounted over /etc/styx/styx.toml replaces it.
+COPY styx.toml /etc/styx/styx.toml
+COPY named.root /etc/styx/named.root
 
 # Unprivileged. Docker lets a container's non-root user bind port 53 on its own network.
 USER 65532:65532

@@ -46,7 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An OCI image, `ghcr.io/jaoppb/styx`, published for `linux/amd64` and `linux/arm64` on
   every `v*` tag, and a systemd unit in `packaging/systemd/styx.service`. Both run styx as
   an unprivileged user on port 53 and stop it with SIGINT, so in-flight queries finish.
-  See "Running as a service" in the README.
+  The image starts with nothing mounted, from `packaging/styx.toml`: the iterative
+  recursor alone, on `0.0.0.0:53`. See "Running as a service" in the README.
 - `styx health [address]` exits 0 when a resolver answers at the address, `127.0.0.1:53`
   by default, and non-zero otherwise. It does not depend on the upstreams: the query is
   answered by styx itself. The image uses it as its healthcheck.

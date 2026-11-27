@@ -93,20 +93,22 @@ cause problems, and that lets you disable IPv6.
 
 ### Running as a service
 
-Both packagings read `/etc/styx/styx.toml`. It must set `listen_addrs` to port 53 on the
-addresses clients reach — `0.0.0.0:53` inside a container — and a recursor member needs
-`root_hints` as an absolute path to a `named.root` that exists where styx runs.
+Both packagings read `/etc/styx/styx.toml`, and both start from
+[`packaging/styx.toml`](packaging/styx.toml): only the iterative recursor, so no
+third-party resolver is chosen for you, listening on `0.0.0.0:53`, with its root hints at
+`/etc/styx/named.root`. A recursor needs outbound port 53 to the internet's nameservers;
+on a network that intercepts it, add a forwarder member (see `config/styx.example.toml`).
 
 **Container.** Each `v*` release publishes `ghcr.io/jaoppb/styx` for `linux/amd64` and
-`linux/arm64`. The image holds only the static binary and runs it as an unprivileged user:
+`linux/arm64`. The image holds the static binary, that default config and `named.root`,
+and runs as an unprivileged user, so it starts with nothing mounted:
 
 ```sh
-docker run -d --name styx \
-  -p 53:53/udp -p 53:53/tcp \
-  -v "$PWD/styx.toml:/etc/styx/styx.toml:ro" \
-  -v "$PWD/config/named.root:/etc/styx/named.root:ro" \
-  ghcr.io/jaoppb/styx:<version>
+docker run -d --name styx -p 53:53/udp -p 53:53/tcp ghcr.io/jaoppb/styx:<version>
 ```
+
+To change anything, mount your own file over the default:
+`-v "$PWD/styx.toml:/etc/styx/styx.toml:ro"`.
 
 `docker stop` sends SIGINT, on which styx stops accepting queries and finishes the ones in
 flight. The healthcheck runs `styx health [address]`, which exits 0 when a resolver answers
@@ -114,14 +116,21 @@ at `127.0.0.1:53` (or the address given); with another port, override the health
 self-signed `[tls]` certificate is written to `/var/lib/styx/tls`, so mount a volume the
 container's user (`65532`) can write there before enabling it.
 
-**systemd.** Install the musl binary from the release tarball as `/usr/local/bin/styx`, then
+**systemd.** Install the musl binary from the release tarball as `/usr/local/bin/styx`, the
+default config and root hints (`cp -n` keeps a config you already have), and
 [`packaging/systemd/styx.service`](packaging/systemd/styx.service):
 
 ```sh
+sudo install -d /etc/styx
+sudo cp -n packaging/styx.toml config/named.root /etc/styx/
 sudo install -m 0644 packaging/systemd/styx.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now styx
 ```
+
+On a host running systemd-resolved, which holds `127.0.0.53:53`, the default
+`0.0.0.0:53` fails with "Address already in use": set `listen_addrs` in
+`/etc/styx/styx.toml` to the host's LAN address, such as `"192.168.1.2:53"`, then start
+it with `sudo systemctl enable --now styx`.
 
 The unit runs styx as a transient unprivileged user that holds only the capability to bind
 port 53, restarts it on failure, and keeps `/var/lib/styx` as its only writable path.

@@ -149,7 +149,8 @@ styx/
 │           ├── application/    # Validator, authenticator, descent walker, denial verifier
 │           └── infrastructure/ # Pinned/file trust anchors, in-memory chain source
 ├── config/                     # named.root (IANA) and an example styx.toml
-├── packaging/                  # docker/Dockerfile (the release image), systemd/styx.service
+├── packaging/                  # docker/Dockerfile (the release image), systemd/styx.service,
+│                               # styx.toml (the default config both start from)
 └── xtask/                      # Gate tasks (deps, hickory, module-size) and the
     └── src/main.rs             # per-phase recursion differential run
 ```
