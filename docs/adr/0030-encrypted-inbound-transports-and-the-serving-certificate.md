@@ -59,8 +59,8 @@ key pair.
   so: bring a certificate.
 - Rotating a certificate is an edit and a restart, and a certificate replaced on disk is
   not picked up while styx runs. Both follow from the file owning infrastructure.
-- styx writes key material and owns its permissions: a persisted key readable by group or
-  others is refused.
+- styx writes key material and owns its permissions: a persisted key is refused unless it
+  is owned by the user styx runs as, with no group or other permissions.
 - A DNSSEC-bogus answer over DoT or DoH cannot be tested yet: the validator is not on the
   resolution path (#133). The cross-transport test compares AD bits and is written so
   #133 and Phase 8 add questions to it, not new tests.

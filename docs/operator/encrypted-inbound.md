@@ -60,7 +60,8 @@ certificate the first time it starts and keeps it in `self_signed_dir`
 (`/var/lib/styx/tls` unless you set another directory):
 
 - `cert.pem`, and `key.pem`, which is created readable by its owner only. styx refuses to
-  start if it finds `key.pem` readable by group or others.
+  start unless `key.pem` is owned by the user styx runs as, with no group or other
+  permissions.
 - The directory itself must be owned by the user styx runs as and not writable by group or
   others. styx creates it `0700`, and refuses to start if another user owns it or group or
   others can write to it.
@@ -82,7 +83,8 @@ SHA-256 of the certificate's DER SubjectPublicKeyInfo, the format `curl --pinned
 HTTP public-key pinning and DoT SPKI pinsets use. It depends only on the public key, so it
 is safe to publish and survives a re-issue with the same key.
 
-Later boots reuse the certificate and do not print the pin again. To see it at any time:
+Later boots reuse the certificate and log the pin only at debug level. To see it at any
+time:
 
 ```sh
 styx pin /etc/styx/styx.toml
@@ -92,7 +94,8 @@ styx pin /etc/styx/styx.toml
 directory when no path is given), prints the `pin-sha256="…"` line to stdout and exits.
 It fails when `[tls]` is absent or `enabled = false`, opens no socket, and never generates
 a certificate: if none exists yet it says so and exits with an error. With an operator
-certificate configured, it prints that certificate's pin.
+certificate configured, it prints that certificate's pin. `styx pin --help` prints the
+usage, and a config file named `pin` is passed as `./pin`.
 
 To query DoH with the pin:
 
@@ -128,6 +131,23 @@ is what authenticates the server.
   before exposing either port beyond the LAN. The startup warning about answering public
   addresses looks only at `listen_addrs`, not at `dot_listen_addrs` or `doh_listen_addrs`.
 
+### DoH error statuses
+
+A DoH request that carries no DNS message to answer gets an HTTP status with an empty
+body. A DNS message that arrives but does not decode is still answered: FORMERR in a
+`200`, as over TCP.
+
+| Status | When |
+|---|---|
+| 400 | `GET` without `dns`, `dns` not unpadded base64url, an empty or incomplete `POST` body, or a message styx does not answer (the response bit set, or too short to hold a message ID) |
+| 404 | A path other than `doh_path` |
+| 405 | A method other than `GET` or `POST`; the response carries `Allow: GET, POST` |
+| 408 | The `POST` body took longer than `idle_timeout_secs` to arrive |
+| 413 | A message larger than `max_request_body_bytes` |
+| 415 | A `POST` whose `content-type` is not `application/dns-message` |
+| 500 | styx failed to encode the answer |
+| 503 | The connection has spent `max_queries_per_connection`, or styx is shutting down |
+
 ## Limits
 
 Each listener has its own connection ceiling (`max_connections`), so a connection flood on
@@ -138,9 +158,9 @@ to every encrypted listener. Refusals are logged at most once a second.
 |---|---|---|
 | `handshake_timeout_secs` | 5 | Time a client has to finish the TLS handshake, 1 to 3600 |
 | `idle_timeout_secs` | 30 | Time a connection may stay open with no query in flight, 1 to 3600; also bounds each DoH POST-body read and HTTP/1 header read |
-| `max_connections` | 128 | Open connections per listener; more are closed before the handshake (no per-source-IP cap or maximum connection lifetime) |
-| `max_streams_per_connection` | 100 | Concurrent HTTP/2 streams per DoH connection |
-| `max_queries_per_connection` | 10000 | Queries one connection carries before styx closes it |
+| `max_connections` | 128 | Open connections per listener, at least 1; more are closed before the handshake (no per-source-IP cap or maximum connection lifetime) |
+| `max_streams_per_connection` | 100 | Concurrent HTTP/2 streams per DoH connection, at least 1 |
+| `max_queries_per_connection` | 10000 | Queries one connection carries before styx closes it, at least 1 |
 | `max_request_body_bytes` | 4096 | Largest DNS message a DoH request may carry, 12 to 65535 |
 
 `max_connections` caps the whole listener with no per-source-IP limit and no maximum
