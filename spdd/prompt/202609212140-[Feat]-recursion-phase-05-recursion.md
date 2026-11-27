@@ -638,9 +638,9 @@ in silence. `[recursion]` is validated on its own when the file is parsed, so a 
 shared value fails even if every member overrides it; validation then runs again on each
 merged result, with the member's name in the error: a zero limit or no `root_hints`
 anywhere. The shared section is optional: a member that names its own `root_hints` needs
-none. `ServerConfig::check_deadline_covers` checks only forwarder members; the
-composition root checks each recursor member's merged `udp_timeout_ms` and
-`tcp_timeout_ms` against `query_timeout_secs` before loading root hints, naming the
+none. `ServerConfig::check_deadline_covers` checks only forwarder members;
+`RecursionSection::validate` checks each recursor member's merged `udp_timeout_ms` and
+`tcp_timeout_ms` against `query_timeout_secs` before root hints are loaded, naming the
 member. (`wall_clock_ms` vs `query_timeout_secs` stays unchecked until #146.)
 
 ### 8. Errors and observability

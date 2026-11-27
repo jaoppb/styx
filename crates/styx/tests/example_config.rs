@@ -39,7 +39,7 @@ fn problem_with(text: &str) -> Option<String> {
     }
     parsed
         .recursion
-        .validate(&recursors)
+        .validate(&recursors, parsed.server.query_timeout)
         .err()
         .map(|error| error.to_string())
 }

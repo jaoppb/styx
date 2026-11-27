@@ -1,5 +1,7 @@
 //! The recursion crate's error types.
 
+use std::time::Duration;
+
 use styx_core::format_toml_key;
 use thiserror::Error;
 
@@ -93,6 +95,25 @@ pub enum ConfigError {
     /// A `[recursion.members.<name>]` table names no recursor member of the pool.
     #[error("{} names no recursor member of the pool", format_recursion_member_table(.0))]
     UnknownMember(String),
+    /// A recursor member's longest per-exchange timeout does not fit inside the
+    /// whole-query deadline. `wall_clock_ms` is not compared here (#146).
+    #[error(
+        "query_timeout ({}ms) must exceed recursor member `{member}`'s longest per-exchange \
+         timeout ({}ms; only udp_timeout_ms and tcp_timeout_ms are checked, not \
+         wall_clock_ms); raise query_timeout_secs or lower udp_timeout_ms / tcp_timeout_ms \
+         under [recursion] or {}",
+        .query_timeout.as_millis(),
+        .timeout.as_millis(),
+        format_recursion_member_table(.member)
+    )]
+    ExchangeTimeoutOutlastsDeadline {
+        /// The pool member's name.
+        member: String,
+        /// The longer of its merged UDP and TCP timeouts.
+        timeout: Duration,
+        /// The server's whole-query deadline.
+        query_timeout: Duration,
+    },
     /// One recursor member's settings are invalid.
     #[error("recursor member `{member}`: {reason}")]
     Member {
@@ -131,8 +152,7 @@ impl ConfigError {
 
 /// Formats `[recursion.members.<name>]` as a valid TOML table header, quoting `member`
 /// whenever it is not a TOML bare key.
-#[must_use]
-pub fn format_recursion_member_table(member: &str) -> String {
+fn format_recursion_member_table(member: &str) -> String {
     format!("[recursion.members.{}]", format_toml_key(member))
 }
 

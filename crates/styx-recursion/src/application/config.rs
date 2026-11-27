@@ -146,20 +146,28 @@ impl RecursionSection {
     }
 
     /// Checks that every `[recursion.members.<name>]` table names one of `recursors`
-    /// and resolves every recursor's merged settings upfront.
+    /// and resolves every recursor's merged settings upfront, each with per-exchange
+    /// timeouts strictly shorter than `query_timeout`.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError::UnknownMember`] when an override names no recursor, or
-    /// [`ConfigError::Member`] when a recursor's merged settings are invalid.
+    /// Returns [`ConfigError::UnknownMember`] when an override names no recursor,
+    /// [`ConfigError::Member`] when a recursor's merged settings are invalid, or
+    /// [`ConfigError::ExchangeTimeoutOutlastsDeadline`] when a recursor's UDP or TCP
+    /// timeout is not shorter than `query_timeout`.
     pub fn validate(
         &self,
         recursors: &[&str],
+        query_timeout: Duration,
     ) -> Result<BTreeMap<String, RecursionConfig>, ConfigError> {
         self.check_overrides(recursors)?;
         recursors
             .iter()
-            .map(|name| Ok(((*name).to_owned(), self.for_member(name)?)))
+            .map(|name| {
+                let config = self.for_member(name)?;
+                config.check_deadline(name, query_timeout)?;
+                Ok(((*name).to_owned(), config))
+            })
             .collect()
     }
 
@@ -182,6 +190,20 @@ impl RecursionSection {
 }
 
 impl RecursionConfig {
+    /// Checks that the longer per-exchange timeout leaves the pool time to settle its
+    /// health accounting before the whole-query deadline fires.
+    fn check_deadline(&self, member: &str, query_timeout: Duration) -> Result<(), ConfigError> {
+        let timeout = self.udp_timeout.max(self.tcp_timeout);
+        if timeout < query_timeout {
+            return Ok(());
+        }
+        Err(ConfigError::ExchangeTimeoutOutlastsDeadline {
+            member: member.to_owned(),
+            timeout,
+            query_timeout,
+        })
+    }
+
     /// The behaviour settings a [`crate::application::recursor::Recursor`] takes.
     #[must_use]
     pub const fn settings(&self) -> RecursorSettings {

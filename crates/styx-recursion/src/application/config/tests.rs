@@ -22,6 +22,9 @@ tcp_timeout_ms = 2500
 max_servers = 50
 "#;
 
+/// A whole-query deadline every timeout in these fixtures fits inside.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn section(text: &str) -> RecursionSection {
     RecursionSection::from_toml_str(text).unwrap()
 }
@@ -169,14 +172,14 @@ fn an_override_for_a_name_that_is_not_a_recursor_is_rejected() {
 fn validate_checks_overrides_and_resolves_every_recursor() {
     let section = section(TWO_RECURSORS);
     let resolved = section
-        .validate(&["recursor-v4", "recursor-far"])
+        .validate(&["recursor-v4", "recursor-far"], QUERY_TIMEOUT)
         .expect("both recursors validate");
     assert_eq!(resolved.len(), 2);
     assert!(!resolved["recursor-v4"].use_ipv6);
     assert_eq!(resolved["recursor-far"].capacity.max_servers, 50);
 
     assert_eq!(
-        section.validate(&["recursor-v4"]),
+        section.validate(&["recursor-v4"], QUERY_TIMEOUT),
         Err(ConfigError::UnknownMember("recursor-far".to_owned()))
     );
 }
@@ -227,7 +230,50 @@ fn zero_wall_clock_or_outbound_queries_in_a_member_names_the_member() {
 fn a_stray_member_override_without_defaults_is_rejected_by_validate() {
     let section = section("[recursion.members.stray]\nroot_hints = \"x\"\n");
     assert_eq!(
-        section.validate(&[]),
+        section.validate(&[], QUERY_TIMEOUT),
         Err(ConfigError::UnknownMember("stray".to_owned()))
+    );
+}
+
+#[test]
+fn validate_rejects_a_per_exchange_timeout_that_reaches_the_query_deadline() {
+    let section = section(TWO_RECURSORS);
+    let recursors = ["recursor-v4", "recursor-far"];
+
+    assert!(section
+        .validate(&recursors, Duration::from_millis(2501))
+        .is_ok());
+    assert_eq!(
+        section.validate(&recursors, Duration::from_millis(2500)),
+        Err(ConfigError::ExchangeTimeoutOutlastsDeadline {
+            member: "recursor-far".to_owned(),
+            timeout: Duration::from_millis(2500),
+            query_timeout: Duration::from_millis(2500),
+        })
+    );
+}
+
+#[test]
+fn a_shared_timeout_past_the_deadline_names_the_member_that_inherits_it() {
+    let section = section(
+        "[recursion]\nroot_hints = \"x\"\nudp_timeout_ms = 2500\n\
+         [recursion.members.fast]\nudp_timeout_ms = 500\n",
+    );
+    let error = section
+        .validate(&["fast", "slow.v4"], Duration::from_secs(2))
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        ConfigError::ExchangeTimeoutOutlastsDeadline {
+            member: "slow.v4".to_owned(),
+            timeout: Duration::from_millis(2500),
+            query_timeout: Duration::from_secs(2),
+        }
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains(r#"[recursion.members."slow.v4"]"#),
+        "{message}"
     );
 }

@@ -55,7 +55,7 @@ fn recursors(recursion: &str) -> Result<Vec<RecursionConfig>, ConfigError> {
     let pool = server.upstream.expect("the file has a pool");
     let names = pool.recursor_names();
     let section = RecursionSection::from_toml_str(&text)?;
-    let mut configs = section.validate(&names)?;
+    let mut configs = section.validate(&names, server.query_timeout)?;
     Ok(names
         .iter()
         .map(|name| {
