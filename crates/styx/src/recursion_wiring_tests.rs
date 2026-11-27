@@ -67,6 +67,30 @@ fn build_every_recursor(wiring: &RecursionWiring) {
 }
 
 #[tokio::test]
+async fn a_forwarder_only_pool_needs_no_recursion_section() {
+    let server = ServerConfig::from_toml_str(
+        r#"
+[upstream]
+strategy = "ordered_failover"
+
+[[upstream.members]]
+name = "quad9"
+kind = "forwarder"
+addr = "9.9.9.9:53"
+"#,
+    )
+    .expect("the pool parses");
+    let pool = server.upstream.expect("the file has a pool");
+
+    let wiring = RecursionWiring::load(RecursionSection::default(), &pool, server.query_timeout)
+        .await
+        .expect("nothing to validate or load");
+
+    assert!(wiring.configs.is_empty());
+    assert!(wiring.hints.is_empty());
+}
+
+#[tokio::test]
 async fn recursors_naming_the_same_root_hints_share_one_loaded_copy() {
     let wiring = load("").await.expect("both recursors load");
 
