@@ -21,10 +21,10 @@ use styx_proto::{
     ResponseCode, RrsigRdata, Ttl,
 };
 use styx_resolution::{
-    AllowAllFilter, AnswerCache, CacheStage, CanaryConfig, CircuitConfig, DiscardObserver,
-    Do53Forwarder, EdnsBufferSize, NoLocalRecords, OrderedFailover, PoolMember, ProbeConfig,
-    ProbePolicy, ResponseValidator, SecurityStatus, ShardedAnswerCache, UpstreamPool, Validation,
-    Weight,
+    AllowAllFilter, AnswerCache, CacheStage, CanaryConfig, CircuitConfig, ConditionalRoute,
+    ConditionalRoutes, DiscardObserver, Do53Forwarder, EdnsBufferSize, NoLocalRecords,
+    OrderedFailover, PoolMember, ProbeConfig, ProbePolicy, ResponseValidator, SecurityStatus,
+    ShardedAnswerCache, UpstreamPool, Validation, Weight,
 };
 use styx_testkit::{FakeNameServer, FakeRole, ZoneScript};
 
@@ -414,4 +414,70 @@ async fn a_cd1_client_gets_the_same_verdict_from_an_entry_a_cd0_query_filled() {
     assert!(checking_disabled.header.checking_disabled);
     assert!(checking_disabled.header.authentic_data);
     fixture.shutdown().await;
+}
+
+/// A conditional route sends a local domain to a LAN server; validating its answer would
+/// ask the main pool about that domain, so it is served unvalidated: no AD, never refused,
+/// and the validator is not consulted.
+#[tokio::test]
+async fn an_answer_from_a_conditional_route_is_not_validated() {
+    let local = "nas.lan.";
+    let router_script = ZoneScript::new().answer(
+        local,
+        RecordType::A,
+        vec![ResourceRecord::new(
+            name(local),
+            RecordType::A,
+            RecordClass::In,
+            Ttl::from_secs(RECORD_TTL),
+            RData::A(Ipv4Addr::new(192, 168, 1, 10)),
+        )],
+    );
+    let router = FakeNameServer::start(FakeRole::Authoritative, router_script)
+        .await
+        .expect("router");
+    let main = FakeNameServer::start(FakeRole::Authoritative, ZoneScript::new())
+        .await
+        .expect("main upstream");
+    let clock = Arc::new(TestClock::new());
+    let validator = ScriptedValidator::new(BOGUS_REJECTED);
+    let stage = Arc::new(
+        CacheStage::new(
+            Arc::new(ShardedAnswerCache::with_defaults(Arc::clone(&clock))),
+            pool_of(&main, &clock),
+            Arc::clone(&clock),
+            Duration::from_secs(2),
+        )
+        .with_validator(Arc::clone(&validator))
+        .with_conditional(ConditionalRoutes::new(vec![ConditionalRoute {
+            domains: vec![name("lan.")],
+            target: pool_of(&router, &clock),
+        }])),
+    );
+    let mut server = TestServer::boot_with_terminal_and_clock(
+        Arc::new(NoLocalRecords::new()),
+        Arc::new(AllowAllFilter::new()),
+        Arc::new(DiscardObserver::new()),
+        stage,
+        clock,
+    )
+    .await
+    .expect("boot server");
+    let mut asked = query(VALIDATING);
+    if let Some(question) = asked.questions.first_mut() {
+        question.qname = name(local);
+    }
+
+    let reply = DnsClient::new()
+        .query_udp(server.udp_addr(), &asked)
+        .await
+        .expect("reply");
+
+    assert_eq!(reply.header.rcode, ResponseCode::NOERROR);
+    assert!(!reply.header.authentic_data);
+    assert_eq!(validator.calls.load(Ordering::SeqCst), 0);
+    assert!(main.received().is_empty());
+    server.shutdown().await.expect("shutdown");
+    router.shutdown();
+    main.shutdown();
 }

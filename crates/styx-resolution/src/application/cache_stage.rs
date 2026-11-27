@@ -20,7 +20,7 @@ use crate::domain::cache::port::{AnswerCache, Lookup};
 use crate::domain::cache::ttl::TtlPolicy;
 use crate::domain::conditional::ConditionalRoutes;
 use crate::domain::error::PipelineError;
-use crate::domain::ports::validation::ResponseValidator;
+use crate::domain::ports::validation::{ResponseValidator, Validation};
 use crate::domain::request::RequestContext;
 use crate::domain::selection::SelectionStrategy;
 use crate::domain::signature_lifetime::{cap_ttls, remaining_signature_life};
@@ -153,12 +153,6 @@ where
         &self.pool
     }
 
-    fn pool_for(&self, question: &styx_proto::Question) -> &UpstreamPool<S, U, C> {
-        self.conditional
-            .route(&question.qname)
-            .unwrap_or(&self.pool)
-    }
-
     fn handle_cache_hit(&self, entry: &CacheEntry) -> Result<ResolutionResponse, PipelineError> {
         let now = self.clock.now_monotonic();
         let message = entry
@@ -207,6 +201,12 @@ where
     /// failure mode refuses is SERVFAIL unless the client set CD (RFC 4035 §3.2.2), and a
     /// Secure answer's TTLs are capped by its signatures (see [`signature_lifetime`]).
     ///
+    /// An answer from a conditional route is not validated: such domains are local ones an
+    /// operator sends to a LAN server, and building their chain would ask the main pool —
+    /// the public upstreams — about the very names the route keeps off them. They are
+    /// served as unvalidated, without AD and never refused, the way a validating resolver's
+    /// `domain-insecure` list treats them.
+    ///
     /// [`signature_lifetime`]: crate::domain::signature_lifetime
     async fn resolve_validated(
         &self,
@@ -214,13 +214,18 @@ where
         question: &styx_proto::Question,
         deadline: std::time::Instant,
     ) -> Result<Validated, PipelineError> {
-        let upstream_resp = self.pool_for(question).resolve(question, deadline).await?;
+        let route = self.conditional.route(&question.qname);
+        let pool = route.unwrap_or(&self.pool);
+        let upstream_resp = pool.resolve(question, deadline).await?;
         let source = match upstream_resp.kind {
             UpstreamKind::Forwarder => ResolvedSource::Upstream,
             UpstreamKind::Recursor => ResolvedSource::Recursion,
         };
         let mut message = upstream_resp.message;
-        let validation = self.validator.validate(question, &message).await;
+        let validation = match route {
+            Some(_) => Validation::UNVALIDATED,
+            None => self.validator.validate(question, &message).await,
+        };
         if validation.rejected && !ctx.query.header.checking_disabled {
             return Err(PipelineError::ValidationFailed(validation.status));
         }
