@@ -250,11 +250,8 @@ impl RecursionWiring {
         })
     }
 
-    fn recursor(
-        &self,
-        id: UpstreamId,
-        clock: &Arc<SystemClock>,
-    ) -> anyhow::Result<ProductionRecursor> {
+    /// The merged settings and the loaded root hints the recursor `id` is built from.
+    fn member(&self, id: &UpstreamId) -> anyhow::Result<MemberRecursion<'_>> {
         let config = self
             .configs
             .get(id.as_str())
@@ -263,6 +260,15 @@ impl RecursionWiring {
             .hints
             .get(&config.root_hints)
             .with_context(|| format!("missing loaded root hints for '{id}'"))?;
+        Ok(MemberRecursion { config, hints })
+    }
+
+    fn recursor(
+        &self,
+        id: UpstreamId,
+        clock: &Arc<SystemClock>,
+    ) -> anyhow::Result<ProductionRecursor> {
+        let MemberRecursion { config, hints } = self.member(&id)?;
         let client = Do53Client::new(config.udp_timeout, config.tcp_timeout, Arc::clone(clock));
         Ok(Recursor::new(
             id,
@@ -277,6 +283,12 @@ impl RecursionWiring {
             },
         ))
     }
+}
+
+/// What one recursor member is built from.
+struct MemberRecursion<'wiring> {
+    config: &'wiring RecursionConfig,
+    hints: &'wiring RootHints,
 }
 
 fn build_cache(

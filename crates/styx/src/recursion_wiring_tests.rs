@@ -14,7 +14,7 @@ use styx_recursion::domain::budget::{
 };
 use styx_resolution::ServerConfig;
 
-use super::RecursionWiring;
+use super::{MemberRecursion, RecursionWiring};
 
 const ROOT_HINTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/named.root");
 
@@ -53,6 +53,21 @@ async fn load_with(query_timeout_secs: u64, recursion: &str) -> anyhow::Result<R
 
 async fn load(recursion: &str) -> anyhow::Result<RecursionWiring> {
     load_with(5, recursion).await
+}
+
+/// What `wiring` builds the recursor member `name` from.
+fn member<'wiring>(wiring: &'wiring RecursionWiring, name: &str) -> MemberRecursion<'wiring> {
+    wiring
+        .member(&UpstreamId::new(name))
+        .expect("every recursor member is wired")
+}
+
+/// Whether both recursor members are built from one loaded copy of the root hints.
+fn share_root_hints(wiring: &RecursionWiring) -> bool {
+    std::ptr::eq(
+        member(wiring, "recursor-a").hints,
+        member(wiring, "recursor-b").hints,
+    )
 }
 
 /// Builds both recursor members from `wiring`, as the pool does at startup. A member whose
@@ -96,6 +111,7 @@ async fn recursors_naming_the_same_root_hints_share_one_loaded_copy() {
 
     assert_eq!(wiring.configs.len(), 2);
     assert_eq!(wiring.hints.len(), 1);
+    assert!(share_root_hints(&wiring));
     build_every_recursor(&wiring);
 }
 
@@ -110,6 +126,7 @@ async fn recursors_naming_equivalent_paths_share_one_loaded_copy() {
 
     assert_eq!(wiring.configs.len(), 2);
     assert_eq!(wiring.hints.len(), 1);
+    assert!(share_root_hints(&wiring));
     build_every_recursor(&wiring);
 }
 
@@ -132,6 +149,11 @@ async fn recursors_naming_distinct_root_hints_load_separate_entries() {
 
     assert_eq!(wiring.configs.len(), 2);
     assert_eq!(wiring.hints.len(), 2);
+    assert!(!share_root_hints(&wiring));
+    assert_ne!(
+        member(&wiring, "recursor-a").config.root_hints,
+        member(&wiring, "recursor-b").config.root_hints
+    );
     build_every_recursor(&wiring);
 }
 
@@ -152,7 +174,7 @@ tcp_timeout_ms = 2000
     .await
     .expect("both recursors load");
 
-    let a = &wiring.configs["recursor-a"];
+    let a = member(&wiring, "recursor-a").config;
     assert_eq!(
         a.settings(),
         RecursorSettings {
@@ -170,7 +192,7 @@ tcp_timeout_ms = 2000
         }
     );
 
-    let b = &wiring.configs["recursor-b"];
+    let b = member(&wiring, "recursor-b").config;
     assert_eq!(
         b.settings(),
         RecursorSettings {
@@ -225,7 +247,7 @@ async fn recursor_timeouts_must_be_shorter_than_query_timeout() {
     let message = format!("{shared_error:#}");
     assert!(message.contains("recursor-a"), "{message}");
 
-    let _ = load_with(
+    let overridden = load_with(
         3,
         "tcp_timeout_ms = 4000\n\
          [recursion.members.recursor-a]\ntcp_timeout_ms = 1200\n\
@@ -233,6 +255,13 @@ async fn recursor_timeouts_must_be_shorter_than_query_timeout() {
     )
     .await
     .expect("member overrides below query_timeout succeed");
+    for name in ["recursor-a", "recursor-b"] {
+        assert_eq!(
+            member(&overridden, name).config.tcp_timeout,
+            Duration::from_millis(1200),
+            "{name} keeps its own override, not the shared 4000ms"
+        );
+    }
 }
 
 #[tokio::test]
