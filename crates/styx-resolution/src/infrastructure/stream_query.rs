@@ -22,7 +22,8 @@ use crate::infrastructure::early_reply::{badvers_reply, formerr_reply};
 use crate::infrastructure::malformed_warning::MalformedWarning;
 use crate::infrastructure::response::ResponseWriter;
 
-/// An encoded DNS response alongside its smallest answer/authority TTL.
+/// An encoded DNS response alongside its smallest answer/authority TTL, which only DoH
+/// carries.
 pub(crate) struct EncodedAnswer {
     pub(crate) wire: Vec<u8>,
     pub(crate) min_ttl: Option<Ttl>,
@@ -152,7 +153,7 @@ where
     }
 
     fn encode(&self, message: Message, ctx: &RequestContext) -> StreamOutcome {
-        let min_ttl = min_ttl_of(&message);
+        let min_ttl = cache_lifetime_of(self.transport, &message);
         match ResponseWriter::new().write(message, ctx) {
             Ok(wire) => StreamOutcome::Answered(EncodedAnswer { wire, min_ttl }),
             Err(err) => {
@@ -160,6 +161,15 @@ where
                 StreamOutcome::EncodeFailed
             }
         }
+    }
+}
+
+/// The TTL DoH turns into `Cache-Control: max-age`. No other transport sends that header,
+/// so their answers skip the walk over the records.
+fn cache_lifetime_of(transport: Transport, message: &Message) -> Option<Ttl> {
+    match transport {
+        Transport::Doh => min_ttl_of(message),
+        Transport::Udp | Transport::Tcp | Transport::Dot => None,
     }
 }
 
@@ -202,5 +212,19 @@ mod tests {
         msg.answers.push(a_record(300));
         msg.answers.push(a_record(90));
         assert_eq!(min_ttl_of(&msg), Some(Ttl::from_secs(90)));
+    }
+
+    #[test]
+    fn only_doh_answers_carry_a_cache_lifetime() {
+        let mut msg = Message::new(Header::new_query(1, Opcode::Query, false));
+        msg.answers.push(a_record(90));
+
+        assert_eq!(
+            cache_lifetime_of(Transport::Doh, &msg),
+            Some(Ttl::from_secs(90))
+        );
+        for transport in [Transport::Udp, Transport::Tcp, Transport::Dot] {
+            assert_eq!(cache_lifetime_of(transport, &msg), None, "{transport:?}");
+        }
     }
 }
