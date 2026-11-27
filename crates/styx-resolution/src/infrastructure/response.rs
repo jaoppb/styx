@@ -3,6 +3,7 @@
 use styx_proto::application::Encoder;
 use styx_proto::{EncodeError, Message, Opt, ResponseCode, MAX_TCP_MESSAGE_LEN};
 
+use crate::domain::client_reply::asks_for_dnssec;
 use crate::domain::request::{MaxResponseSize, RequestContext, Transport};
 
 /// Serializes DNS response messages and manages transport-specific truncation.
@@ -102,10 +103,17 @@ impl ResponseWriter {
             return message;
         }
         let server_size = ctx.server_payload_size.as_u16();
-        match message.opt.as_mut() {
-            Some(opt) => opt.set_udp_payload_size(server_size),
-            None => message.opt = Some(Opt::new(server_size, 0, false, Vec::new())),
-        }
+        // RFC 6840 §5.6: the response's DO bit is the query's, never the upstream's.
+        let dnssec_ok = asks_for_dnssec(&ctx.query);
+        message.opt = Some(match message.opt.take() {
+            Some(opt) => Opt::new(
+                server_size,
+                opt.version(),
+                dnssec_ok,
+                opt.options().to_vec(),
+            ),
+            None => Opt::new(server_size, 0, dnssec_ok, Vec::new()),
+        });
         message
     }
 
@@ -196,6 +204,33 @@ mod tests {
 
         let opt = decoded.opt.expect("opt present");
         assert_eq!(opt.udp_payload_size(), 1232);
+    }
+
+    /// Every upstream query sets DO, so an upstream reply carries DO=1; the client must see
+    /// its own bit back (RFC 6840 §5.6), not the one styx asked the upstream with.
+    #[test]
+    fn response_opt_carries_the_query_do_bit_not_the_upstream_one() {
+        for client_do in [false, true] {
+            let mut query = Message::new(Header::new_query(1, Opcode::Query, true));
+            query.opt = Some(Opt::new(4096, 0, client_do, Vec::new()));
+            let client = ClientId::from_socket_addr(SocketAddr::from(([127, 0, 0, 1], 5353)));
+            let server_payload = MaxResponseSize::from_edns_advertised(1232);
+            let ctx = RequestContext::new(
+                query,
+                client,
+                Transport::Udp,
+                server_payload,
+                server_payload,
+                Instant::now(),
+            );
+            let mut response = Message::new(Header::new_query(1, Opcode::Query, false));
+            response.opt = Some(Opt::new(4096, 0, !client_do, Vec::new()));
+
+            let bytes = ResponseWriter::new().write(response, &ctx).expect("write");
+            let decoded = Decoder::new(&bytes).decode_message().expect("decode");
+
+            assert_eq!(decoded.opt.expect("opt present").dnssec_ok(), client_do);
+        }
     }
 
     #[test]

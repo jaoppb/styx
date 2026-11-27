@@ -67,11 +67,17 @@ impl<C: Clock> Do53Forwarder<C> {
 
     /// Builds the outgoing query. Its transaction ID is a placeholder: the exchange
     /// stamps a fresh random one on every send.
+    ///
+    /// DO is always set (RFC 4035 §3.2.1) so the reply carries what styx validates, and CD
+    /// is always set (RFC 6840 §5.9) so a validating upstream hands over data it judges
+    /// bogus instead of a SERVFAIL: the verdict is styx's to reach, and a CD=1 client is
+    /// owed the data either way. Neither depends on the client's own bits.
     fn build_query(&self, query: &Question) -> Message {
-        let header = Header::new_query(0, Opcode::Query, true);
+        let mut header = Header::new_query(0, Opcode::Query, true);
+        header.checking_disabled = true;
         let mut msg = Message::new(header);
         msg.questions.push(query.clone());
-        msg.opt = Some(Opt::new(self.edns_buffer.octets(), 0, false, Vec::new()));
+        msg.opt = Some(Opt::new(self.edns_buffer.octets(), 0, true, Vec::new()));
         msg
     }
 
@@ -164,9 +170,11 @@ mod tests {
         let message = Decoder::new(&encoder.buf).decode_message().expect("decode");
 
         assert!(message.header.recursion_desired);
+        assert!(message.header.checking_disabled);
         assert_eq!(message.questions, vec![question]);
         let opt = message.opt.expect("opt record");
         assert_eq!(opt.udp_payload_size(), EdnsBufferSize::default().octets());
+        assert!(opt.dnssec_ok());
     }
 
     /// Styx sends only EDNS version 0 and no cookie, TSIG or mode, so an upstream answering

@@ -851,6 +851,15 @@ Norm 14.
 
 **Do not merge with 6a, 6b or 6c.**
 
+> **Status (#133, 2026-11-27).** 6d.2 to 6d.7 are wired, with the failure mode still
+> `WarnOnly`; 6d.8 and 6d.9 remain. The choices this group left open are recorded in
+> ADR 0031: upstream queries always carry DO=1 and CD=1 rather than the client's bits (no
+> request flags on `Upstream`); CD=1 lifts enforcement but validation always runs; 6d.6
+> bounds the cache entry by its earliest RRSIG instead of re-validating on a hit; answers
+> from a conditional route are not validated. Both adapters live in the binary as
+> `PushedReferrals` and `PoolChainSource`; `MaterialOrigin` was not introduced, the origin
+> being logged instead.
+
 #### 6d.1 — Define `ChainSource`, `ChainMaterial`, `ZoneCutMaterial`
 
 1. Responsibility: the port through which the validator obtains chain material, and the

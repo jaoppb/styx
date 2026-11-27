@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- DNSSEC validation on every upstream answer, forwarded or recursed, against the pinned
+  IANA root anchors. A Secure answer carries AD for a client that set DO or AD; AD from an
+  upstream is never passed on. The failure mode is `WarnOnly` for now: a Bogus or
+  Indeterminate verdict is logged at `warn` and the answer is served without AD, until the
+  differential run against unbound has been read. Under `HardFail` such a verdict is
+  SERVFAIL, except for a client that set CD, which gets the answer without AD. A Secure
+  answer is cached no longer than its earliest signature is valid. Answers from a
+  conditional route are not validated. See ADR 0031.
 - DNS over TLS and DNS over HTTPS (HTTP/2, `GET` and `POST`) listeners, configured in a new
   `[tls]` section and off by default. They answer through the same pipeline as UDP and TCP.
   An operator certificate is named with `cert_path` and `key_path`; without them styx
@@ -46,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A reply carries AD only when the query set DO or AD (RFC 6840 §5.8), cache hits
+  included.
+- Forwarders now ask every upstream query with DO=1 and CD=1, whatever the client sent, so
+  answers from a signed zone carry their RRSIG, NSEC and NSEC3 records. A client that
+  sent DO=0 gets them stripped from the reply, live or cached, except the type it asked
+  for, and every reply's OPT carries the client's own DO bit.
 - **Breaking:** styx no longer answers public source addresses by default. That includes
   IPv6 clients on your own LAN that use a global address (the usual case with an IPv6
   prefix from the ISP) and CGNAT or Tailscale peers in `100.64.0.0/10`: they now time

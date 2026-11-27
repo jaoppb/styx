@@ -13,17 +13,19 @@ use styx_proto::Question;
 use styx_recursion::application::recursor::Recursor;
 use styx_recursion::infrastructure::do53_transport::Do53Transport;
 use styx_recursion::infrastructure::infra_cache::MemoryInfraCache;
-use styx_recursion::infrastructure::sinks::{DiagnosticsStore, DiscardChainMaterial};
+use styx_recursion::infrastructure::sinks::DiagnosticsStore;
 use styx_resolution::Do53Forwarder;
 
+use crate::dnssec::PushedReferrals;
+
 /// The recursor as wired in production: system clock, Do53 transport, in-memory
-/// infrastructure cache, diagnostics published to a store for the admin layer,
-/// chain material discarded until the DNSSEC validator exists.
+/// infrastructure cache, diagnostics published to a store for the admin layer, and the DS
+/// RRsets its referrals carry pushed to the DNSSEC validator's chain source.
 pub type ProductionRecursor = Recursor<
     SystemClock,
     Do53Transport<SystemClock>,
     DiagnosticsStore,
-    DiscardChainMaterial,
+    PushedReferrals<SystemClock>,
     MemoryInfraCache,
 >;
 

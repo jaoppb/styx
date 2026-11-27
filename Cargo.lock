@@ -1402,8 +1402,10 @@ name = "styx"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ring",
  "rustix",
  "styx-core",
+ "styx-dnssec",
  "styx-net",
  "styx-proto",
  "styx-recursion",

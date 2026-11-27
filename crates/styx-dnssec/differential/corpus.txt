@@ -1,0 +1,103 @@
+# The DNSSEC differential corpus (Phase 06, task 6d.7): every name with its expected
+# outcome written down, so the run against a local unbound (6d.8) has something to be
+# wrong against. "Behaves as expected" is not a criterion until each line says what that is.
+#
+# One entry per line:
+#
+#   name TYPE  RCODE AD VERDICT  HARD_FAIL_RCODE
+#
+# RCODE, AD and VERDICT are styx's reply and logged verdict under WarnOnly, for a client
+# that sets DO (AD is "ad" when set, "-" when clear). HARD_FAIL_RCODE is the RCODE once 6d.9
+# has flipped the failure mode; every other field is the same after the flip, except that a
+# SERVFAIL carries no AD. Under WarnOnly a Bogus answer is served with AD clear, so the bogus
+# family's verdict is read from the log ("DNSSEC validation completed", verdict=Bogus).
+#
+# Observed on 2026-11-27 with delv (BIND 9.20.31) and through 1.1.1.1. Where styx's
+# algorithm policy differs from those validators the line says so; such a disagreement
+# with unbound is expected and is a policy, not a bug. Any other disagreement must be
+# triaged to a named cause before 6d.9 flips the mode: "DNS moved" is a cause only once
+# the movement itself has been confirmed.
+
+# --- Signed names: Secure, AD set. ---------------------------------------------------------
+isc.org. A                        NOERROR ad Secure NOERROR
+nlnetlabs.nl. A                   NOERROR ad Secure NOERROR
+ietf.org. A                       NOERROR ad Secure NOERROR
+iana.org. A                       NOERROR ad Secure NOERROR
+cloudflare.com. A                 NOERROR ad Secure NOERROR
+ripe.net. A                       NOERROR ad Secure NOERROR
+nic.cz. A                         NOERROR ad Secure NOERROR
+sidn.nl. A                        NOERROR ad Secure NOERROR
+
+# --- Unsigned names: an insecure delegation proved by the parent, AD clear. ---------------
+google.com. A                     NOERROR - Insecure NOERROR
+github.com. A                     NOERROR - Insecure NOERROR
+wikipedia.org. A                  NOERROR - Insecure NOERROR
+microsoft.com. A                  NOERROR - Insecure NOERROR
+amazon.com. A                     NOERROR - Insecure NOERROR
+
+# --- Bogus names: dnssec-failed.org's DS matches no DNSKEY it publishes. -------------------
+# Served with AD clear and a Bogus verdict logged under WarnOnly; SERVFAIL after the flip.
+# unbound answers SERVFAIL already: under WarnOnly the RCODE disagreement is expected, the
+# verdict is what is compared.
+dnssec-failed.org. A              NOERROR - Bogus SERVFAIL
+www.dnssec-failed.org. A          NOERROR - Bogus SERVFAIL
+
+# --- Denial of existence over NSEC. --------------------------------------------------------
+does-not-exist-zz9.isc.org. A     NXDOMAIN ad Secure NXDOMAIN
+does-not-exist-zz9.nlnetlabs.nl. A NXDOMAIN ad Secure NXDOMAIN
+isc.org. HINFO                    NOERROR ad Secure NOERROR
+nlnetlabs.nl. HINFO               NOERROR ad Secure NOERROR
+# ietf.org answers NODATA for any name below it (a wildcard owns other types).
+does-not-exist-zz9.ietf.org. A    NOERROR ad Secure NOERROR
+# NXDOMAIN under a TLD that does not exist, proved by the root's NSEC chain.
+nonexistent-tld-zz9. A            NXDOMAIN ad Secure NXDOMAIN
+
+# --- Denial of existence over NSEC3, no opt-out. -------------------------------------------
+does-not-exist-zz9.iana.org. A    NXDOMAIN ad Secure NXDOMAIN
+does-not-exist-zz9-styx.nl. A     NXDOMAIN ad Secure NXDOMAIN
+
+# --- Denial of existence over NSEC3 with opt-out (com. and org. set the opt-out flag). ----
+# The span may hide an unsigned delegation, so the denial cannot be Secure (RFC 5155 §9.2).
+does-not-exist-zz9-styx.com. A    NXDOMAIN - Insecure NXDOMAIN
+does-not-exist-zz9-styx.org. A    NXDOMAIN - Insecure NXDOMAIN
+
+# --- The rootcanary.net algorithm family: dDaAnN.rootcanary.net, signed with algorithm A,
+# --- its DS with digest D, its denial with NSEC (N=1) or NSEC3 (N=3). The apex SOA is asked.
+# Algorithms styx supports (styx-dnssec signature.rs: 8, 10, 13, 14, 15) under a supported
+# DS digest (SHA-256 = 2, SHA-384 = 4): Secure.
+d2a8n1.rootcanary.net. SOA        NOERROR ad Secure NOERROR
+d2a8n3.rootcanary.net. SOA        NOERROR ad Secure NOERROR
+d4a8n3.rootcanary.net. SOA        NOERROR ad Secure NOERROR
+d2a10n1.rootcanary.net. SOA       NOERROR ad Secure NOERROR
+d2a10n3.rootcanary.net. SOA       NOERROR ad Secure NOERROR
+d4a10n3.rootcanary.net. SOA       NOERROR ad Secure NOERROR
+d2a13n1.rootcanary.net. SOA       NOERROR ad Secure NOERROR
+d2a13n3.rootcanary.net. SOA       NOERROR ad Secure NOERROR
+d4a13n3.rootcanary.net. SOA       NOERROR ad Secure NOERROR
+d2a14n1.rootcanary.net. SOA       NOERROR ad Secure NOERROR
+d2a14n3.rootcanary.net. SOA       NOERROR ad Secure NOERROR
+d4a14n3.rootcanary.net. SOA       NOERROR ad Secure NOERROR
+d2a15n1.rootcanary.net. SOA       NOERROR ad Secure NOERROR
+d2a15n3.rootcanary.net. SOA       NOERROR ad Secure NOERROR
+d4a15n3.rootcanary.net. SOA       NOERROR ad Secure NOERROR
+# A SHA-1 DS (digest 1) is deprecated for DS matching (RFC 8624 §3.3): with no usable DS
+# the zone is Insecure for styx. delv and 1.1.1.1 validate these, so unbound is expected to
+# answer AD here: a policy disagreement.
+d1a8n3.rootcanary.net. SOA        NOERROR - Insecure NOERROR
+d1a13n3.rootcanary.net. SOA       NOERROR - Insecure NOERROR
+d1a15n3.rootcanary.net. SOA       NOERROR - Insecure NOERROR
+# RSASHA1 (5) and RSASHA1-NSEC3-SHA1 (7) are unsupported by styx: Insecure, never Bogus.
+# delv and 1.1.1.1 validate them: a policy disagreement with unbound is expected.
+d2a5n1.rootcanary.net. SOA        NOERROR - Insecure NOERROR
+d2a7n1.rootcanary.net. SOA        NOERROR - Insecure NOERROR
+d2a7n3.rootcanary.net. SOA        NOERROR - Insecure NOERROR
+# Ed448 (16) is unsupported by styx: Insecure. delv validates it, 1.1.1.1 does not.
+d2a16n1.rootcanary.net. SOA       NOERROR - Insecure NOERROR
+d2a16n3.rootcanary.net. SOA       NOERROR - Insecure NOERROR
+# RSAMD5 (1), DSA (3), DSA-NSEC3-SHA1 (6) and GOST (12): unsupported everywhere, Insecure.
+d2a1n1.rootcanary.net. SOA        NOERROR - Insecure NOERROR
+d2a3n1.rootcanary.net. SOA        NOERROR - Insecure NOERROR
+d2a6n1.rootcanary.net. SOA        NOERROR - Insecure NOERROR
+d2a6n3.rootcanary.net. SOA        NOERROR - Insecure NOERROR
+d2a12n1.rootcanary.net. SOA       NOERROR - Insecure NOERROR
+d2a12n3.rootcanary.net. SOA       NOERROR - Insecure NOERROR

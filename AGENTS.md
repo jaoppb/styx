@@ -98,7 +98,9 @@ styx/
 │   ├── styx/                   # Composition root binary (startup, CLI, wiring)
 │   │   └── src/                # main.rs; upstream.rs: the pool's forwarder/recursor enum;
 │   │                           # pools.rs: the main and conditional upstream pools;
-│   │                           # encrypted.rs: certificate, TLS setup and `styx pin`
+│   │                           # encrypted.rs: certificate, TLS setup and `styx pin`;
+│   │                           # dnssec/: the ResponseValidator adapter over styx-dnssec,
+│   │                           # pushed DS store, pool chain source, material cache
 │   ├── styx-proto/             # Shared foundation: DNS wire codec (owned domain types)
 │   │   └── src/
 │   │       ├── domain/         # Wire types: Header, Question, Name, Record, RData, EDNS
@@ -119,11 +121,13 @@ styx/
 │   │   └── src/
 │   ├── styx-resolution/        # DNS resolution engine and upstream forwarding
 │   │   ├── src/
-│   │   │   ├── domain/         # Domain logic, circuit breaker, health, ports/, cache/
+│   │   │   ├── domain/         # Domain logic, circuit breaker, health, ports/ (filter,
+│   │   │   │                   # local, observer, validation), signature_lifetime, cache/
 │   │   │   │                   # (admission, CacheCapacity: per-shard split and byte floor),
 │   │   │   │                   # tls/ ([tls] values, serving identity, SPKI pin, cert ports)
 │   │   │   ├── application/    # Pipeline, selection strategies, probe scheduler,
-│   │   │   │                   # CacheStage, [cache] and [tls] config, CertificateProvisioner
+│   │   │   │                   # CacheStage (validates every upstream answer), NoValidation,
+│   │   │   │                   # [cache] and [tls] config, CertificateProvisioner
 │   │   │   └── infrastructure/ # UDP/TCP listeners, client transports, port adapters,
 │   │   │                       # accept, connection_bounds, stream_query, framing
 │   │   │                       # (shared stream length prefix), server/encrypted, tls, dot,
@@ -142,6 +146,7 @@ styx/
 │   ├── styx-filtering/         # Filtering & blocklist policy engine (skeleton)
 │   │   └── src/{domain, application, infrastructure}/
 │   └── styx-dnssec/            # DNSSEC validation engine and denial-of-existence verifier
+│       ├── differential/       # corpus of names with expected verdicts (6d.7)
 │       └── src/
 │           ├── domain/         # Wire canonicalization, crypto signatures, NSEC/NSEC3,
 │           │                   # chain material (Delegation), policy, verdicts

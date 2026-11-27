@@ -12,8 +12,15 @@
 //!
 //! RA describes styx, not the upstream behind it: it is 1 even when a forwarder answered RA=0
 //! or REFUSED, because styx offers recursion to its clients whatever one pool member does.
+//!
+//! AD survives only for a query that set DO or AD (RFC 6840 §5.8), whichever path built the
+//! reply: the cache keeps the verdict, the client's bits decide whether it is shown.
+//!
+//! Every upstream query asks for DNSSEC records (RFC 4035 §3.2.1), so a reply carries
+//! RRSIG, NSEC and NSEC3 records whatever the client asked. A client that did not set DO gets
+//! them stripped here, except the type its question names.
 
-use styx_proto::{Header, Message, MessageKind, ResponseCode};
+use styx_proto::{Header, Message, MessageKind, RecordType, ResourceRecord, ResponseCode};
 
 /// Rewrites the header and question of `response` to answer `query`.
 ///
@@ -25,6 +32,34 @@ pub fn conform_to_query(response: &mut Message, query: &Message) {
     if let Some(question) = query.questions.first() {
         response.questions.push(question.clone());
     }
+    // RFC 6840 §5.8: AD only for a client that showed it understands it, with DO or AD.
+    response.header.authentic_data &= query.header.authentic_data || asks_for_dnssec(query);
+    if !asks_for_dnssec(query) {
+        strip_unrequested_dnssec(response);
+    }
+}
+
+/// Whether the query set the DO bit, asking for DNSSEC records in the reply.
+#[must_use]
+pub fn asks_for_dnssec(query: &Message) -> bool {
+    query.opt.as_ref().is_some_and(styx_proto::Opt::dnssec_ok)
+}
+
+/// Removes the RRSIG, NSEC and NSEC3 records a DO=0 client did not ask for (RFC 4035
+/// §3.2.1): every one of them, except those of the type the response's question names.
+fn strip_unrequested_dnssec(response: &mut Message) {
+    let asked = response.questions.first().map(|question| question.qtype);
+    let keep = |record: &ResourceRecord| !is_authenticating(record) || Some(record.rtype) == asked;
+    response.answers.retain(keep);
+    response.authorities.retain(keep);
+    response.additionals.retain(keep);
+}
+
+fn is_authenticating(record: &ResourceRecord) -> bool {
+    matches!(
+        record.rtype,
+        RecordType::RRSIG | RecordType::NSEC | RecordType::NSEC3
+    )
 }
 
 /// Builds the reply to a query the pipeline could not answer, carrying `rcode`.
@@ -121,6 +156,129 @@ mod tests {
         conform_to_query(&mut response, &bare);
 
         assert!(response.questions.is_empty());
+    }
+
+    fn signed_reply(qtype: RecordType) -> Message {
+        use std::net::Ipv4Addr;
+        use styx_proto::{NsecRdata, RData, ResourceRecord, RrsigRdata, Ttl, TypeBitmap};
+
+        let owner = Name::from_ascii("www.example.com.").unwrap_or_else(|_| Name::root());
+        let record = |rtype, rdata| {
+            ResourceRecord::new(
+                owner.clone(),
+                rtype,
+                RecordClass::In,
+                Ttl::from_secs(60),
+                rdata,
+            )
+        };
+        let rrsig = RrsigRdata::new(RecordType::A, 13, 3, 60, 0, 0, 1, Name::root(), vec![1]);
+        let nsec = NsecRdata::new(owner.clone(), TypeBitmap::new(Vec::new()));
+        let mut reply =
+            Message::response_to(0x1000, Question::new(owner.clone(), qtype, RecordClass::In));
+        reply
+            .answers
+            .push(record(RecordType::A, RData::A(Ipv4Addr::LOCALHOST)));
+        reply
+            .answers
+            .push(record(RecordType::RRSIG, RData::Rrsig(rrsig)));
+        reply
+            .authorities
+            .push(record(RecordType::NSEC, RData::Nsec(nsec)));
+        reply
+    }
+
+    fn with_do(mut query: Message, dnssec_ok: bool) -> Message {
+        query.opt = Some(styx_proto::Opt::new(1232, 0, dnssec_ok, Vec::new()));
+        query
+    }
+
+    fn types_of(message: &Message) -> Vec<RecordType> {
+        message
+            .answers
+            .iter()
+            .chain(&message.authorities)
+            .chain(&message.additionals)
+            .map(|record| record.rtype)
+            .collect()
+    }
+
+    #[test]
+    fn test_a_do0_client_gets_no_rrsig_or_nsec_records() {
+        for asked in [query(true, false), with_do(query(true, false), false)] {
+            let mut response = signed_reply(RecordType::A);
+
+            conform_to_query(&mut response, &asked);
+
+            assert_eq!(types_of(&response), vec![RecordType::A]);
+        }
+    }
+
+    #[test]
+    fn test_a_do1_client_keeps_every_dnssec_record() {
+        let mut response = signed_reply(RecordType::A);
+
+        conform_to_query(&mut response, &with_do(query(true, false), true));
+
+        assert_eq!(
+            types_of(&response),
+            vec![RecordType::A, RecordType::RRSIG, RecordType::NSEC]
+        );
+    }
+
+    /// RFC 4035 §3.2.1: the stripping never removes the type the query asked for.
+    #[test]
+    fn test_a_do0_client_still_gets_the_dnssec_type_it_asked_for() {
+        let mut asked = query(true, false);
+        if let Some(question) = asked.questions.first_mut() {
+            question.qtype = RecordType::RRSIG;
+        }
+        let mut response = signed_reply(RecordType::RRSIG);
+
+        conform_to_query(&mut response, &asked);
+
+        assert_eq!(types_of(&response), vec![RecordType::A, RecordType::RRSIG]);
+    }
+
+    fn authenticated_reply() -> Message {
+        let mut reply = upstream_reply();
+        reply.header.authentic_data = true;
+        reply
+    }
+
+    #[test]
+    fn test_ad_is_cleared_for_a_query_with_neither_do_nor_ad() {
+        for asked in [query(true, false), with_do(query(true, false), false)] {
+            let mut response = authenticated_reply();
+
+            conform_to_query(&mut response, &asked);
+
+            assert!(!response.header.authentic_data);
+        }
+    }
+
+    #[test]
+    fn test_ad_is_kept_for_a_query_with_do_or_ad() {
+        let mut with_ad = query(true, false);
+        with_ad.header.authentic_data = true;
+        for asked in [with_do(query(true, false), true), with_ad] {
+            let mut response = authenticated_reply();
+
+            conform_to_query(&mut response, &asked);
+
+            assert!(response.header.authentic_data);
+        }
+    }
+
+    #[test]
+    fn test_ad_is_never_set_by_the_query_alone() {
+        let mut asked = with_do(query(true, false), true);
+        asked.header.authentic_data = true;
+        let mut response = upstream_reply();
+
+        conform_to_query(&mut response, &asked);
+
+        assert!(!response.header.authentic_data);
     }
 
     #[test]

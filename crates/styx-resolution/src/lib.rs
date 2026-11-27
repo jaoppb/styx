@@ -15,8 +15,8 @@ pub mod infrastructure;
 
 // Public re-exports for convenience
 pub use application::{
-    CacheConfig, CacheStage, CacheStatsLogger, ConfiguredStrategy, OrderedFailover, Pipeline,
-    PoolMember, PoolTerminal, ProbeScheduler, RaceAll, RefusedTerminal, RoundRobin,
+    CacheConfig, CacheStage, CacheStatsLogger, ConfiguredStrategy, NoValidation, OrderedFailover,
+    Pipeline, PoolMember, PoolTerminal, ProbeScheduler, RaceAll, RefusedTerminal, RoundRobin,
     TerminalHandler, TrialGuard, UpstreamPool, Weighted,
 };
 pub use domain::answer::{
@@ -43,6 +43,7 @@ pub use domain::limits::ConcurrencyLimits;
 pub use domain::ports::filter::{FilterPolicy, FilterVerdict};
 pub use domain::ports::local::LocalRecords;
 pub use domain::ports::observer::{QueryDetail, QueryObserver};
+pub use domain::ports::validation::{ResponseValidator, Validation};
 pub use domain::probe::{CanaryConfig, ProbeConfig, ProbePolicy};
 pub use domain::refused::RefusedReplies;
 pub use domain::request::{ClientId, MaxResponseSize, RequestContext, Transport};

@@ -31,7 +31,7 @@ pub use error::HarnessError;
 pub use fake::{bind_udp_tcp_pair, bind_udp_tcp_pair_on, FakeNameServer, FakeRole, UdpTcpPair};
 pub use responder::ReceivedQuery;
 pub use script::{
-    ScriptedAnswer, ScriptedDname, ScriptedGlue, ScriptedOrigin, ScriptedRcode, ScriptedReferral,
-    ZoneScript,
+    ScriptedAnswer, ScriptedDenial, ScriptedDname, ScriptedGlue, ScriptedOrigin, ScriptedRcode,
+    ScriptedReferral, ZoneScript,
 };
 pub use styx_core::test_util::{TestClock, TestSleeper};

@@ -23,6 +23,7 @@ tracing-subscriber.workspace = true
 # The composition root is the only crate that may name every feature crate.
 # Phases 1+ add them here as they arrive.
 styx-core = { path = "../styx-core" }
+styx-dnssec = { path = "../styx-dnssec" }
 styx-net = { path = "../styx-net" }
 styx-proto = { path = "../styx-proto" }
 styx-recursion = { path = "../styx-recursion" }
@@ -35,6 +36,8 @@ anyhow.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
+ring.workspace = true
+styx-core = { path = "../styx-core", features = ["test-support"] }
 styx-testkit = { path = "../styx-testkit" }
 
 [lints]
