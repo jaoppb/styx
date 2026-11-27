@@ -40,3 +40,4 @@ As defined in [`AGENTS.md`](../../AGENTS.md):
 | [0026](0026-cancelled-half-open-trial-releases-its-slot.md) | A cancelled half-open trial releases its slot | Phase 3 — Upstream pool and Do53 forwarder | 2026-10-16 | Accepted |
 | [0027](0027-partitioned-capacity-and-second-chance-eviction.md) | Partitioned capacity and second-chance eviction | Phase 4 — Answer cache | 2026-10-16 | Accepted |
 | [0028](0028-aaaa-filter-stage.md) | A file-owned switch answers every AAAA question NODATA | Phase 2 — Server loop and test harness | 2026-10-31 | Accepted |
+| [0029](0029-conditional-forwarding-routes-cache-misses.md) | Conditional forwarding is file-owned and routes cache misses by suffix | Phase 3 — Upstream pool and Do53 forwarder | 2026-11-24 | Accepted |

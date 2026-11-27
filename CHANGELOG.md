@@ -24,9 +24,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sets its own `root_hints` needs no `[recursion]` section. An override table that names no
   recursor member of the pool is a startup error. Recursion diagnostics are kept per
   member, so several recursors no longer overwrite each other's snapshot.
+- `allow_networks` and `deny_networks` at the top of `styx.toml` decide which client
+  addresses are answered. A source outside the allowed networks, or inside a denied one,
+  gets no UDP reply and has its TCP connection closed. The default allows loopback, the
+  RFC 1918 and RFC 4193 private ranges and link-local; allowing public addresses (a `/0`,
+  or the same space in pieces) on a non-loopback address logs a warning at startup. A
+  network written in IPv4-mapped form (`::ffff:10.0.0.0/104`) matches as its IPv4 network.
+- `[[upstream.conditional]]` entries send the names under their `domains` (such as `lan` or
+  `1.168.192.in-addr.arpa`) to their own forwarders, usually the router, instead of the
+  main pool. The longest matching domain wins, answers are cached as usual, and a name
+  whose forwarders all fail gets SERVFAIL rather than leaking to the main pool.
 
 ### Changed
 
+- **Breaking:** styx no longer answers public source addresses by default. That includes
+  IPv6 clients on your own LAN that use a global address (the usual case with an IPv6
+  prefix from the ISP) and CGNAT or Tailscale peers in `100.64.0.0/10`: they now time
+  out until your delegated prefix or those networks are in `allow_networks`.
 - **Breaking:** `udp_timeout_ms`, `tcp_timeout_ms` and `edns_buffer` on an
   `[[upstream.members]]` entry with `kind = "recursor"` are now a startup error. The
   recursor never read them; set timeouts under `[recursion]` or

@@ -10,6 +10,7 @@
 //! pipeline, and graceful shutdown. The Leptos SSR handler is wired in
 //! Phase 11.
 
+mod pools;
 #[cfg(test)]
 mod recursion_wiring_tests;
 mod upstream;
@@ -20,7 +21,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
-use styx_core::{SystemClock, SystemSleeper, UpstreamId, UpstreamKind};
+use pools::Pools;
+use styx_core::{SystemClock, SystemSleeper, UpstreamId};
 use styx_net::Do53Client;
 use styx_recursion::application::config::{RecursionConfig, RecursionSection};
 use styx_recursion::application::recursor::{Recursor, RecursorPorts};
@@ -30,9 +32,8 @@ use styx_recursion::infrastructure::do53_transport::{Do53Transport, DNS_PORT};
 use styx_recursion::infrastructure::infra_cache::MemoryInfraCache;
 use styx_recursion::infrastructure::sinks::{DiagnosticsStore, DiscardChainMaterial};
 use styx_resolution::{
-    AllowAllFilter, CacheConfig, CacheStage, CacheStatsLogger, CanaryConfig, ConfiguredStrategy,
-    DiscardObserver, Do53Forwarder, NoLocalRecords, Pipeline, PoolConfig, PoolMember, ProbePolicy,
-    ProbeScheduler, Server, ServerConfig, ShardedAnswerCache, UpstreamConfig, UpstreamPool,
+    AllowAllFilter, CacheConfig, CacheStage, CacheStatsLogger, ConfiguredStrategy, DiscardObserver,
+    NoLocalRecords, Pipeline, PoolConfig, ProbeScheduler, Server, ServerConfig, ShardedAnswerCache,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -47,7 +48,6 @@ const DEFAULT_LOG_FILTER: LevelFilter = LevelFilter::INFO;
 /// before the Phase 10 telemetry exists.
 const CACHE_STATS_INTERVAL: Duration = Duration::from_secs(60);
 
-type ConcretePool = UpstreamPool<ConfiguredStrategy, PoolUpstream, SystemClock>;
 type ConcreteCache = ShardedAnswerCache<SystemClock>;
 type ConcreteStage = CacheStage<ConcreteCache, ConfiguredStrategy, PoolUpstream, SystemClock>;
 type ConcretePipeline =
@@ -77,10 +77,10 @@ async fn main() -> anyhow::Result<()> {
 
     let clock = Arc::new(SystemClock::new());
     let recursion = RecursionWiring::load(recursion, pool_config, config.query_timeout).await?;
-    let pool = build_pool(pool_config, &recursion, &clock)?;
+    let pools = Pools::build(pool_config, &recursion, &clock)?;
     let answer_cache = build_cache(clock.clone(), &cache)?;
     let pipeline = build_pipeline(
-        pool.clone(),
+        pools.clone(),
         clock.clone(),
         &config,
         answer_cache.clone(),
@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
 
     let sleeper = Arc::new(SystemSleeper::new());
     let background = BackgroundTasks::spawn(
-        ProbeScheduler::new(pool, clock.clone(), pool_config.probe.tick),
+        pools.probe_schedulers(&clock, pool_config.probe.tick),
         CacheStatsLogger::new(answer_cache, sleeper.clone(), CACHE_STATS_INTERVAL)?,
     );
 
@@ -114,18 +114,22 @@ async fn main() -> anyhow::Result<()> {
 /// The tasks that run beside the listeners, sharing one shutdown token.
 struct BackgroundTasks {
     shutdown: CancellationToken,
-    probe_scheduler: JoinHandle<()>,
+    probe_schedulers: Vec<JoinHandle<()>>,
     cache_stats: JoinHandle<()>,
 }
 
 impl BackgroundTasks {
+    /// Starts one probe scheduler per pool: the main one and each conditional one.
     fn spawn(
-        scheduler: ProbeScheduler<ConfiguredStrategy, PoolUpstream, SystemClock>,
+        schedulers: Vec<ProbeScheduler<ConfiguredStrategy, PoolUpstream, SystemClock>>,
         stats_logger: CacheStatsLogger<ConcreteCache, SystemSleeper>,
     ) -> Self {
         let shutdown = CancellationToken::new();
         Self {
-            probe_scheduler: tokio::spawn(scheduler.run(shutdown.clone())),
+            probe_schedulers: schedulers
+                .into_iter()
+                .map(|scheduler| tokio::spawn(scheduler.run(shutdown.clone())))
+                .collect(),
             cache_stats: tokio::spawn(stats_logger.run(shutdown.clone())),
             shutdown,
         }
@@ -134,8 +138,14 @@ impl BackgroundTasks {
     /// Cancels every task and waits for all of them, even when one of them failed.
     async fn stop(self) -> anyhow::Result<()> {
         self.shutdown.cancel();
-        let (probe_scheduler, cache_stats) = tokio::join!(self.probe_scheduler, self.cache_stats);
-        probe_scheduler.context("probe scheduler task failed")?;
+        let mut probe_schedulers = Vec::with_capacity(self.probe_schedulers.len());
+        for probe_scheduler in self.probe_schedulers {
+            probe_schedulers.push(probe_scheduler.await);
+        }
+        let cache_stats = self.cache_stats.await;
+        for probe_scheduler in probe_schedulers {
+            probe_scheduler.context("probe scheduler task failed")?;
+        }
         cache_stats.context("cache stats logger task failed")
     }
 }
@@ -242,52 +252,6 @@ fn check_recursor_deadlines(
     Ok(())
 }
 
-fn build_upstream(
-    member_cfg: &UpstreamConfig,
-    id: &UpstreamId,
-    recursion: &RecursionWiring,
-    clock: &Arc<SystemClock>,
-) -> anyhow::Result<PoolUpstream> {
-    match member_cfg.kind {
-        UpstreamKind::Forwarder => Ok(PoolUpstream::Forwarder(Do53Forwarder::new(
-            id.clone(),
-            member_cfg.addr,
-            member_cfg.edns_buffer,
-            member_cfg.timeouts.udp,
-            member_cfg.timeouts.tcp,
-            Arc::clone(clock),
-        ))),
-        UpstreamKind::Recursor => Ok(PoolUpstream::Recursor(Arc::new(
-            recursion.recursor(id.clone(), clock)?,
-        ))),
-    }
-}
-
-fn build_pool(
-    pool_config: &PoolConfig,
-    recursion: &RecursionWiring,
-    clock: &Arc<SystemClock>,
-) -> anyhow::Result<Arc<ConcretePool>> {
-    let mut members = Vec::with_capacity(pool_config.members.len());
-    for member_cfg in &pool_config.members {
-        let id = UpstreamId::new(member_cfg.name.as_str());
-        let upstream = build_upstream(member_cfg, &id, recursion, clock)?;
-        let canary = member_cfg
-            .canary
-            .clone()
-            .unwrap_or_else(|| CanaryConfig::for_kind(member_cfg.kind));
-        members.push(PoolMember::new(id, upstream, member_cfg.weight, canary));
-    }
-    let strategy = ConfiguredStrategy::from_name(pool_config.strategy);
-    Ok(Arc::new(UpstreamPool::new(
-        members,
-        strategy,
-        Arc::clone(clock),
-        pool_config.circuit.clone(),
-        ProbePolicy::new(pool_config.probe.clone()),
-    )))
-}
-
 fn build_cache(
     clock: Arc<SystemClock>,
     cache_config: &CacheConfig,
@@ -298,19 +262,22 @@ fn build_cache(
 }
 
 fn build_pipeline(
-    pool: Arc<ConcretePool>,
+    pools: Pools,
     clock: Arc<SystemClock>,
     config: &ServerConfig,
     cache: Arc<ConcreteCache>,
     cache_config: &CacheConfig,
 ) -> Arc<ConcretePipeline> {
-    let cache_stage = Arc::new(CacheStage::from_config(
-        cache,
-        pool,
-        cache_config,
-        clock.clone(),
-        config.query_timeout,
-    ));
+    let cache_stage = Arc::new(
+        CacheStage::from_config(
+            cache,
+            pools.main,
+            cache_config,
+            clock.clone(),
+            config.query_timeout,
+        )
+        .with_conditional(pools.conditional),
+    );
     Arc::new(
         Pipeline::new(
             Arc::new(NoLocalRecords::new()),
@@ -418,3 +385,7 @@ fn init_tracing() {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;

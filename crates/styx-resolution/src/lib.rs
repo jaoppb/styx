@@ -31,7 +31,11 @@ pub use domain::cache::{
     MIN_SHARD_BYTES,
 };
 pub use domain::circuit::{CircuitConfig, CircuitState, FailureCount, TrialId};
-pub use domain::config::{PoolConfig, Timeouts, UpstreamConfig};
+pub use domain::client_access::{
+    ClientAccess, ClientAccessError, ClientNetwork, ClientNetworkError,
+};
+pub use domain::conditional::{ConditionalRoute, ConditionalRoutes};
+pub use domain::config::{ConditionalConfig, PoolConfig, Timeouts, UpstreamConfig};
 pub use domain::edns::EdnsBufferSize;
 pub use domain::error::{ConfigError, ListenerError, PipelineError, PoolError, ServerError};
 pub use domain::health::{CircuitAdmission, HealthState, Outcome};

@@ -130,6 +130,12 @@ where
             }
         };
 
+        if !self.shared.client_access.admits(peer.ip()) {
+            tracing::debug!(%peer, "closing TCP connection from a client outside allow_networks");
+            drop(stream);
+            return Ok(());
+        }
+
         let Some(permit) = self.connections.try_admit() else {
             tracing::debug!(%peer, "TCP connection cap reached; closing connection");
             drop(stream);

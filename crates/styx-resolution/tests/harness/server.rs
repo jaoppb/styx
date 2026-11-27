@@ -165,6 +165,7 @@ where
             query_timeout: settings.query_timeout,
             limits: settings.limits,
             filter_aaaa: false,
+            client_access: styx_resolution::ClientAccess::default(),
             supervisor: settings.supervisor,
             upstream: None,
         };

@@ -155,10 +155,22 @@ impl Encoder {
 
     /// Encodes a single resource record.
     pub fn encode_record(&mut self, rr: &ResourceRecord) -> Result<(), EncodeError> {
-        self.write_name(&rr.owner)?;
+        self.encode_record_with_owner_ttl(&rr.owner, rr, rr.ttl.seconds())
+    }
+
+    /// Encodes `rr` under `owner` and `ttl` in place of its own: the form RFC 4034
+    /// §3.1.8.1 signs, where a wildcard expansion is rewritten to its `*` owner and every
+    /// record carries the RRSIG's original TTL.
+    pub fn encode_record_with_owner_ttl(
+        &mut self,
+        owner: &Name,
+        rr: &ResourceRecord,
+        ttl: u32,
+    ) -> Result<(), EncodeError> {
+        self.write_name(owner)?;
         self.write_u16(rr.rtype.value())?;
         self.write_u16(rr.rclass.to_u16())?;
-        self.write_u32(rr.ttl.seconds())?;
+        self.write_u32(ttl)?;
 
         let rdlength_pos = self.buf.len();
         self.write_u16(0)?; // placeholder
@@ -275,11 +287,15 @@ impl Encoder {
 
     /// Writes a domain name using compression if enabled and within offset limits.
     pub fn write_name(&mut self, name: &Name) -> Result<(), EncodeError> {
-        let canonical_name = if self.lowercase_names {
-            Some(name.to_canonical())
-        } else {
-            None
-        };
+        self.write_name_with_case(name, self.lowercase_names)
+    }
+
+    pub(super) fn write_name_preserving_case(&mut self, name: &Name) -> Result<(), EncodeError> {
+        self.write_name_with_case(name, false)
+    }
+
+    fn write_name_with_case(&mut self, name: &Name, lowercase: bool) -> Result<(), EncodeError> {
+        let canonical_name = lowercase.then(|| name.to_canonical());
         let target_name = canonical_name.as_ref().unwrap_or(name);
 
         if target_name.is_root() {
@@ -287,17 +303,12 @@ impl Encoder {
         }
 
         let wire = target_name.as_wire_bytes();
-        let lower_wire_buf = if self.lowercase_names {
-            None
-        } else {
-            Some(target_name.to_lowercase_wire())
-        };
+        let lower_wire_buf = (!lowercase).then(|| target_name.to_lowercase_wire());
         let lookup_wire = lower_wire_buf.as_deref().unwrap_or(wire);
 
         for offset in target_name.label_offsets() {
-            let suffix_lookup = match lookup_wire.get(offset..) {
-                Some(s) => s,
-                None => break,
+            let Some(suffix_lookup) = lookup_wire.get(offset..) else {
+                break;
             };
 
             if let Some(ptr) = self.find_compression_pointer(suffix_lookup) {
@@ -305,21 +316,17 @@ impl Encoder {
             }
             self.record_compression_offset(suffix_lookup);
 
-            let &label_len = match wire.get(offset) {
-                Some(l) => l,
-                None => break,
+            let Some(&label_len) = wire.get(offset) else {
+                break;
             };
-            let start = match offset.checked_add(1) {
-                Some(s) => s,
-                None => break,
+            let Some(start) = offset.checked_add(1) else {
+                break;
             };
-            let end = match start.checked_add(usize::from(label_len)) {
-                Some(e) => e,
-                None => break,
+            let Some(end) = start.checked_add(usize::from(label_len)) else {
+                break;
             };
-            let label_bytes = match wire.get(start..end) {
-                Some(b) => b,
-                None => break,
+            let Some(label_bytes) = wire.get(start..end) else {
+                break;
             };
             self.write_u8(label_len)?;
             self.write_slice(label_bytes)?;

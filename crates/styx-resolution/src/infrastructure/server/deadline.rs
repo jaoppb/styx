@@ -23,6 +23,11 @@ impl ServerConfig {
         let slowest = pool
             .members
             .iter()
+            .chain(
+                pool.conditional
+                    .iter()
+                    .flat_map(|entry| entry.members.iter()),
+            )
             .filter(|member| member.kind != UpstreamKind::Recursor)
             .max_by_key(|member| member.timeouts.udp.max(member.timeouts.tcp));
         let Some(member) = slowest else {

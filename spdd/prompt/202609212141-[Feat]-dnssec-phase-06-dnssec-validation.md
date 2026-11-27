@@ -73,16 +73,17 @@ class PullChainSource {
 
 class TrustAnchorSource {
     <<trait>>
-    +anchors() Result~Vec~TrustAnchor~, TrustAnchorError~
+    +anchors() TrustAnchors
 }
 
 class PinnedRootAnchor {
-    +anchors() Result~Vec~TrustAnchor~, TrustAnchorError~
+    +anchors() TrustAnchors
 }
 
 class FileTrustAnchor {
     +path: PathBuf
-    +anchors() Result~Vec~TrustAnchor~, TrustAnchorError~
+    +load_from_path(path) Result~FileTrustAnchor, TrustAnchorError~
+    +anchors() TrustAnchors
 }
 
 class TrustAnchor {
@@ -114,9 +115,8 @@ class MaterialOrigin {
 }
 
 class Validator~C~ {
-    +clock: Arc~C~
-    +policy: ValidationPolicy
-    +validate(msg: Message, src: S, anchors: A) ValidationOutcome
+    +new(clock: C, policy: ValidationPolicy, anchors: TrustAnchors) Validator
+    +validate(msg: Message, src: S) ValidationOutcome
 }
 
 class ValidationOutcome {
@@ -156,7 +156,6 @@ class FailureMode {
 
 class ValidationPolicy {
     +failure_mode: FailureMode
-    +algorithms: AlgorithmSet
     +nsec3_max_iterations: Nsec3IterationsCap
     +max_zone_cuts: u8
 }
@@ -167,18 +166,10 @@ class Nsec3IterationsCap {
     +value() u16
 }
 
-class AlgorithmSet {
-    -supported_sig: BTreeSet~SigAlgorithm~
-    -supported_digest: BTreeSet~DigestAlgorithm~
-    +classify_sig(a: SigAlgorithm) AlgorithmSupport
-    +classify_digest(d: DigestAlgorithm) AlgorithmSupport
-}
-
 class AlgorithmSupport {
     <<enumeration>>
     Supported
-    UnknownTreatAsInsecure
-    Refused
+    Unsupported
 }
 
 class DenialProof {
@@ -200,20 +191,13 @@ class Nsec3Proof {
     +closest_encloser(qname: Name) Result~Name, DenialError~
     +prove_next_closer_covered(qname: Name, closest_encloser: Name) Result~(), DenialError~
     +prove_no_wildcard(closest_encloser: Name) Result~(), DenialError~
-    +opt_out_applies() bool
 }
 
 class Nsec3Params {
     +hash_algorithm: Nsec3HashAlgorithm
-    +flags: Nsec3Flags
     +iterations: u16
     +salt: Vec~u8~
     +check_iterations(cap: Nsec3IterationsCap) Result~(), DenialError~
-}
-
-class Nsec3Flags {
-    +new(raw: u8) Nsec3Flags
-    +is_opt_out() bool
 }
 
 class ValidationError {
@@ -241,16 +225,13 @@ ZoneCutMaterial --> DenialProof : may carry DS denial
 DenialProof <|-- NsecProof : variant
 DenialProof <|-- Nsec3Proof : variant
 Nsec3Proof "1" *-- "1" Nsec3Params : governed by
-Nsec3Params "1" *-- "1" Nsec3Flags : holds
 Nsec3Params ..> Nsec3IterationsCap : checked against
 Validator --> ChainSource : consumes
 Validator --> TrustAnchorSource : consumes
 Validator --> Clock : reads time from
 Validator "1" *-- "1" ValidationPolicy : configured by
-ValidationPolicy --> AlgorithmSet : holds
 ValidationPolicy --> FailureMode : holds
 ValidationPolicy "1" *-- "1" Nsec3IterationsCap : holds
-AlgorithmSet --> AlgorithmSupport : classifies into
 Validator --> ValidationOutcome : produces
 ValidationOutcome --> ValidationVerdict : carries
 ValidationOutcome --> VerdictReason : carries
@@ -262,9 +243,10 @@ Validator --> ValidationError : fails with
 the `styx` binary. `Validator` is pure: its only inputs are a decoded message, the two
 ports, and an injected `Clock`. `DenialProof` is the single type through which both
 NSEC and NSEC3 denial reach the chain logic, so a proven-unsigned delegation and a
-proven NXDOMAIN travel the same path. `Nsec3IterationsCap` and `Nsec3Flags` are the
-newtypes `AGENTS.md`'s primitive-obsession rule calls for on this phase's two
-attacker-facing NSEC3 primitives — see Norm 14.
+proven NXDOMAIN travel the same path. `Nsec3IterationsCap` is the newtype
+`AGENTS.md`'s primitive-obsession rule calls for on this phase's attacker-facing NSEC3
+cap; the opt-out bit is read through `styx_proto`'s `Nsec3Rdata::opt_out()` — see
+Norm 14.
 
 ---
 
@@ -477,8 +459,7 @@ attacker-facing NSEC3 primitives — see Norm 14.
      `Nsec3IterationsCap` newtype `ValidationPolicy` holds.
    - `domain/trust_anchor.rs` — `TrustAnchor`.
    - `domain/chain.rs` — `ChainMaterial`, `ZoneCutMaterial`, `MaterialOrigin`.
-   - `domain/denial.rs` — `DenialProof`, `NsecProof`, `Nsec3Proof`, `Nsec3Params`, and
-     the `Nsec3Flags` newtype `Nsec3Params` holds.
+   - `domain/denial.rs` — `DenialProof`, `NsecProof`, `Nsec3Proof`, `Nsec3Params`.
    - `domain/ports.rs` — the `ChainSource` / `TrustAnchorSource` trait definitions.
 2. **`application`** — the `Validator` orchestration: walk the chain from anchor to
    answer, sequence positive-chain and denial checks, apply `FailureMode`, emit
@@ -571,20 +552,25 @@ attacker-facing NSEC3 primitives — see Norm 14.
    - An unsupported algorithm yields `Insecure`, never `Bogus`. A chain we cannot read
      is not a chain we have caught lying.
 
-#### 6a.3 — Define `AlgorithmSet` and enumerate the algorithm set
+#### 6a.3 — Enumerate the algorithm set
 
 1. Responsibility: make the accepted algorithms an explicit, closed, reviewable set.
 2. Methods:
-   - `classify_sig(SigAlgorithm) -> AlgorithmSupport`
-   - `classify_digest(DigestAlgorithm) -> AlgorithmSupport`
-   - `AlgorithmSupport`: `Supported | UnknownTreatAsInsecure | Refused`.
+   - `DnssecAlgorithm::support() -> AlgorithmSupport` and
+     `DigestType::support() -> AlgorithmSupport`, defined next to the signature
+     dispatch and the digest computation, so a supported algorithm always has a
+     primitive.
+   - `AlgorithmSupport`: `Supported | Unsupported`.
 3. Logic:
    - Enumerate the supported signing algorithms and digest algorithms explicitly in
-     code. Do not accept "anything we happen to have a primitive for".
-   - `UnknownTreatAsInsecure` → the zone is Insecure, with reason
-     `UnsupportedAlgorithm`.
-   - `Refused` → reserved for algorithms that must never validate (deprecated/broken);
-     a chain resting on one is `Bogus`.
+     code. Do not accept "anything we happen to have a primitive for": SHA-1 digests are
+     computed but unsupported (RFC 8624).
+   - A DS RRset in which no record is supported (unknown, or deprecated by RFC 8624:
+     RSA/MD5, DSA, the SHA-1 algorithms 5 and 7, SHA-1 digests) makes the child
+     Insecure, with reason `UnsupportedAlgorithm` (RFC 4035 §5.2, RFC 6840 §5.2). The DS
+     RRset is already authenticated by the parent, so this opens no downgrade.
+     *(Amended in the PR #131 review: deprecated algorithms were `Refused` and ended
+     Bogus, and algorithms 5 and 7 were classified differently.)*
 4. Constraint: the enumeration must be exactly the set the `rootcanary.org` corpus in
    6d exercises. If those disagree, one of the two is wrong and it must be resolved
    before 6d passes.
@@ -592,7 +578,9 @@ attacker-facing NSEC3 primitives — see Norm 14.
 #### 6a.4 — Define `TrustAnchorSource` and `TrustAnchor`
 
 1. Responsibility: supply the root of every chain.
-2. Trait: `TrustAnchorSource::anchors() -> Result<Vec<TrustAnchor>, TrustAnchorError>`.
+2. Trait: `TrustAnchorSource::anchors() -> TrustAnchors`, a never-empty set. Loading
+   can fail (a missing or malformed file) when the adapter is built; the validator gets
+   the anchors once, at startup, through `Validator::new`, not on every query.
 3. `TrustAnchor { owner, key_tag, algorithm, digest_type, digest }`.
 4. Constraints:
    - The trait lives in `styx_dnssec::domain::ports`.
@@ -768,18 +756,16 @@ attacker-facing NSEC3 primitives — see Norm 14.
 
 **Do not merge with 6a, 6b or 6d.**
 
-#### 6c.1 — Define `Nsec3Params`, `Nsec3Flags`, `Nsec3IterationsCap` and the cap check
+#### 6c.1 — Define `Nsec3Params`, `Nsec3IterationsCap` and the cap check
 
 1. Responsibility: hold the NSEC3 parameters and refuse excessive work **before** doing
    any of it.
-2. Attributes: `hash_algorithm`, `flags: Nsec3Flags`, `iterations: u16`,
-   `salt: Vec<u8>`.
-3. `Nsec3Flags` wraps the wire's flags octet, per `AGENTS.md`'s primitive-obsession
-   rule: it carries the named opt-out bit rather than leaving every caller to mask a
-   bare `u8` by hand. Constructor `Nsec3Flags::new(raw: u8) -> Self` (every octet value
-   is wire-valid, so construction cannot fail); read accessor `is_opt_out() -> bool`;
-   no setter — a flags value is reconstructed via `new`, never mutated in place.
-4. `Nsec3IterationsCap` wraps the cap value in `u16`, for the same reason: the value is
+2. Attributes: `hash_algorithm`, `iterations: u16`, `salt: Vec<u8>` (opt-out flags live
+   per-record on NSEC3 RDATA, not on the chain-wide `Nsec3Params`).
+3. The opt-out bit is read through `styx_proto`'s `Nsec3Rdata::opt_out()`, which already
+   names it on the wire type, so this crate declares no flags newtype of its own.
+4. `Nsec3IterationsCap` wraps the cap value in `u16`, per `AGENTS.md`'s
+   primitive-obsession rule: the value is
    mandatory and load-bearing (Approach §5) and carries a named default constant rather
    than being an unvalidated bare number indistinguishable at a call site from the
    record's own `iterations` field. Constructor `Nsec3IterationsCap::new(cap: u16) ->
@@ -833,7 +819,7 @@ attacker-facing NSEC3 primitives — see Norm 14.
 
 #### 6c.5 — Implement opt-out
 
-1. Logic: when `Nsec3Flags::is_opt_out()` is true on the covering NSEC3's flags, an
+1. Logic: when `Nsec3Rdata::opt_out()` is true on the covering NSEC3, an
    **unsigned delegation** within that span is permitted to go unproven, yielding
    `Insecure`.
 2. Constraints:
@@ -928,7 +914,10 @@ attacker-facing NSEC3 primitives — see Norm 14.
 2. Logic:
    - `Secure` → AD set.
    - `Insecure` → AD cleared, answer served.
-   - `Indeterminate` → AD cleared, answer served, logged at `warn`.
+   - `Indeterminate` → AD cleared, logged at `warn`; under `WarnOnly`, answer served;
+     under `HardFail`, **SERVFAIL** for every reason except `NoPathToAnchor` (RFC 4035
+     §5.5: a chain that cannot be built under a configured anchor must not fall back to
+     an unvalidated answer).
    - `Bogus` → under `WarnOnly`, AD cleared and the answer served with a `warn` log;
      under `HardFail`, **SERVFAIL**.
 3. Constraints:
@@ -1044,9 +1033,8 @@ attacker-facing NSEC3 primitives — see Norm 14.
     This phase's own newtypes are `Nsec3IterationsCap`
     (`ValidationPolicy::nsec3_max_iterations`, carrying the named `DEFAULT` constant
     chosen and documented in 6c.1, and excluding the cap from ever being expressed as
-    an `Option` or a sentinel meaning "unlimited") and `Nsec3Flags`
-    (`Nsec3Params::flags`, carrying the named opt-out bit read through
-    `is_opt_out()` rather than a bare octet every caller masks by hand). By contrast,
+    an `Option` or a sentinel meaning "unlimited"); the opt-out bit is already named
+    by `styx_proto`'s `Nsec3Rdata::opt_out()`. By contrast,
     `ValidationOutcome::enforced` stays a plain `bool` field: it has no independent
     validation and no risk of being confused with an unrelated value at a call site, so
     wrapping it would be ceremony with no behaviour behind it — the failure mode this
@@ -1168,8 +1156,8 @@ Approach sections; nothing outside this document is needed to read them.)*
   (6a.9), the positive-chain walk (6a.10) and the closest-encloser derivation (6c.3) —
   this phase's most loop- and branch-heavy code; the `xtask module-size` cap (400
   counted lines) against `infrastructure`'s canonical-form, signature, NSEC3 and
-  trust-anchor modules; and `partial_pub_fields` against `Nsec3Flags` and
-  `Nsec3IterationsCap`, whose fields stay entirely private behind their constructors
+  trust-anchor modules; and `partial_pub_fields` against
+  `Nsec3IterationsCap`, whose field stays entirely private behind its constructor
   (Norm 14).
 - The crate must build under `--no-default-features` (the headless resolver build), which
   CI exercises on every commit.
@@ -1217,12 +1205,12 @@ Approach sections; nothing outside this document is needed to read them.)*
 
 ### 12. Object Calisthenics compliance
 
-- This phase's newly introduced domain values that carry rules — `Nsec3IterationsCap`
-  and `Nsec3Flags` — are newtypes, not bare `u16`/`u8` fields, per `AGENTS.md`'s
+- This phase's newly introduced domain value that carries rules — `Nsec3IterationsCap` —
+  is a newtype, not a bare `u16` field, per `AGENTS.md`'s
   primitive-obsession rule and Norm 14.
-- **Wrapping these two primitives stays a review discipline; the shape rules around them
+- **Wrapping this primitive stays a review discipline; the shape rules around them
   are gated.** Per `AGENTS.md`'s Enforcement section and Phase 0 Norm 17, nesting depth,
   function length, module length and mixed field visibility are mechanically checked by
   `just gate` — see the Technical constraints bullet above for which parts of this crate
-  that reaches. Whether `Nsec3IterationsCap` and `Nsec3Flags` *should* be newtypes at all
+  that reaches. Whether `Nsec3IterationsCap` *should* be a newtype at all
   is not something any lint decides, and stays review's job.
