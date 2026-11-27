@@ -1,0 +1,24 @@
+[Unit]
+Description=styx DNS resolver
+Documentation=https://github.com/jaoppb/styx
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/styx /etc/styx/styx.toml
+# styx drains in-flight queries on SIGINT. It does not handle SIGTERM until Phase 12,
+# so systemd's default stop signal would kill it without the drain.
+KillSignal=SIGINT
+Restart=on-failure
+
+# A transient unprivileged user, holding only the capability to bind port 53.
+DynamicUser=yes
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ProtectSystem=strict
+# /var/lib/styx: the one writable path, where [tls] keeps its self-signed certificate.
+StateDirectory=styx
+
+[Install]
+WantedBy=multi-user.target

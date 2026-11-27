@@ -1,0 +1,24 @@
+# The configuration the container image ships at /etc/styx/styx.toml, and the starting
+# point for /etc/styx/styx.toml on a systemd host. Mount or install your own file over it
+# to change anything; config/styx.example.toml lists every key with its default.
+#
+# Only the iterative recursor, so no third-party resolver is chosen for you: styx walks
+# down from the root servers itself.
+
+# Every address on port 53: right inside a container, which has its own network. On a
+# host this usually fails with "Address already in use", because systemd-resolved holds
+# 127.0.0.53:53; list the host's LAN address there instead, such as "192.168.1.2:53".
+listen_addrs = ["0.0.0.0:53"]
+
+[upstream]
+strategy = "ordered_failover"
+
+# `addr` is required by the pool schema but unused by a recursor.
+[[upstream.members]]
+name = "recursor"
+kind = "recursor"
+addr = "0.0.0.0:0"
+
+[recursion]
+# Shipped beside this file in the image; install config/named.root there on a host.
+root_hints = "/etc/styx/named.root"
