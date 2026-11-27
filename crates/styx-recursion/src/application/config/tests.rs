@@ -156,6 +156,17 @@ fn zero_limits_and_unknown_keys_in_the_shared_section_are_rejected() {
 }
 
 #[test]
+fn a_zero_shared_limit_is_rejected_even_when_every_member_overrides_it() {
+    let zero_shared = "[recursion]\nroot_hints = \"x\"\nmax_depth = 0\n\
+                       [recursion.members.recursor-v4]\nmax_depth = 8\n\
+                       [recursion.members.recursor-far]\nmax_depth = 12\n";
+    assert_eq!(
+        RecursionSection::from_toml_str(zero_shared),
+        Err(ConfigError::ZeroLimit("max_depth"))
+    );
+}
+
+#[test]
 fn an_override_for_a_name_that_is_not_a_recursor_is_rejected() {
     let section = section(TWO_RECURSORS);
     assert_eq!(
