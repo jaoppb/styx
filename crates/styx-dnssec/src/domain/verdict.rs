@@ -100,35 +100,28 @@ impl ValidationOutcome {
         Self::new(ValidationVerdict::Indeterminate, reason)
     }
 
-    /// Applies the validation outcome to the response's AD bit and, under
-    /// [`FailureMode::HardFail`], turns `Bogus` and below-anchor `Indeterminate`
-    /// responses (every `Indeterminate` other than `NoPathToAnchor`) into SERVFAIL.
+    /// Whether `mode` answers this outcome with SERVFAIL instead of the data: under
+    /// [`FailureMode::HardFail`], every `Bogus` and every below-anchor `Indeterminate` (all
+    /// but `NoPathToAnchor`, which no configured anchor covers). Never under `WarnOnly`.
+    #[must_use]
+    pub fn refuses_under(&self, mode: FailureMode) -> bool {
+        mode == FailureMode::HardFail
+            && match self.verdict {
+                ValidationVerdict::Bogus => true,
+                ValidationVerdict::Indeterminate => self.reason != VerdictReason::NoPathToAnchor,
+                ValidationVerdict::Secure | ValidationVerdict::Insecure => false,
+            }
+    }
+
+    /// Applies the validation outcome to the response's AD bit and, when
+    /// [`Self::refuses_under`] `mode`, turns the response into SERVFAIL.
     pub fn apply_to_message(&self, message: &mut Message, mode: FailureMode) {
-        match self.verdict {
-            ValidationVerdict::Secure => {
-                message.header.authentic_data = true;
-            }
-            ValidationVerdict::Insecure => {
-                message.header.authentic_data = false;
-            }
-            ValidationVerdict::Indeterminate => {
-                message.header.authentic_data = false;
-                if mode == FailureMode::HardFail && self.reason != VerdictReason::NoPathToAnchor {
-                    message.header.rcode = ResponseCode::SERVFAIL;
-                    message.answers.clear();
-                    message.authorities.clear();
-                    message.additionals.clear();
-                }
-            }
-            ValidationVerdict::Bogus => {
-                message.header.authentic_data = false;
-                if mode == FailureMode::HardFail {
-                    message.header.rcode = ResponseCode::SERVFAIL;
-                    message.answers.clear();
-                    message.authorities.clear();
-                    message.additionals.clear();
-                }
-            }
+        message.header.authentic_data = self.verdict == ValidationVerdict::Secure;
+        if self.refuses_under(mode) {
+            message.header.rcode = ResponseCode::SERVFAIL;
+            message.answers.clear();
+            message.authorities.clear();
+            message.additionals.clear();
         }
     }
 }
@@ -145,6 +138,42 @@ impl From<DenialError> for ValidationOutcome {
             DenialError::DenialProofIncomplete | DenialError::NotCovered => {
                 Self::bogus(VerdictReason::DenialProofIncomplete)
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_hard_fail_refuses_and_only_bogus_or_below_anchor_indeterminate() {
+        let cases = [
+            (
+                ValidationOutcome::secure(VerdictReason::AnchorMatched),
+                false,
+            ),
+            (
+                ValidationOutcome::insecure(VerdictReason::ProvenUnsignedDelegation),
+                false,
+            ),
+            (ValidationOutcome::bogus(VerdictReason::NoValidRrsig), true),
+            (
+                ValidationOutcome::indeterminate(VerdictReason::ChainMaterialUnavailable),
+                true,
+            ),
+            (
+                ValidationOutcome::indeterminate(VerdictReason::NoPathToAnchor),
+                false,
+            ),
+        ];
+        for (outcome, refused) in cases {
+            assert_eq!(
+                outcome.refuses_under(FailureMode::HardFail),
+                refused,
+                "{outcome:?}"
+            );
+            assert!(!outcome.refuses_under(FailureMode::WarnOnly), "{outcome:?}");
         }
     }
 }
