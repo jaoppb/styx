@@ -204,13 +204,17 @@ fn reject_recursor_transport_keys(member: &RawUpstreamConfig) -> Result<(), Conf
         ("udp_timeout_ms", member.udp_timeout_ms.is_some()),
         ("tcp_timeout_ms", member.tcp_timeout_ms.is_some()),
     ];
-    match set_keys.into_iter().find(|(_, set)| *set) {
-        Some((key, _)) => Err(ConfigError::RecursorMemberKey {
-            member: member.name.clone(),
-            key,
-        }),
-        None => Ok(()),
+    let keys: Vec<_> = set_keys
+        .into_iter()
+        .filter_map(|(key, set)| set.then_some(key))
+        .collect();
+    if keys.is_empty() {
+        return Ok(());
     }
+    Err(ConfigError::RecursorMemberKeys {
+        member: member.name.clone(),
+        keys,
+    })
 }
 
 fn parse_member(member: RawUpstreamConfig) -> Result<UpstreamConfig, ConfigError> {
@@ -358,8 +362,8 @@ mod tests {
             assert!(
                 matches!(
                     error,
-                    ConfigError::RecursorMemberKey { ref member, key }
-                        if member == "rec" && key == expected_key
+                    ConfigError::RecursorMemberKeys { ref member, ref keys }
+                        if member == "rec" && keys == &[expected_key]
                 ),
                 "{key_line} on a recursor member must be rejected: {error:?}"
             );
@@ -374,6 +378,29 @@ mod tests {
                 assert!(message.contains("[recursion.members.rec]"), "{message}");
             }
         }
+    }
+
+    #[test]
+    fn test_recursor_member_reports_every_ignored_key_at_once() {
+        let toml = "strategy = \"ordered_failover\"\n[[members]]\nname = \"rec\"\n\
+                    kind = \"recursor\"\naddr = \"0.0.0.0:0\"\nedns_buffer = 1232\n\
+                    udp_timeout_ms = 300\ntcp_timeout_ms = 300\n";
+        let error = PoolConfig::from_toml_str(toml).expect_err("keys must be rejected");
+        assert!(
+            matches!(
+                error,
+                ConfigError::RecursorMemberKeys { ref keys, .. }
+                    if keys == &["edns_buffer", "udp_timeout_ms", "tcp_timeout_ms"]
+            ),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message
+                .contains("set `udp_timeout_ms`, `tcp_timeout_ms` under [recursion.members.rec]")
+                && message.contains("edns_buffer has no recursor equivalent"),
+            "{message}"
+        );
     }
 
     #[test]

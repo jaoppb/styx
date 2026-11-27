@@ -39,26 +39,42 @@ pub enum ConfigError {
     #[error("recursor canary must test full root descent")]
     CanaryNotDescending,
 
-    /// A recursor pool member sets a key the recursor never reads; timeouts belong in
+    /// A recursor pool member sets keys the recursor never reads; timeouts belong in
     /// `[recursion.members.<name>]`, while `edns_buffer` has no recursor equivalent.
     #[error(
-        "upstream member `{member}` is a recursor, which ignores `{key}`; {}",
-        recursor_key_advice(member, key)
+        "upstream member `{member}` is a recursor, which ignores {}; {}",
+        quoted_keys(keys),
+        recursor_key_advice(member, keys)
     )]
-    RecursorMemberKey {
+    RecursorMemberKeys {
         /// The pool member's name.
         member: String,
-        /// The rejected key.
-        key: &'static str,
+        /// Every rejected key the member sets, so one restart reports them all.
+        keys: Vec<&'static str>,
     },
 }
 
-fn recursor_key_advice(member: &str, key: &str) -> String {
-    if key == "edns_buffer" {
-        return "edns_buffer has no recursor equivalent and should be removed".to_owned();
+fn quoted_keys<'a>(keys: impl IntoIterator<Item = &'a &'static str>) -> String {
+    keys.into_iter()
+        .map(|key| format!("`{key}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn recursor_key_advice(member: &str, keys: &[&'static str]) -> String {
+    let mut advice = Vec::new();
+    let timeouts: Vec<_> = keys.iter().filter(|key| **key != "edns_buffer").collect();
+    if !timeouts.is_empty() {
+        let formatted = format_toml_key(member);
+        advice.push(format!(
+            "set {} under [recursion.members.{formatted}] instead",
+            quoted_keys(timeouts)
+        ));
     }
-    let formatted = format_toml_key(member);
-    format!("set it under [recursion.members.{formatted}] instead")
+    if keys.contains(&"edns_buffer") {
+        advice.push("edns_buffer has no recursor equivalent and should be removed".to_owned());
+    }
+    advice.join("; ")
 }
 
 #[cfg(test)]
@@ -67,9 +83,9 @@ mod tests {
 
     #[test]
     fn recursor_key_advice_quotes_non_bare_toml_member_names() {
-        let dotted = ConfigError::RecursorMemberKey {
+        let dotted = ConfigError::RecursorMemberKeys {
             member: "rec.v4".to_owned(),
-            key: "udp_timeout_ms",
+            keys: vec!["udp_timeout_ms"],
         }
         .to_string();
         assert!(
@@ -77,9 +93,9 @@ mod tests {
             "{dotted}"
         );
 
-        let bare = ConfigError::RecursorMemberKey {
+        let bare = ConfigError::RecursorMemberKeys {
             member: "recursor-v4_1".to_owned(),
-            key: "tcp_timeout_ms",
+            keys: vec!["tcp_timeout_ms"],
         }
         .to_string();
         assert!(bare.contains("[recursion.members.recursor-v4_1]"), "{bare}");
