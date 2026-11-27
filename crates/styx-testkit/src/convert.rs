@@ -45,6 +45,12 @@ pub(crate) fn hickory_record(record: &ResourceRecord) -> Result<HRecord, Harness
             soa_field(soa.expire())?,
             soa.minimum(),
         )),
+        RData::Dnskey(_) | RData::Ds(_) | RData::Rrsig(_) | RData::Nsec(_) | RData::Nsec3(_) => {
+            HRData::Unknown {
+                code: hickory_type(record.rtype),
+                rdata: NULL::with(dnssec_rdata(&record.rdata)?),
+            }
+        }
         other => {
             return Err(HarnessError::Protocol(format!(
                 "the fake name server does not serve {:?} records",
@@ -70,6 +76,62 @@ pub(crate) fn dname_record(owner: &str, target: &str, ttl: u32) -> Result<HRecor
             rdata: NULL::with(target),
         },
     ))
+}
+
+/// Assembles a DNSSEC record's RDATA from its fields (RFC 4034 §2.1, §3.1, §4.1, §5.1;
+/// RFC 5155 §3.2), carried as an RFC 3597 unknown type the way [`dname_record`] carries a
+/// DNAME. Names are encoded by hickory, uncompressed as RFC 4034 §6.2 requires, and every
+/// other field is a fixed-width big-endian integer or an opaque octet string, so no byte
+/// passes through `styx-proto`'s encoder.
+fn dnssec_rdata(rdata: &RData) -> Result<Vec<u8>, HarnessError> {
+    let mut bytes = Vec::new();
+    match rdata {
+        RData::Dnskey(key) => {
+            bytes.extend(key.flags().to_be_bytes());
+            bytes.extend([key.protocol(), key.algorithm()]);
+            bytes.extend(key.public_key());
+        }
+        RData::Ds(ds) => {
+            bytes.extend(ds.key_tag().to_be_bytes());
+            bytes.extend([ds.algorithm(), ds.digest_type()]);
+            bytes.extend(ds.digest());
+        }
+        RData::Rrsig(sig) => {
+            bytes.extend(sig.type_covered().value().to_be_bytes());
+            bytes.extend([sig.algorithm(), sig.labels()]);
+            bytes.extend(sig.original_ttl().to_be_bytes());
+            bytes.extend(sig.signature_expiration().to_be_bytes());
+            bytes.extend(sig.signature_inception().to_be_bytes());
+            bytes.extend(sig.key_tag().to_be_bytes());
+            bytes.extend(hickory_name(&sig.signer_name().to_string())?.to_bytes()?);
+            bytes.extend(sig.signature());
+        }
+        RData::Nsec(nsec) => {
+            bytes.extend(hickory_name(&nsec.next_domain().to_string())?.to_bytes()?);
+            bytes.extend(nsec.types().windows());
+        }
+        RData::Nsec3(nsec3) => {
+            bytes.extend([nsec3.hash_algorithm(), nsec3.flags()]);
+            bytes.extend(nsec3.iterations().to_be_bytes());
+            bytes.push(length_octet(nsec3.salt().len())?);
+            bytes.extend(nsec3.salt());
+            bytes.push(length_octet(nsec3.next_hashed_owner().len())?);
+            bytes.extend(nsec3.next_hashed_owner());
+            bytes.extend(nsec3.types().windows());
+        }
+        other => {
+            return Err(HarnessError::Protocol(format!(
+                "{:?} is not a DNSSEC record type",
+                other.rtype()
+            )))
+        }
+    }
+    Ok(bytes)
+}
+
+fn length_octet(length: usize) -> Result<u8, HarnessError> {
+    u8::try_from(length)
+        .map_err(|_| HarnessError::Protocol(format!("NSEC3 field of {length} octets")))
 }
 
 /// Maps a `styx-proto` record type onto hickory's.

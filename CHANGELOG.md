@@ -46,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Forwarders now ask every upstream query with DO=1 and CD=1, whatever the client sent, so
+  answers from a signed zone carry their RRSIG, NSEC and NSEC3 records. A client that
+  sent DO=0 gets them stripped from the reply, live or cached, except the type it asked
+  for, and every reply's OPT carries the client's own DO bit.
 - **Breaking:** styx no longer answers public source addresses by default. That includes
   IPv6 clients on your own LAN that use a global address (the usual case with an IPv6
   prefix from the ISP) and CGNAT or Tailscale peers in `100.64.0.0/10`: they now time
