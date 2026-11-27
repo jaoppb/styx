@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   RFC 1918 and RFC 4193 private ranges and link-local; allowing public addresses (a `/0`,
   or the same space in pieces) on a non-loopback address logs a warning at startup. A
   network written in IPv4-mapped form (`::ffff:10.0.0.0/104`) matches as its IPv4 network.
+- `[[upstream.conditional]]` entries send the names under their `domains` (such as `lan` or
+  `1.168.192.in-addr.arpa`) to their own forwarders, usually the router, instead of the
+  main pool. The longest matching domain wins, answers are cached as usual, and a name
+  whose forwarders all fail gets SERVFAIL rather than leaking to the main pool.
 
 ### Changed
 

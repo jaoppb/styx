@@ -97,6 +97,7 @@ styx/
 ├── crates/
 │   ├── styx/                   # Composition root binary (startup, CLI, wiring)
 │   │   └── src/                # main.rs; upstream.rs: the pool's forwarder/recursor enum;
+│   │                           # pools.rs: the main and conditional upstream pools;
 │   │                           # encrypted.rs: certificate, TLS setup and `styx pin`
 │   ├── styx-proto/             # Shared foundation: DNS wire codec (owned domain types)
 │   │   └── src/
@@ -137,8 +138,14 @@ styx/
 │   │   │   │                   # single-flight, priming, diagnostics assembly, [recursion] config
 │   │   │   └── infrastructure/ # In-memory infra cache, Do53 transport, root hints, sinks
 │   │   └── differential/       # unbound config and corpus for `just differential`
-│   └── styx-filtering/         # Filtering & blocklist policy engine (skeleton)
-│       └── src/{domain, application, infrastructure}/
+│   ├── styx-filtering/         # Filtering & blocklist policy engine (skeleton)
+│   │   └── src/{domain, application, infrastructure}/
+│   └── styx-dnssec/            # DNSSEC validation engine and denial-of-existence verifier
+│       └── src/
+│           ├── domain/         # Wire canonicalization, crypto signatures, NSEC/NSEC3,
+│           │                   # chain material (Delegation), policy, verdicts
+│           ├── application/    # Validator, authenticator, descent walker, denial verifier
+│           └── infrastructure/ # Pinned/file trust anchors, in-memory chain source
 ├── config/                     # named.root (IANA) and an example styx.toml
 └── xtask/                      # Gate tasks (deps, hickory, module-size) and the
     └── src/main.rs             # per-phase recursion differential run

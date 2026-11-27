@@ -14,6 +14,7 @@ members = [
     "crates/styx-resolution",
     "crates/styx-recursion",
     "crates/styx-filtering",
+    "crates/styx-dnssec",
     "crates/styx",
     "xtask",
 ]
@@ -46,6 +47,7 @@ criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 stats_alloc = "0.1"
 rand = "0.10"
 ring = "0.17"
+data-encoding = "2.11"
 # Encrypted inbound (DoT and DoH). An established TLS and HTTP/2 stack, never a
 # hand-written one: the from-scratch rule covers the DNS stack only. `ring` is the
 # crypto provider because aws-lc-rs needs cmake and a C toolchain under the musl

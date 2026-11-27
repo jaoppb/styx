@@ -15,6 +15,10 @@ use crate::domain::probe::{CanaryConfig, ProbeConfig};
 use crate::domain::selection::StrategyName;
 use crate::domain::weight::Weight;
 
+mod conditional;
+
+pub use conditional::ConditionalConfig;
+
 /// Timeout budgets for an upstream provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timeouts {
@@ -63,6 +67,8 @@ pub struct PoolConfig {
     pub probe: ProbeConfig,
     /// Circuit breaker policy configuration.
     pub circuit: CircuitConfig,
+    /// Zones forwarded to their own pool instead of `members`.
+    pub conditional: Vec<ConditionalConfig>,
 }
 
 impl PoolConfig {
@@ -70,7 +76,9 @@ impl PoolConfig {
     ///
     /// # Errors
     /// Returns [`ConfigError`] on invalid syntax, empty pool, EDNS buffer size below floor,
-    /// or recursor canary that does not require descent.
+    /// recursor canary that does not require descent, or an invalid `[[conditional]]`
+    /// entry: no domains or no members, the root or a `*` label as a domain, a domain
+    /// listed more than once, or a member that is a recursor or sets `weight`.
     pub fn from_toml_str(content: &str) -> Result<Self, ConfigError> {
         let raw: RawPoolConfig = toml::from_str(content)?;
         Self::from_raw(raw)
@@ -80,7 +88,9 @@ impl PoolConfig {
     ///
     /// # Errors
     /// Returns [`ConfigError`] on invalid syntax, empty pool, EDNS buffer size below floor,
-    /// or recursor canary that does not require descent.
+    /// recursor canary that does not require descent, or an invalid `[[conditional]]`
+    /// entry: no domains or no members, the root or a `*` label as a domain, a domain
+    /// listed more than once, or a member that is a recursor or sets `weight`.
     pub fn from_toml_value(val: toml::Value) -> Result<Self, ConfigError> {
         let raw: RawPoolConfig = val.try_into().map_err(ConfigError::from)?;
         Self::from_raw(raw)
@@ -107,6 +117,7 @@ impl PoolConfig {
             members,
             probe: resolve_probe(raw.probe),
             circuit: resolve_circuit(raw.circuit),
+            conditional: conditional::parse_conditionals(raw.conditional)?,
         })
     }
 }
@@ -220,6 +231,8 @@ struct RawPoolConfig {
     probe: RawProbeConfig,
     #[serde(default)]
     circuit: RawCircuitConfig,
+    #[serde(default)]
+    conditional: Vec<conditional::RawConditionalConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
