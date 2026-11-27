@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no records, without asking an upstream and without caching the reply, so clients fall
   back to IPv4. Local records and blocked names keep their own answers. Off by default.
   HTTPS and SVCB answers may still carry an `ipv6hint`.
+- Recursion settings can be overridden per recursor member: a
+  `[recursion.members.<name>]` table sets any `[recursion]` key for that member alone,
+  and unset keys fall back to `[recursion]`, then to the built-in defaults. A member that
+  sets its own `root_hints` needs no `[recursion]` section. An override table that names no
+  recursor member of the pool is a startup error. Recursion diagnostics are kept per
+  member name, so recursors with distinct names no longer overwrite each other's
+  snapshot.
 - `allow_networks` and `deny_networks` at the top of `styx.toml` decide which client
   addresses are answered. A source outside the allowed networks, or inside a denied one,
   gets no UDP reply and has its TCP connection closed. The default allows loopback, the
@@ -43,6 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   IPv6 clients on your own LAN that use a global address (the usual case with an IPv6
   prefix from the ISP) and CGNAT or Tailscale peers in `100.64.0.0/10`: they now time
   out until your delegated prefix or those networks are in `allow_networks`.
+- **Breaking:** `udp_timeout_ms`, `tcp_timeout_ms` and `edns_buffer` on an
+  `[[upstream.members]]` entry with `kind = "recursor"` are now a startup error naming
+  every such key the member sets. The recursor never read them; set timeouts under `[recursion]` or
+  `[recursion.members.<name>]`, and remove `edns_buffer` (which has no recursor
+  equivalent). `query_timeout_secs` is now checked against each recursor member's merged
+  `udp_timeout_ms` and `tcp_timeout_ms` rather than the unused pool-member defaults.
 - **Breaking:** the default `query_timeout_secs` is now 5 (it was 2). A dead upstream can
   take up to 5 seconds to answer SERVFAIL, and graceful shutdown can wait up to 5
   seconds. The deadline still has to exceed every pool member's own timeout.

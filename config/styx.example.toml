@@ -56,7 +56,9 @@ query_timeout_secs = 5
 strategy = "ordered_failover"
 
 # The iterative recursor. `addr` is required by the pool schema but unused for a
-# recursor: it finds its servers by walking down from the root.
+# recursor: it finds its servers by walking down from the root. A recursor member takes
+# no udp_timeout_ms, tcp_timeout_ms or edns_buffer here; set its timeouts under
+# [recursion] or [recursion.members.<name>] below.
 [[upstream.members]]
 name = "recursor"
 kind = "recursor"
@@ -172,8 +174,9 @@ addr = "9.9.9.9:53"
 # max_queries_per_connection = 10000
 # max_request_body_bytes = 4096
 
-# Infrastructure for the recursor. The root-hints file is the only source of root
-# servers: a missing or unparseable file stops styx at startup.
+# Infrastructure for the recursor, shared by every recursor member as its default. The
+# root-hints file is the only source of root servers; it is loaded and checked when the
+# pool has a recursor member, and a missing or unparseable file then stops styx at startup.
 [recursion]
 root_hints = "config/named.root"
 # This path is relative to the directory styx is started from, so run styx from the
@@ -183,7 +186,9 @@ max_depth = 16
 max_outbound_queries = 64
 max_cname_chain = 8
 wall_clock_ms = 4000
-# Per-query timeouts toward authoritative servers.
+# Per-query timeouts toward authoritative servers. Like a forwarder's, both must stay
+# below `query_timeout_secs`, for every member after its overrides, or styx refuses to
+# start. wall_clock_ms is not checked against it.
 udp_timeout_ms = 800
 tcp_timeout_ms = 1500
 # Set to false on a box with no IPv6 path, so AAAA glue is never tried.
@@ -191,3 +196,10 @@ use_ipv6 = true
 # Bounds on how many delegations and nameservers the recursor remembers.
 # max_delegations = 10000
 # max_servers = 10000
+
+# Per-member overrides: a [recursion.members.<name>] table, named after a recursor
+# member of the pool, may set any key above for that member alone. Unset keys fall back
+# to [recursion], then to the built-in defaults. A member that sets its own root_hints
+# needs no [recursion] section at all.
+# [recursion.members.recursor]
+# wall_clock_ms = 3000

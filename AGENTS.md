@@ -106,7 +106,8 @@ styx/
 │   │       └── infrastructure/ # Transport-agnostic codec helpers
 │   ├── styx-core/              # Shared foundation: cross-resolution contracts and ports
 │   │   └── src/
-│   │       ├── domain/         # Clock, Sleeper, Upstream, UpstreamId, UpstreamResponse, errors
+│   │       ├── domain/         # Clock, Sleeper, Upstream, UpstreamId, UpstreamResponse, errors,
+│   │       │                   # toml_key (format_toml_key for config error messages)
 │   │       ├── infrastructure/ # SystemClock, SystemSleeper
 │   │       └── test_util/      # TestClock, TestSleeper (test-support feature)
 │   ├── styx-net/               # Shared foundation: the one outbound Do53 client

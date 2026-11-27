@@ -8,12 +8,13 @@ use std::time::Duration;
 
 use styx_core::{Clock, SystemClock};
 use styx_proto::{Header, Message, Name, Opcode, Question, RecordClass, RecordType};
+use styx_recursion::application::config::RecursionSection;
 use styx_resolution::{
     CacheConfig, ClientId, MaxResponseSize, RequestContext, ServerConfig, Transport,
 };
 use styx_testkit::CommandableUpstream;
 
-use super::{build_cache, build_pipeline, Pools};
+use super::{build_cache, build_pipeline, Pools, RecursionWiring};
 
 fn config(main: &CommandableUpstream, router: &CommandableUpstream) -> ServerConfig {
     ServerConfig::from_toml_str(&format!(
@@ -50,6 +51,18 @@ addr = "{router}"
     .expect("valid conditional configuration")
 }
 
+/// The wiring of a pool with no recursor member: nothing to validate or load.
+async fn no_recursors(config: &ServerConfig) -> RecursionWiring {
+    let pool_config = config.upstream.as_ref().expect("an [upstream] section");
+    RecursionWiring::load(
+        RecursionSection::default(),
+        pool_config,
+        config.query_timeout,
+    )
+    .await
+    .expect("a forwarder-only pool needs no recursion wiring")
+}
+
 fn query(qname: &str, clock: &SystemClock) -> RequestContext {
     let mut message = Message::new(Header::new_query(0x1234, Opcode::Query, true));
     message.questions.push(Question::new(
@@ -75,7 +88,8 @@ async fn the_built_pipeline_sends_a_conditional_name_to_its_forwarder_only() {
     let pool_config = config.upstream.as_ref().expect("an [upstream] section");
     let clock = Arc::new(SystemClock::new());
     let cache_config = CacheConfig::from_toml_str("").expect("default [cache]");
-    let pools = Pools::build(pool_config, None, &clock).expect("pools");
+    let recursion = no_recursors(&config).await;
+    let pools = Pools::build(pool_config, &recursion, &clock).expect("pools");
     let cache = build_cache(Arc::clone(&clock), &cache_config).expect("cache");
     let pipeline = build_pipeline(pools, Arc::clone(&clock), &config, cache, &cache_config);
 
@@ -99,7 +113,8 @@ async fn every_conditional_pool_gets_its_own_probe_scheduler() {
     let config = config(&main, &router);
     let pool_config = config.upstream.as_ref().expect("an [upstream] section");
     let clock = Arc::new(SystemClock::new());
-    let pools = Pools::build(pool_config, None, &clock).expect("pools");
+    let recursion = no_recursors(&config).await;
+    let pools = Pools::build(pool_config, &recursion, &clock).expect("pools");
 
     let schedulers = pools.probe_schedulers(&clock, Duration::from_secs(1));
 

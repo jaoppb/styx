@@ -1,4 +1,6 @@
-//! The cross-check between the whole-query deadline and the pool's member timeouts.
+//! The cross-check between the whole-query deadline and non-recursor member timeouts.
+
+use styx_core::UpstreamKind;
 
 use crate::domain::config::PoolConfig;
 use crate::domain::error::ConfigError;
@@ -6,13 +8,17 @@ use crate::domain::error::ConfigError;
 use super::ServerConfig;
 
 impl ServerConfig {
-    /// Checks that `query_timeout` outlasts every pool member's own timeout, so the
+    /// Checks that `query_timeout` outlasts every non-recursor member's own timeout, so the
     /// pool always settles its health accounting before the pipeline deadline fires.
     ///
+    /// Recursor members forbid pool-level `udp_timeout_ms`/`tcp_timeout_ms`; their merged
+    /// `[recursion]` per-exchange timeouts (`udp_timeout_ms` and `tcp_timeout_ms`, not
+    /// `wall_clock_ms`) are checked against `query_timeout` when recursion is wired.
+    ///
     /// # Errors
-    /// Returns [`ConfigError::Invalid`] naming the member with the longest timeout and both
-    /// durations when some member's UDP or TCP timeout is not strictly shorter than
-    /// `query_timeout`.
+    /// Returns [`ConfigError::Invalid`] naming the non-recursor member with the longest
+    /// timeout and both durations when some non-recursor's UDP or TCP timeout is not
+    /// strictly shorter than `query_timeout`.
     pub fn check_deadline_covers(&self, pool: &PoolConfig) -> Result<(), ConfigError> {
         let slowest = pool
             .members
@@ -22,6 +28,7 @@ impl ServerConfig {
                     .iter()
                     .flat_map(|entry| entry.members.iter()),
             )
+            .filter(|member| member.kind != UpstreamKind::Recursor)
             .max_by_key(|member| member.timeouts.udp.max(member.timeouts.tcp));
         let Some(member) = slowest else {
             return Ok(());

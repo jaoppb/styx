@@ -3,8 +3,7 @@
 //! `[recursion]`. Only the composition root may name both, so only it can prove the whole
 //! file parses.
 
-use styx_core::UpstreamKind;
-use styx_recursion::application::config::RecursionConfig;
+use styx_recursion::application::config::RecursionSection;
 use styx_resolution::{ServerConfig, TlsConfig};
 use styx_testkit::ExampleDocument;
 
@@ -15,14 +14,14 @@ const EXAMPLE_CONFIG: &str = include_str!(concat!(
 
 struct Parsed {
     server: ServerConfig,
-    recursion: Option<RecursionConfig>,
+    recursion: RecursionSection,
     tls_enabled: bool,
 }
 
 fn parse_through_both(text: &str) -> Result<Parsed, String> {
     Ok(Parsed {
         server: ServerConfig::from_toml_str(text).map_err(|error| error.to_string())?,
-        recursion: RecursionConfig::from_toml_str(text).map_err(|error| error.to_string())?,
+        recursion: RecursionSection::from_toml_str(text).map_err(|error| error.to_string())?,
         tls_enabled: TlsConfig::from_toml_str(text)
             .map_err(|error| error.to_string())?
             .is_some(),
@@ -30,7 +29,7 @@ fn parse_through_both(text: &str) -> Result<Parsed, String> {
 }
 
 /// What is wrong with `text` as a whole config file, or `None` when both parsers accept it
-/// and it still configures a recursor member together with its `[recursion]` section.
+/// and it still configures a recursor member whose merged recursion settings are valid.
 fn problem_with(text: &str) -> Option<String> {
     let parsed = match parse_through_both(text) {
         Ok(parsed) => parsed,
@@ -39,11 +38,8 @@ fn problem_with(text: &str) -> Option<String> {
     let Some(pool) = parsed.server.upstream else {
         return Some("the example configures no pool".to_owned());
     };
-    let has_recursor = pool
-        .members
-        .iter()
-        .any(|member| member.kind == UpstreamKind::Recursor);
-    if !has_recursor {
+    let recursors = pool.recursor_names();
+    if recursors.is_empty() {
         return Some("the example keeps no recursor member".to_owned());
     }
     if parsed.tls_enabled {
@@ -51,8 +47,9 @@ fn problem_with(text: &str) -> Option<String> {
     }
     parsed
         .recursion
-        .is_none()
-        .then(|| "a recursor member needs the [recursion] section".to_owned())
+        .validate(&recursors, parsed.server.query_timeout)
+        .err()
+        .map(|error| error.to_string())
 }
 
 #[test]
@@ -65,5 +62,30 @@ fn example_with_every_commented_key_switched_on_parses_through_both() {
     assert_eq!(
         problem_with(&ExampleDocument::parse(EXAMPLE_CONFIG).enabled()),
         None
+    );
+}
+
+#[test]
+fn a_file_without_a_pool_is_reported() {
+    assert_eq!(
+        problem_with("query_timeout_secs = 5\n").as_deref(),
+        Some("the example configures no pool")
+    );
+}
+
+#[test]
+fn a_pool_without_a_recursor_member_is_reported() {
+    let forwarders_only = r#"
+[upstream]
+strategy = "ordered_failover"
+
+[[upstream.members]]
+name = "quad9"
+kind = "forwarder"
+addr = "9.9.9.9:53"
+"#;
+    assert_eq!(
+        problem_with(forwarders_only).as_deref(),
+        Some("the example keeps no recursor member")
     );
 }

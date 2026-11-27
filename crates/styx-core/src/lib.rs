@@ -6,6 +6,7 @@
 //! - [`Sleeper`] and [`SystemSleeper`] for injectable async delays.
 //! - [`Upstream`], [`UpstreamId`], [`UpstreamKind`], [`UpstreamResponse`],
 //!   [`UpstreamError`], and [`FailureClass`] for the unified resolution contract.
+//! - [`format_toml_key`] for configuration errors that name a TOML table to edit.
 //! - [`TestClock`] and [`TestSleeper`] behind the `test-support` feature for deterministic tests.
 
 pub mod domain;
@@ -17,6 +18,7 @@ pub mod test_util;
 pub use domain::clock::Clock;
 pub use domain::error::{FailureClass, ReplyFault, UpstreamError};
 pub use domain::sleeper::Sleeper;
+pub use domain::toml_key::format_toml_key;
 pub use domain::upstream::{Upstream, UpstreamId, UpstreamKind, UpstreamResponse};
 pub use infrastructure::{SystemClock, SystemSleeper};
 
