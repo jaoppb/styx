@@ -7,14 +7,8 @@ use styx_core::{Clock, Sleeper};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+use crate::domain::request::Transport;
 use crate::infrastructure::warn_gate::{FlushPlan, Verdict, WarnGate};
-
-/// The transport a [`MalformedWarning`] speaks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ListenerKind {
-    Udp,
-    Tcp,
-}
 
 /// At most one `warn` per [`WARN_INTERVAL`](super::admission::WARN_INTERVAL) from one
 /// listener for malformed queries, however many arrive.
@@ -28,7 +22,7 @@ pub(crate) enum ListenerKind {
 /// each socket throttles on its own, so the ceiling is one line per socket per interval.
 pub(crate) struct MalformedWarning<C, S> {
     gate: WarnGate,
-    kind: ListenerKind,
+    kind: Transport,
     addr: SocketAddr,
     clock: Arc<C>,
     sleeper: Arc<S>,
@@ -43,7 +37,7 @@ where
     S: Sleeper,
 {
     pub(crate) fn new(
-        kind: ListenerKind,
+        kind: Transport,
         addr: SocketAddr,
         clock: Arc<C>,
         sleeper: Arc<S>,
@@ -94,15 +88,25 @@ where
 
     fn emit(&self, suppressed: u64) {
         match self.kind {
-            ListenerKind::Udp => tracing::warn!(
+            Transport::Udp => tracing::warn!(
                 addr = %self.addr,
                 suppressed,
                 "malformed UDP datagrams; answering FORMERR (per-datagram detail at debug)"
             ),
-            ListenerKind::Tcp => tracing::warn!(
+            Transport::Tcp => tracing::warn!(
                 addr = %self.addr,
                 suppressed,
                 "malformed TCP queries; answering FORMERR (per-query detail at debug)"
+            ),
+            Transport::Dot => tracing::warn!(
+                addr = %self.addr,
+                suppressed,
+                "malformed DoT queries; answering FORMERR (per-query detail at debug)"
+            ),
+            Transport::Doh => tracing::warn!(
+                addr = %self.addr,
+                suppressed,
+                "malformed DoH queries; answering FORMERR (per-request detail at debug)"
             ),
         }
     }

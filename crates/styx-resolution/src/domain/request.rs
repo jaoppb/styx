@@ -29,12 +29,34 @@ impl ClientId {
 }
 
 /// Underlying transport layer protocol.
+///
+/// Every transport enters the same pipeline; the variant only decides how a response is
+/// sized on the way out. DNS over TLS and DNS over HTTPS are stream transports: they carry
+/// up to 65535 octets and never set the TC bit, because a client on a stream has no larger
+/// transport to retry on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Transport {
     /// User Datagram Protocol (UDP). Subject to truncation limits.
     Udp,
     /// Transmission Control Protocol (TCP). Framed stream.
     Tcp,
+    /// DNS over TLS (RFC 7858): the TCP framing inside a TLS stream.
+    Dot,
+    /// DNS over HTTPS (RFC 8484): one wire-format message per HTTP/2 exchange.
+    Doh,
+}
+
+impl Transport {
+    /// The transport's short name, stable for use as a log or metric label.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Udp => "udp",
+            Self::Tcp => "tcp",
+            Self::Dot => "dot",
+            Self::Doh => "doh",
+        }
+    }
 }
 
 /// Bounded response size ceiling for wire transmission.
@@ -150,7 +172,7 @@ impl RequestContext {
         server_payload_size: MaxResponseSize,
     ) -> MaxResponseSize {
         match transport {
-            Transport::Tcp => MaxResponseSize::tcp_ceiling(),
+            Transport::Tcp | Transport::Dot | Transport::Doh => MaxResponseSize::tcp_ceiling(),
             Transport::Udp => {
                 if let Some(opt) = &query.opt {
                     let client_advertised =
@@ -217,5 +239,17 @@ mod tests {
 
         let size = RequestContext::derive_max_response_size(Transport::Tcp, &query, server_payload);
         assert_eq!(size, MaxResponseSize::tcp_ceiling());
+    }
+
+    #[test]
+    fn encrypted_transports_ignore_the_advertised_udp_payload() {
+        let mut query = Message::new(Header::new_query(1, Opcode::Query, false));
+        query.opt = Some(Opt::new(512, 0, false, Vec::new()));
+        let server_payload = MaxResponseSize::from_edns_advertised(1232);
+
+        for transport in [Transport::Dot, Transport::Doh] {
+            let size = RequestContext::derive_max_response_size(transport, &query, server_payload);
+            assert_eq!(size, MaxResponseSize::tcp_ceiling(), "{}", transport.name());
+        }
     }
 }

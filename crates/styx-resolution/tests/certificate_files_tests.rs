@@ -1,0 +1,374 @@
+//! The certificate files on disk: the operator's PEM pair is checked loudly at startup, and
+//! self-signed material is generated once, owner-only, and reused (issue #9).
+
+#![allow(clippy::unwrap_used)]
+
+mod harness;
+
+use std::time::Duration;
+
+use harness::certificates::{fixture_now, pin_of_key, Scratch, TestCertificate};
+use styx_resolution::domain::error::CertificateError;
+use styx_resolution::domain::tls::{
+    CertificateOrigin, OperatorCertificateLoader, PrivateKeyEncoding, SelfSignedStore,
+};
+use styx_resolution::infrastructure::cert_fs::{
+    FilesystemCertificateReader, SelfSignedGenerator, SELF_SIGNED_CERT_FILE, SELF_SIGNED_KEY_FILE,
+};
+use styx_resolution::TlsServerSetup;
+
+fn names() -> Vec<String> {
+    vec!["localhost".into(), "127.0.0.1".into()]
+}
+
+#[tokio::test]
+async fn first_boot_generates_and_later_boots_reuse_the_same_pin() {
+    let scratch = Scratch::new();
+    let store = SelfSignedGenerator::new();
+    assert!(store.load_existing(scratch.dir()).await.unwrap().is_none());
+
+    let generated = store
+        .generate(scratch.dir(), &names(), fixture_now())
+        .await
+        .unwrap();
+    assert!(generated.freshly_generated());
+    assert_eq!(generated.origin(), CertificateOrigin::SelfSigned);
+    assert_eq!(generated.subject_names(), names().as_slice());
+    assert_eq!(
+        Some(generated.validity().not_before),
+        fixture_now().checked_sub(Duration::from_secs(3600))
+    );
+
+    let key_pem = tokio::fs::read_to_string(scratch.path(SELF_SIGNED_KEY_FILE))
+        .await
+        .unwrap();
+    assert_eq!(generated.pin().to_pin_directive(), pin_of_key(&key_pem));
+
+    let reused = store.load_existing(scratch.dir()).await.unwrap().unwrap();
+    assert!(!reused.freshly_generated());
+    assert_eq!(reused.pin(), generated.pin());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_key_is_written_owner_only_and_refused_once_readable_by_others() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = Scratch::new();
+    let store = SelfSignedGenerator::new();
+    store
+        .generate(scratch.dir(), &names(), fixture_now())
+        .await
+        .unwrap();
+    let key_path = scratch.path(SELF_SIGNED_KEY_FILE);
+    let mode = tokio::fs::metadata(&key_path)
+        .await
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+
+    tokio::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644))
+        .await
+        .unwrap();
+    let error = store.load_existing(scratch.dir()).await.unwrap_err();
+    assert!(
+        matches!(error, CertificateError::InsecurePermissions { ref path } if *path == key_path),
+        "{error}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_key_and_a_writable_directory_are_refused() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = Scratch::new();
+    let store = SelfSignedGenerator::new();
+    store
+        .generate(scratch.dir(), &names(), fixture_now())
+        .await
+        .unwrap();
+
+    // A symlinked key is refused by O_NOFOLLOW instead of reading the target.
+    let key_path = scratch.path(SELF_SIGNED_KEY_FILE);
+    let target_key = scratch.path("real-key.pem");
+    tokio::fs::rename(&key_path, &target_key).await.unwrap();
+    tokio::fs::symlink(&target_key, &key_path).await.unwrap();
+    let symlink_error = store.load_existing(scratch.dir()).await.unwrap_err();
+    assert!(
+        matches!(symlink_error, CertificateError::PathUnreadable { ref path, .. } if *path == key_path),
+        "{symlink_error}"
+    );
+
+    // Restore a regular key file, then make the directory group-writable.
+    tokio::fs::remove_file(&key_path).await.unwrap();
+    tokio::fs::rename(&target_key, &key_path).await.unwrap();
+    tokio::fs::set_permissions(scratch.dir(), std::fs::Permissions::from_mode(0o770))
+        .await
+        .unwrap();
+    let dir_load_error = store.load_existing(scratch.dir()).await.unwrap_err();
+    assert!(
+        matches!(dir_load_error, CertificateError::InsecureDirectory { ref path } if *path == scratch.dir()),
+        "{dir_load_error}"
+    );
+
+    let fresh_dir = scratch.path("writable");
+    tokio::fs::create_dir_all(&fresh_dir).await.unwrap();
+    tokio::fs::set_permissions(&fresh_dir, std::fs::Permissions::from_mode(0o777))
+        .await
+        .unwrap();
+    let dir_gen_error = store
+        .generate(&fresh_dir, &names(), fixture_now())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(dir_gen_error, CertificateError::InsecureDirectory { ref path } if *path == fresh_dir),
+        "{dir_gen_error}"
+    );
+    // Restore permissions so temp cleanup can remove the directory cleanly.
+    let _ = tokio::fs::set_permissions(scratch.dir(), std::fs::Permissions::from_mode(0o700)).await;
+    let _ = tokio::fs::set_permissions(&fresh_dir, std::fs::Permissions::from_mode(0o700)).await;
+}
+
+#[tokio::test]
+async fn half_of_the_self_signed_pair_is_an_error() {
+    let scratch = Scratch::new();
+    tokio::fs::create_dir_all(scratch.dir()).await.unwrap();
+    tokio::fs::write(
+        scratch.path(SELF_SIGNED_CERT_FILE),
+        TestCertificate::valid().cert_pem,
+    )
+    .await
+    .unwrap();
+
+    let error = SelfSignedGenerator::new()
+        .load_existing(scratch.dir())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, CertificateError::IncompleteMaterial { .. }),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn a_self_signed_key_without_its_certificate_is_an_error_naming_both() {
+    let scratch = Scratch::new();
+    tokio::fs::create_dir_all(scratch.dir()).await.unwrap();
+    let key_path = scratch.path(SELF_SIGNED_KEY_FILE);
+    tokio::fs::write(&key_path, TestCertificate::valid().key_pem)
+        .await
+        .unwrap();
+
+    let error = SelfSignedGenerator::new()
+        .load_existing(scratch.dir())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            CertificateError::IncompleteMaterial { ref present, ref missing }
+                if *present == key_path && *missing == scratch.path(SELF_SIGNED_CERT_FILE)
+        ),
+        "{error}"
+    );
+}
+
+/// Operator pairs whose key is not PKCS#8, made once with `openssl` because rcgen only
+/// writes PKCS#8. Test-only material; the keys protect nothing.
+const LEGACY_KEY_PAIRS: [(&str, &str, PrivateKeyEncoding); 2] = [
+    (
+        include_str!("fixtures/rsa_pkcs1_cert.pem"),
+        include_str!("fixtures/rsa_pkcs1_key.pem"),
+        PrivateKeyEncoding::Pkcs1,
+    ),
+    (
+        include_str!("fixtures/ec_sec1_cert.pem"),
+        include_str!("fixtures/ec_sec1_key.pem"),
+        PrivateKeyEncoding::Sec1,
+    ),
+];
+
+#[tokio::test]
+async fn pkcs1_and_sec1_operator_keys_load_and_build_a_tls_setup() {
+    for (cert_pem, key_pem, encoding) in LEGACY_KEY_PAIRS {
+        let scratch = Scratch::new();
+        let (cert, key) = scratch.write_pair(cert_pem, key_pem).await;
+        let identity = FilesystemCertificateReader::new()
+            .load(&cert, &key)
+            .await
+            .unwrap();
+        assert_eq!(identity.key().encoding(), encoding);
+        assert_eq!(
+            identity.subject_names(),
+            ["localhost".to_owned()].as_slice()
+        );
+        assert!(
+            TlsServerSetup::build(&identity, false).is_ok(),
+            "{encoding:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_operator_pair_loads_with_its_names_window_and_pin() {
+    let scratch = Scratch::new();
+    let fixture = TestCertificate::valid();
+    let (cert, key) = scratch
+        .write_pair(&fixture.cert_pem, &fixture.key_pem)
+        .await;
+
+    let identity = FilesystemCertificateReader::new()
+        .load(&cert, &key)
+        .await
+        .unwrap();
+    assert_eq!(identity.origin(), CertificateOrigin::OperatorSupplied);
+    assert!(!identity.freshly_generated());
+    assert_eq!(identity.chain(), [fixture.cert_der()].as_slice());
+    assert_eq!(identity.subject_names(), names().as_slice());
+    assert_eq!(identity.pin().to_pin_directive(), fixture.independent_pin());
+}
+
+#[tokio::test]
+async fn a_key_from_another_certificate_is_a_mismatch_naming_both_files() {
+    let scratch = Scratch::new();
+    let leaf = TestCertificate::valid();
+    let other = TestCertificate::valid();
+    let (cert, key) = scratch.write_pair(&leaf.cert_pem, &other.key_pem).await;
+
+    let error = FilesystemCertificateReader::new()
+        .load(&cert, &key)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, CertificateError::KeyMismatch { ref cert_path, ref key_path }
+            if *cert_path == cert && *key_path == key),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn missing_and_malformed_operator_files_name_the_file_at_fault() {
+    let scratch = Scratch::new();
+    let fixture = TestCertificate::valid();
+    let reader = FilesystemCertificateReader::new();
+
+    let (present_cert, present_key) = scratch
+        .write_pair(&fixture.cert_pem, &fixture.key_pem)
+        .await;
+    let missing = scratch.path("absent.pem");
+    for (cert, key, at_fault) in [
+        (&missing, &present_key, &missing),
+        (&present_cert, &missing, &missing),
+    ] {
+        let error = reader.load(cert, key).await.unwrap_err();
+        assert!(
+            matches!(error, CertificateError::PathUnreadable { ref path, .. } if path == at_fault),
+            "{error}"
+        );
+    }
+
+    let (cert, key) = scratch
+        .write_pair(
+            "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+            &fixture.key_pem,
+        )
+        .await;
+    let error = reader.load(&cert, &key).await.unwrap_err();
+    assert!(
+        matches!(error, CertificateError::MalformedCertificate { ref path, .. } if *path == cert),
+        "a leaf rustls cannot read is the certificate's fault, not the key's: {error}"
+    );
+
+    let (cert, key) = scratch
+        .write_pair("not a certificate", &fixture.key_pem)
+        .await;
+    let error = reader.load(&cert, &key).await.unwrap_err();
+    assert!(
+        matches!(error, CertificateError::NoCertificateInFile { ref path } if *path == cert),
+        "{error}"
+    );
+
+    let (cert, key) = scratch.write_pair(&fixture.cert_pem, "not a key").await;
+    let error = reader.load(&cert, &key).await.unwrap_err();
+    assert!(
+        matches!(error, CertificateError::MalformedKey { ref path, .. } if *path == key),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn failed_cert_persist_leaves_no_orphan_key_behind() {
+    let scratch = Scratch::new();
+    let blocker = scratch.path(SELF_SIGNED_CERT_FILE);
+    tokio::fs::create_dir_all(&blocker).await.unwrap();
+
+    let error = SelfSignedGenerator::new()
+        .generate(scratch.dir(), &names(), fixture_now())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, CertificateError::PersistFailed { .. }),
+        "{error}"
+    );
+    assert!(
+        !tokio::fs::try_exists(scratch.path(SELF_SIGNED_KEY_FILE))
+            .await
+            .unwrap(),
+        "key.pem must not survive when cert.pem failed to persist"
+    );
+    let mut entries = tokio::fs::read_dir(scratch.dir()).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        assert!(!name.ends_with(".tmp"), "leftover temp file: {name}");
+    }
+}
+
+#[tokio::test]
+async fn the_pin_is_read_from_the_certificate_alone() {
+    let scratch = Scratch::new();
+    let fixture = TestCertificate::valid();
+    let reader = FilesystemCertificateReader::new();
+    let (cert, key) = scratch
+        .write_pair(&fixture.cert_pem, &fixture.key_pem)
+        .await;
+    let served = reader.load(&cert, &key).await.unwrap();
+
+    tokio::fs::remove_file(&key).await.unwrap();
+    let pin = reader.load_pin(&cert).await.unwrap();
+    assert_eq!(pin, served.pin(), "no key file is needed to print the pin");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn self_signed_load_pin_reads_only_the_certificate_without_dir_or_key_checks() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = Scratch::new();
+    let store = SelfSignedGenerator::new();
+    assert_eq!(store.load_pin(scratch.dir()).await.unwrap(), None);
+
+    let generated = store
+        .generate(scratch.dir(), &names(), fixture_now())
+        .await
+        .unwrap();
+    let key_path = scratch.path(SELF_SIGNED_KEY_FILE);
+    tokio::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644))
+        .await
+        .unwrap();
+    tokio::fs::set_permissions(scratch.dir(), std::fs::Permissions::from_mode(0o770))
+        .await
+        .unwrap();
+    assert!(store.load_existing(scratch.dir()).await.is_err());
+
+    let pin = store.load_pin(scratch.dir()).await.unwrap();
+    assert_eq!(pin, Some(generated.pin()));
+
+    tokio::fs::remove_file(&key_path).await.unwrap();
+    let pin_without_key = store.load_pin(scratch.dir()).await.unwrap();
+    assert_eq!(pin_without_key, Some(generated.pin()));
+
+    let _ = tokio::fs::set_permissions(scratch.dir(), std::fs::Permissions::from_mode(0o700)).await;
+}

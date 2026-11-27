@@ -1,0 +1,279 @@
+//! The binary's side of encrypted inbound (issue #9): `styx pin` re-derives the pin without
+//! generating anything, and a configured certificate that cannot be loaded stops startup
+//! instead of falling back to self-signed.
+
+// The helpers below sit outside `#[test]` functions, where clippy's allowances stop.
+#![allow(clippy::unwrap_used, clippy::panic)]
+
+use std::path::{Path, PathBuf};
+use std::process::{Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant, SystemTime};
+
+use styx_resolution::domain::tls::SelfSignedStore;
+use styx_resolution::infrastructure::cert_fs::{
+    SelfSignedGenerator, SELF_SIGNED_CERT_FILE, SELF_SIGNED_KEY_FILE,
+};
+
+fn scratch() -> PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "styx-startup-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+async fn write_config(dir: &Path, tls: &str) -> PathBuf {
+    write_config_with_section(
+        dir,
+        &format!(
+            "[tls]\nenabled = true\ndot_listen_addrs = [\"127.0.0.1:0\"]\ndoh_listen_addrs = []\n{tls}"
+        ),
+    )
+    .await
+}
+
+/// Writes a config whose `[tls]` part is exactly `tls_section`, which may be empty.
+async fn write_config_with_section(dir: &Path, tls_section: &str) -> PathBuf {
+    tokio::fs::create_dir_all(dir).await.unwrap();
+    let path = dir.join("styx.toml");
+    let config = format!(
+        "listen_addrs = [\"127.0.0.1:0\"]\n\n\
+         [upstream]\nstrategy = \"ordered_failover\"\n\n\
+         [[upstream.members]]\nname = \"local\"\nkind = \"forwarder\"\naddr = \"127.0.0.1:9\"\n\n\
+         {tls_section}"
+    );
+    tokio::fs::write(&path, config).await.unwrap();
+    path
+}
+
+/// Every case here exits on its own; one that keeps running (say, because it fell back to
+/// self-signed and started serving) is killed and failed instead of hanging CI.
+const RUN_BUDGET: Duration = Duration::from_secs(30);
+
+async fn styx(args: Vec<String>) -> Output {
+    tokio::task::spawn_blocking(move || {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_styx"))
+            .args(args)
+            .env("RUST_LOG", "warn")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            if started.elapsed() >= RUN_BUDGET {
+                let _ = child.kill();
+                panic!("styx did not exit within {RUN_BUDGET:?}");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        child.wait_with_output().unwrap()
+    })
+    .await
+    .unwrap()
+}
+
+fn text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+#[tokio::test]
+async fn pin_reports_missing_self_signed_material_without_generating_it() {
+    let dir = scratch();
+    let tls_dir = dir.join("tls");
+    let config = write_config(&dir, &format!("self_signed_dir = {:?}\n", tls_dir)).await;
+
+    let output = styx(vec!["pin".into(), config.display().to_string()]).await;
+
+    assert!(!output.status.success());
+    assert!(text(&output.stdout).is_empty(), "{}", text(&output.stdout));
+    assert!(
+        text(&output.stderr).contains("no self-signed certificate"),
+        "{}",
+        text(&output.stderr)
+    );
+    assert!(
+        !tokio::fs::try_exists(&tls_dir).await.unwrap(),
+        "pin must not generate"
+    );
+}
+
+#[tokio::test]
+async fn pin_prints_the_pin_of_the_persisted_self_signed_material() {
+    let dir = scratch();
+    let tls_dir = dir.join("tls");
+    let identity = SelfSignedGenerator::new()
+        .generate(&tls_dir, &["localhost".to_owned()], SystemTime::now())
+        .await
+        .unwrap();
+    let config = write_config(&dir, &format!("self_signed_dir = {:?}\n", tls_dir)).await;
+
+    let output = styx(vec!["pin".into(), config.display().to_string()]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), format!("{}\n", identity.pin()));
+}
+
+#[tokio::test]
+async fn pin_prints_the_pin_of_an_operator_certificate() {
+    let dir = scratch();
+    let material = dir.join("material");
+    let identity = SelfSignedGenerator::new()
+        .generate(&material, &["localhost".to_owned()], SystemTime::now())
+        .await
+        .unwrap();
+    let tls = format!(
+        "cert_path = {:?}\nkey_path = {:?}\n",
+        material.join(SELF_SIGNED_CERT_FILE),
+        material.join(SELF_SIGNED_KEY_FILE)
+    );
+    let config = write_config(&dir, &tls).await;
+
+    let output = styx(vec!["pin".into(), config.display().to_string()]).await;
+
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), format!("{}\n", identity.pin()));
+}
+
+#[tokio::test]
+async fn a_configured_certificate_that_cannot_load_stops_startup_naming_the_file() {
+    let dir = scratch();
+    let tls_dir = dir.join("tls");
+    let missing = dir.join("missing-fullchain.pem");
+    let tls = format!(
+        "cert_path = {:?}\nkey_path = {:?}\nself_signed_dir = {:?}\n",
+        missing,
+        dir.join("missing-privkey.pem"),
+        tls_dir
+    );
+    let config = write_config(&dir, &tls).await;
+
+    let output = styx(vec![config.display().to_string()]).await;
+
+    assert!(!output.status.success());
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("missing-fullchain.pem"), "{stderr}");
+    assert!(
+        !tokio::fs::try_exists(&tls_dir).await.unwrap(),
+        "no fallback to self-signed"
+    );
+}
+
+fn read_until_active(stdout: std::process::ChildStdout) -> Vec<String> {
+    use std::io::{BufRead, BufReader};
+
+    let mut lines = Vec::new();
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        let active = line.contains("DNS-over-TLS listener active");
+        lines.push(line);
+        if active {
+            break;
+        }
+    }
+    lines
+}
+
+async fn boot_until_active(config: &Path) -> String {
+    let config = config.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_styx"))
+            .arg(&config)
+            .env("RUST_LOG", "info")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let _ = tx.send(read_until_active(stdout));
+        });
+        let lines = rx.recv_timeout(RUN_BUDGET).unwrap_or_else(|_| {
+            let _ = child.kill();
+            panic!("styx did not start DoT listener within {RUN_BUDGET:?}");
+        });
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = reader.join();
+        lines.join("\n")
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn first_boot_logs_the_pin_once_and_second_boot_reuses_without_printing_it() {
+    let dir = scratch();
+    let tls_dir = dir.join("tls");
+    let config = write_config(&dir, &format!("self_signed_dir = {:?}\n", tls_dir)).await;
+
+    let first_logs = boot_until_active(&config).await;
+    assert!(
+        first_logs.contains("generated a self-signed certificate for DoT/DoH"),
+        "{first_logs}"
+    );
+    assert!(first_logs.contains("pin-sha256=\""), "{first_logs}");
+
+    let second_logs = boot_until_active(&config).await;
+    assert!(
+        !second_logs.contains("generated a self-signed certificate"),
+        "{second_logs}"
+    );
+    assert!(!second_logs.contains("pin-sha256=\""), "{second_logs}");
+
+    let pin_output = styx(vec!["pin".into(), config.display().to_string()]).await;
+    assert!(pin_output.status.success(), "{}", text(&pin_output.stderr));
+    let pin = text(&pin_output.stdout).trim().to_owned();
+    assert!(first_logs.contains(&pin), "{pin}\n{first_logs}");
+}
+
+#[tokio::test]
+async fn pin_fails_when_encrypted_inbound_is_absent_or_disabled() {
+    for section in ["", "[tls]\nenabled = false\n"] {
+        let dir = scratch();
+        let config = write_config_with_section(&dir, section).await;
+
+        let output = styx(vec!["pin".into(), config.display().to_string()]).await;
+
+        assert!(!output.status.success(), "{section:?}");
+        assert!(text(&output.stdout).is_empty(), "{section:?}");
+        assert!(
+            text(&output.stderr).contains("encrypted inbound is not enabled"),
+            "{section:?}: {}",
+            text(&output.stderr)
+        );
+    }
+}
+
+#[tokio::test]
+async fn pin_help_prints_its_usage_instead_of_reading_a_config_named_help() {
+    for flag in ["-h", "--help"] {
+        let output = styx(vec!["pin".into(), flag.into()]).await;
+
+        assert!(output.status.success(), "{flag}: {}", text(&output.stderr));
+        assert_eq!(text(&output.stdout), "usage: styx pin [config]\n", "{flag}");
+    }
+}
+
+#[tokio::test]
+async fn pin_refuses_surplus_arguments_with_its_usage() {
+    let dir = scratch();
+    let config = write_config(&dir, "").await;
+
+    let output = styx(vec![
+        "pin".into(),
+        config.display().to_string(),
+        "surplus".into(),
+    ])
+    .await;
+
+    assert!(!output.status.success());
+    assert!(text(&output.stdout).is_empty(), "{}", text(&output.stdout));
+    assert!(
+        text(&output.stderr).contains("usage: styx pin [config]"),
+        "{}",
+        text(&output.stderr)
+    );
+}
