@@ -7,6 +7,8 @@
   Its fixed stage order, `validation -> local_records -> filter -> cache -> upstream ->
   terminal`, gains a stage between `filter` and `cache`. ADR 0010 carries only a
   superseded-by link; read it with this record.
+- **Superseded in part by**: [ADR 0031](0031-locally-served-names.md), the fixed stage
+  order (a locally served stage between `local_records` and `filter`).
 
 ## Context
 
