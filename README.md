@@ -87,6 +87,9 @@ cause problems, and that lets you disable IPv6.
    cache and tls sections accept, with its built-in default. Its `root_hints` path is relative
    to the directory styx is started from, so run styx from the repository root or change
    the path to an absolute one.
+   DoT and DoH are off until `[tls]` enables them; the
+   [encrypted inbound guide](docs/operator/encrypted-inbound.md) covers the certificate,
+   the limits and `styx pin [config]`, which prints the certificate's SPKI pin.
 
 ## 🤝 Contributors
 
