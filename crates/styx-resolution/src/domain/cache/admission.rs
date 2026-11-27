@@ -100,9 +100,10 @@ impl Admission {
 
     fn check_source_eligibility(&self, source: AnswerSource) -> Option<RejectReason> {
         match source {
-            AnswerSource::LocalRecord | AnswerSource::Blocked | AnswerSource::AaaaFiltered => {
-                Some(RejectReason::ForgedAnswer)
-            }
+            AnswerSource::LocalRecord
+            | AnswerSource::Blocked
+            | AnswerSource::AaaaFiltered
+            | AnswerSource::LocallyServed => Some(RejectReason::ForgedAnswer),
             AnswerSource::CacheHit | AnswerSource::Error => Some(RejectReason::InadmissibleSource),
             AnswerSource::Upstream | AnswerSource::Recursion => None,
         }

@@ -152,6 +152,7 @@ fn loopback_server_config() -> ServerConfig {
         query_timeout: Duration::from_secs(2),
         limits: styx_resolution::ConcurrencyLimits::default_limits(),
         filter_aaaa: false,
+        doh_canary: true,
         client_access: styx_resolution::ClientAccess::default(),
         supervisor: styx_resolution::SupervisorBackoffPolicy::default(),
         upstream: None,

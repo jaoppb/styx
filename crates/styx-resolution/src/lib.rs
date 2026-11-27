@@ -40,6 +40,7 @@ pub use domain::edns::EdnsBufferSize;
 pub use domain::error::{ConfigError, ListenerError, PipelineError, PoolError, ServerError};
 pub use domain::health::{CircuitAdmission, HealthState, Outcome};
 pub use domain::limits::ConcurrencyLimits;
+pub use domain::locally_served::{LocallyServed, LocallyServedReply, LOCALLY_SERVED_TTL};
 pub use domain::ports::filter::{FilterPolicy, FilterVerdict};
 pub use domain::ports::local::LocalRecords;
 pub use domain::ports::observer::{QueryDetail, QueryObserver};

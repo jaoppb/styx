@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use styx_core::{Clock, SystemClock};
-use styx_proto::{Header, Message, Name, Opcode, Question, RecordClass, RecordType};
+use styx_proto::{Header, Message, Name, Opcode, Question, RecordClass, RecordType, ResponseCode};
 use styx_resolution::{
-    CacheConfig, ClientId, MaxResponseSize, RequestContext, ServerConfig, Transport,
+    CacheConfig, ClientId, MaxResponseSize, PipelineError, RequestContext, ServerConfig, Transport,
 };
 use styx_testkit::CommandableUpstream;
 
@@ -108,4 +108,76 @@ async fn every_conditional_pool_gets_its_own_probe_scheduler() {
         3,
         "the main pool and both conditional pools"
     );
+}
+
+fn reverse_zone_config(main: &CommandableUpstream, router: &CommandableUpstream) -> ServerConfig {
+    ServerConfig::from_toml_str(&format!(
+        r#"
+listen_addrs = ["127.0.0.1:0"]
+
+[upstream]
+strategy = "ordered_failover"
+
+[[upstream.members]]
+name = "main"
+kind = "forwarder"
+addr = "{main}"
+
+[[upstream.conditional]]
+domains = ["1.168.192.in-addr.arpa"]
+
+[[upstream.conditional.members]]
+name = "router"
+kind = "forwarder"
+addr = "{router}"
+"#,
+        main = main.udp_addr(),
+        router = router.udp_addr(),
+    ))
+    .expect("valid conditional configuration")
+}
+
+/// Asks for an A record: the fake upstream answers every question with one, and a
+/// locally served zone answers by name whatever the type.
+async fn reverse_lookup(config: &ServerConfig, qname: &str) -> Result<Message, PipelineError> {
+    let pool_config = config.upstream.as_ref().expect("an [upstream] section");
+    let clock = Arc::new(SystemClock::new());
+    let cache_config = CacheConfig::from_toml_str("").expect("default [cache]");
+    let pools = Pools::build(pool_config, None, &clock).expect("pools");
+    let cache = build_cache(Arc::clone(&clock), &cache_config).expect("cache");
+    let pipeline = build_pipeline(pools, Arc::clone(&clock), config, cache, &cache_config);
+    pipeline.handle(&query(qname, &clock)).await
+}
+
+#[tokio::test]
+async fn a_private_reverse_lookup_is_answered_nxdomain_without_asking_anyone() {
+    let main = CommandableUpstream::start().await.expect("main upstream");
+    let router = CommandableUpstream::start().await.expect("router upstream");
+    let config = reverse_zone_config(&main, &router);
+
+    let response = reverse_lookup(&config, "10.2.168.192.in-addr.arpa.")
+        .await
+        .expect("an answer");
+
+    assert_eq!(response.header.rcode, ResponseCode::NXDOMAIN);
+    assert_eq!(main.query_count(), 0, "192.168.2.10 did not leak upstream");
+    assert_eq!(
+        router.query_count(),
+        0,
+        "192.168.2.10 is outside the router's zone"
+    );
+}
+
+#[tokio::test]
+async fn a_conditional_reverse_zone_wins_over_the_locally_served_default() {
+    let main = CommandableUpstream::start().await.expect("main upstream");
+    let router = CommandableUpstream::start().await.expect("router upstream");
+    let config = reverse_zone_config(&main, &router);
+
+    reverse_lookup(&config, "10.1.168.192.in-addr.arpa.")
+        .await
+        .expect("an answer");
+
+    assert_eq!(router.query_count(), 1, "192.168.1.10 reached the router");
+    assert_eq!(main.query_count(), 0, "and not the main pool");
 }
