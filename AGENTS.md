@@ -95,7 +95,8 @@ styx/
 ├── Cargo.toml                  # Workspace virtual manifest, dependencies, lints
 ├── crates/
 │   ├── styx/                   # Composition root binary (startup, CLI, wiring)
-│   │   └── src/                # main.rs; upstream.rs: the pool's forwarder/recursor enum
+│   │   └── src/                # main.rs; upstream.rs: the pool's forwarder/recursor enum;
+│   │                           # pools.rs: the main and conditional upstream pools
 │   ├── styx-proto/             # Shared foundation: DNS wire codec (owned domain types)
 │   │   └── src/
 │   │       ├── domain/         # Wire types: Header, Question, Name, Record, RData, EDNS
