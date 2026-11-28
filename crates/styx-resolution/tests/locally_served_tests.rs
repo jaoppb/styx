@@ -233,3 +233,60 @@ fn test_doh_canary_parses_to_bool_and_defaults_to_true() {
     assert_eq!(parse("").ok(), Some(true));
     assert!(parse("doh_canary = \"no\"").is_err());
 }
+
+fn is_served(config: &ServerConfig, qname: &str) -> bool {
+    config
+        .locally_served()
+        .answer(&question(qname, RecordType::PTR))
+        .is_some()
+}
+
+#[test]
+fn test_locally_served_defers_the_domains_of_every_conditional_entry() {
+    let config = ServerConfig::from_toml_str(
+        r#"
+[upstream]
+strategy = "ordered_failover"
+
+[[upstream.members]]
+name = "main"
+kind = "forwarder"
+addr = "127.0.0.1:5301"
+
+[[upstream.conditional]]
+domains = ["lan", "1.168.192.in-addr.arpa"]
+
+[[upstream.conditional.members]]
+name = "router"
+kind = "forwarder"
+addr = "127.0.0.1:5302"
+
+[[upstream.conditional]]
+domains = ["16.172.in-addr.arpa"]
+
+[[upstream.conditional.members]]
+name = "hub"
+kind = "forwarder"
+addr = "127.0.0.1:5303"
+"#,
+    )
+    .expect("valid conditional configuration");
+
+    assert!(!is_served(&config, "10.1.168.192.in-addr.arpa."), "first entry");
+    assert!(!is_served(&config, "1.16.172.in-addr.arpa."), "second entry");
+    assert!(is_served(&config, "10.2.168.192.in-addr.arpa."));
+    assert!(is_served(&config, "1.17.172.in-addr.arpa."));
+}
+
+#[test]
+fn test_locally_served_without_an_upstream_section_defers_nothing() {
+    let config = ServerConfig::from_toml_str("doh_canary = false").expect("valid configuration");
+    assert!(config.upstream.is_none());
+
+    assert!(is_served(&config, "10.1.168.192.in-addr.arpa."));
+    assert!(is_served(&config, "localhost."));
+    assert!(
+        !is_served(&config, "use-application-dns.net."),
+        "the canary follows doh_canary"
+    );
+}
