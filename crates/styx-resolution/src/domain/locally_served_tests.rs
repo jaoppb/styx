@@ -113,6 +113,48 @@ fn a_public_reverse_name_is_not_locally_served() {
 }
 
 #[test]
+fn the_ranges_split_across_several_zones_are_served_up_to_their_edges() {
+    let table = LocallyServed::default();
+    let served = [
+        "1.16.172.in-addr.arpa.",
+        "1.31.172.in-addr.arpa.",
+        "1.254.169.in-addr.arpa.",
+        "1.8.e.f.ip6.arpa.",
+        "1.b.e.f.ip6.arpa.",
+    ];
+    for qname in served {
+        let reply = answer(&table, qname, RecordType::PTR).expect(qname);
+        assert_eq!(reply.rcode, ResponseCode::NXDOMAIN, "{qname}");
+    }
+    let forwarded = [
+        "1.15.172.in-addr.arpa.",
+        "1.32.172.in-addr.arpa.",
+        "1.253.169.in-addr.arpa.",
+        "1.7.e.f.ip6.arpa.",
+        "1.c.e.f.ip6.arpa.",
+    ];
+    for qname in forwarded {
+        assert_eq!(answer(&table, qname, RecordType::PTR), None, "{qname}");
+    }
+}
+
+#[test]
+fn an_upper_case_apex_is_answered_as_the_apex() {
+    let table = LocallyServed::default();
+
+    let soa = answer(&table, "D.F.IP6.ARPA.", RecordType::SOA).expect("locally served");
+    assert_eq!(soa.rcode, ResponseCode::NOERROR);
+    assert_eq!(
+        soa.answers.first().map(|record| record.rtype),
+        Some(RecordType::SOA)
+    );
+
+    let nodata = answer(&table, "168.192.IN-ADDR.ARPA.", RecordType::PTR).expect("locally served");
+    assert_eq!(nodata.rcode, ResponseCode::NOERROR, "NODATA, not NXDOMAIN");
+    assert!(nodata.answers.is_empty());
+}
+
+#[test]
 fn a_deferred_domain_leaves_only_its_own_names_to_the_upstream() {
     let table = LocallyServed::new(vec![name("1.168.192.in-addr.arpa.")], true);
 
@@ -132,6 +174,34 @@ fn a_deferred_domain_above_a_zone_defers_the_whole_zone() {
         answer(&table, "10.1.168.192.in-addr.arpa.", RecordType::PTR),
         None
     );
+}
+
+#[test]
+fn a_deferred_domain_equal_to_a_zone_defers_its_apex_and_everything_below() {
+    let table = LocallyServed::new(vec![name("168.192.in-addr.arpa.")], true);
+    assert_eq!(
+        answer(&table, "168.192.in-addr.arpa.", RecordType::SOA),
+        None
+    );
+    assert_eq!(
+        answer(&table, "10.1.168.192.in-addr.arpa.", RecordType::PTR),
+        None
+    );
+    assert!(answer(&table, "1.0.0.10.in-addr.arpa.", RecordType::PTR).is_some());
+}
+
+#[test]
+fn a_deferred_domain_matches_whatever_the_case_of_either_name() {
+    let table = LocallyServed::new(vec![name("1.168.192.IN-ADDR.ARPA.")], true);
+    assert_eq!(
+        answer(&table, "10.1.168.192.in-addr.arpa.", RecordType::PTR),
+        None
+    );
+    assert_eq!(
+        answer(&table, "10.1.168.192.In-Addr.Arpa.", RecordType::PTR),
+        None
+    );
+    assert!(answer(&table, "10.2.168.192.IN-ADDR.ARPA.", RecordType::PTR).is_some());
 }
 
 #[test]
