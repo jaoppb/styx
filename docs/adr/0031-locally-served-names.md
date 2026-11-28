@@ -41,7 +41,8 @@ short-circuits like the stages before it.
 - The 33 zones of RFC 6303 §4 are empty zones: a name below the apex is NXDOMAIN; at the
   apex, SOA and NS are answered and every other type is NODATA. A negative reply carries
   the zone's SOA in its authority section, as RFC 6303 §3 recommends it: MNAME and the NS
-  target are the zone, RNAME is `nobody.invalid.`, and the timers are the RFC's example's.
+  target are the zone, RNAME is `nobody.invalid.`, and the serial, refresh, retry and
+  expire timers are the RFC's example's. The negative TTL is not: it is 60 seconds, below.
 - `localhost.` and every name below it answer A with `127.0.0.1`, AAAA with `::1`, and any
   other type with NODATA (RFC 6761 §6.3).
 - `invalid.` and every name below it are NXDOMAIN for every type (RFC 6761 §6.4).
@@ -63,8 +64,9 @@ never yield: `localhost` and `invalid` are never delegated (RFC 6761), and an en
 
 **Every locally served record has a 60-second TTL, and the SOA's negative TTL is the
 same.** RFC 6303 §3 asks only that the two match and lets the rest be chosen; its example
-uses 10800 seconds. A short TTL follows ADR 0010's forged-answer rule and lets a client
-see a conditional entry added later within a minute rather than three hours.
+uses 10800 seconds. 60 seconds matches `LOCAL_RECORD_TTL` (`application/pipeline.rs`),
+the TTL of the only other forged answer that carries records, and lets a client see a
+conditional entry added later within a minute rather than three hours.
 
 ## Consequences
 
