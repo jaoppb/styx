@@ -15,6 +15,7 @@ use crate::domain::answer::{
 };
 use crate::domain::client_reply::conform_to_query;
 use crate::domain::error::PipelineError;
+use crate::domain::locally_served::LocallyServed;
 use crate::domain::ports::filter::{FilterPolicy, FilterVerdict};
 use crate::domain::ports::local::LocalRecords;
 use crate::domain::ports::observer::{QueryDetail, QueryObserver};
@@ -25,9 +26,11 @@ const LOCAL_RECORD_TTL: Ttl = Ttl::from_secs(60);
 
 /// DNS resolution pipeline enforcing fixed stage execution order.
 ///
-/// Order is a correctness property: Local Records -> Filter -> AAAA filter -> Cache -> Upstream.
+/// Order is a correctness property: Local Records -> Locally served -> Filter -> AAAA filter
+/// -> Cache -> Upstream.
 pub struct Pipeline<L, F, O, C, T = RefusedTerminal> {
     local_records: Arc<L>,
+    locally_served: LocallyServed,
     filter: Arc<F>,
     filter_aaaa: bool,
     observer: Arc<O>,
@@ -42,11 +45,18 @@ where
     O: QueryObserver,
     C: Clock,
 {
-    /// Creates a new `Pipeline` with default refused terminal.
+    /// Creates a new `Pipeline` with default refused terminal, serving every locally served
+    /// name with none deferred (see [`LocallyServed::default`]).
+    ///
+    /// A caller that routes `[[upstream.conditional]]` zones must also call
+    /// [`Self::with_locally_served`] with `ServerConfig::locally_served()`: without it a
+    /// conditional reverse zone is answered as an RFC 6303 empty zone and never reaches its
+    /// forwarders.
     #[must_use]
     pub fn new(local_records: Arc<L>, filter: Arc<F>, observer: Arc<O>, clock: Arc<C>) -> Self {
         Self {
             local_records,
+            locally_served: LocallyServed::default(),
             filter,
             filter_aaaa: false,
             observer,
@@ -71,11 +81,19 @@ where
         self
     }
 
+    /// Replaces the table of names styx answers itself.
+    #[must_use]
+    pub fn with_locally_served(mut self, locally_served: LocallyServed) -> Self {
+        self.locally_served = locally_served;
+        self
+    }
+
     /// Substitutes the terminal handler (used by test fixtures).
     #[must_use]
     pub fn with_terminal<T2: TerminalHandler>(self, terminal: Arc<T2>) -> Pipeline<L, F, O, C, T2> {
         Pipeline {
             local_records: self.local_records,
+            locally_served: self.locally_served,
             filter: self.filter,
             filter_aaaa: self.filter_aaaa,
             observer: self.observer,
@@ -124,6 +142,7 @@ where
 
         if let Some(forged) = self
             .try_local_records(ctx, question)
+            .or_else(|| self.try_locally_served(ctx, question))
             .or_else(|| self.try_filter(ctx, question))
             .or_else(|| self.try_aaaa_filter(ctx, question))
         {
@@ -186,6 +205,15 @@ where
             LOCAL_RECORD_TTL,
             ForgedSource::LocalRecord,
         ))
+    }
+
+    fn try_locally_served(
+        &self,
+        ctx: &RequestContext,
+        question: &Question,
+    ) -> Option<ForgedAnswer> {
+        let reply = self.locally_served.answer(question)?;
+        Some(ForgedAnswer::locally_served(ctx, reply))
     }
 
     fn try_filter(&self, ctx: &RequestContext, question: &Question) -> Option<ForgedAnswer> {

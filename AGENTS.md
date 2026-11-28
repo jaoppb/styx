@@ -121,7 +121,8 @@ styx/
 │   │   ├── src/
 │   │   │   ├── domain/         # Domain logic, circuit breaker, health, ports/, cache/
 │   │   │   │                   # (admission, CacheCapacity: per-shard split and byte floor),
-│   │   │   │                   # tls/ ([tls] values, serving identity, SPKI pin, cert ports)
+│   │   │   │                   # tls/ ([tls] values, serving identity, SPKI pin, cert ports),
+│   │   │   │                   # locally_served (RFC 6303 zones, localhost, DoH canary)
 │   │   │   ├── application/    # Pipeline, selection strategies, probe scheduler,
 │   │   │   │                   # CacheStage, [cache] and [tls] config, CertificateProvisioner
 │   │   │   └── infrastructure/ # UDP/TCP listeners, client transports, port adapters,

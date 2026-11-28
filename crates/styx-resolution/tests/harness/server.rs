@@ -53,6 +53,7 @@ impl ServerSettings {
             query_timeout: self.query_timeout,
             limits: self.limits,
             filter_aaaa: false,
+            doh_canary: true,
             client_access: styx_resolution::ClientAccess::default(),
             supervisor: self.supervisor,
             upstream: None,

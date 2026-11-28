@@ -4,7 +4,9 @@
 - **Date**: 2026-09-26
 - **Phase**: 2 — Server loop and test harness
 - **Superseded in part by**: [ADR 0028](0028-aaaa-filter-stage.md), the fixed stage order
-  (an AAAA filter stage between `filter` and `cache`).
+  (an AAAA filter stage between `filter` and `cache`), and
+  [ADR 0031](0031-locally-served-names.md), the same order (a locally served stage between
+  `local_records` and `filter`).
 
 ## Context
 

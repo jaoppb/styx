@@ -252,6 +252,87 @@ async fn test_filter_policy_block_honesty() {
 }
 
 #[tokio::test]
+async fn test_a_local_record_wins_over_a_locally_served_name() {
+    for name in ["localhost.", "10.1.168.192.in-addr.arpa."] {
+        let local = Arc::new(StaticLocalRecords {
+            name: name.into(),
+            ip: Ipv4Addr::new(192, 168, 1, 1),
+        });
+        let observer = Arc::new(CountingObserver::new());
+        let mut server = TestServer::boot_with_collaborators(
+            local,
+            Arc::new(styx_resolution::AllowAllFilter::new()),
+            observer.clone(),
+        )
+        .await
+        .expect("boot server");
+
+        let resp = DnsClient::new()
+            .query_udp(server.udp_addr(), &make_query(name, RecordType::A))
+            .await
+            .expect("query");
+
+        assert_eq!(resp.header.rcode, ResponseCode::NOERROR, "{name}");
+        assert_eq!(
+            resp.answers.first().map(|record| &record.rdata),
+            Some(&RData::A(Ipv4Addr::new(192, 168, 1, 1))),
+            "{name}: the operator's record, not the built-in answer"
+        );
+        let outcome = observer
+            .outcomes
+            .lock()
+            .expect("lock")
+            .first()
+            .expect("outcome")
+            .clone();
+        assert_eq!(outcome.source(), AnswerSource::LocalRecord, "{name}");
+
+        server.shutdown().await.expect("shutdown");
+    }
+}
+
+#[tokio::test]
+async fn test_a_blocklisted_doh_canary_is_locally_served_not_blocked() {
+    let filter = Arc::new(SpyFilterPolicy {
+        consulted: AtomicUsize::new(0),
+        verdict: FilterVerdict::Block,
+    });
+    let observer = Arc::new(CountingObserver::new());
+    let mut server = TestServer::boot_with_collaborators(
+        Arc::new(styx_resolution::NoLocalRecords::new()),
+        filter.clone(),
+        observer.clone(),
+    )
+    .await
+    .expect("boot server");
+
+    let resp = DnsClient::new()
+        .query_udp(
+            server.udp_addr(),
+            &make_query("use-application-dns.net.", RecordType::A),
+        )
+        .await
+        .expect("query");
+
+    assert_eq!(resp.header.rcode, ResponseCode::NXDOMAIN);
+    assert_eq!(
+        filter.consulted.load(Ordering::SeqCst),
+        0,
+        "the locally served stage short-circuits the filter"
+    );
+    let outcome = observer
+        .outcomes
+        .lock()
+        .expect("lock")
+        .first()
+        .expect("outcome")
+        .clone();
+    assert_eq!(outcome.source(), AnswerSource::LocallyServed);
+
+    server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn test_observer_records_every_query_path() {
     let observer = Arc::new(CountingObserver::new());
     let mut server = TestServer::boot_with_collaborators(

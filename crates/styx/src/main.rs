@@ -324,6 +324,7 @@ fn build_pipeline(
             Arc::new(DiscardObserver::new()),
             clock,
         )
+        .with_locally_served(config.locally_served())
         .with_filter_aaaa(config.filter_aaaa)
         .with_terminal(cache_stage),
     )

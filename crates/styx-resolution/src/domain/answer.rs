@@ -2,6 +2,7 @@
 
 use styx_proto::{Header, Message, MessageKind, RecordType, ResourceRecord, ResponseCode, Ttl};
 
+use crate::domain::locally_served::{LocallyServedReply, LOCALLY_SERVED_TTL};
 use crate::domain::request::RequestContext;
 
 /// Provenance of a resolved or forged answer.
@@ -16,6 +17,9 @@ pub enum AnswerSource {
     Blocked,
     /// Answered NODATA because the `filter_aaaa` switch is on.
     AaaaFiltered,
+    /// Answered by styx itself: an RFC 6303 empty zone, an RFC 6761 special-use name, or the
+    /// DoH canary.
+    LocallyServed,
     /// Retrieved from the in-memory answer cache.
     CacheHit,
     /// Forwarded to and answered by an upstream resolver.
@@ -35,6 +39,9 @@ pub enum ForgedSource {
     Blocked,
     /// Answered NODATA because the `filter_aaaa` switch is on.
     AaaaFiltered,
+    /// Answered by styx itself: an RFC 6303 empty zone, an RFC 6761 special-use name, or the
+    /// DoH canary.
+    LocallyServed,
 }
 
 impl ForgedSource {
@@ -43,6 +50,7 @@ impl ForgedSource {
             Self::LocalRecord => AnswerSource::LocalRecord,
             Self::Blocked => AnswerSource::Blocked,
             Self::AaaaFiltered => AnswerSource::AaaaFiltered,
+            Self::LocallyServed => AnswerSource::LocallyServed,
         }
     }
 }
@@ -199,24 +207,39 @@ impl ForgedAnswer {
         ttl: Ttl,
         source: ForgedSource,
     ) -> Self {
+        Self::assemble(ctx, records, Vec::new(), rcode, ttl, source)
+    }
+
+    /// Constructs the reply to a locally served name, its authority section included.
+    #[must_use]
+    pub fn locally_served(ctx: &RequestContext, reply: LocallyServedReply) -> Self {
+        Self::assemble(
+            ctx,
+            reply.answers,
+            reply.authority,
+            reply.rcode,
+            LOCALLY_SERVED_TTL,
+            ForgedSource::LocallyServed,
+        )
+    }
+
+    fn assemble(
+        ctx: &RequestContext,
+        answers: Vec<ResourceRecord>,
+        authority: Vec<ResourceRecord>,
+        rcode: ResponseCode,
+        ttl: Ttl,
+        source: ForgedSource,
+    ) -> Self {
         let mut header = Header::new_query(ctx.query.header.id, ctx.query.header.opcode, false);
         header.kind = MessageKind::Response;
         header.rcode = rcode;
         header.authentic_data = false;
 
-        // Apply short TTL and filter out any accidental DNSSEC key/sig records
-        let answers = records
-            .into_iter()
-            .filter(|rr| rr.rtype != RecordType::RRSIG && rr.rtype != RecordType::DNSKEY)
-            .map(|mut rr| {
-                rr.ttl = ttl;
-                rr
-            })
-            .collect();
-
         let mut message = Message::new(header);
         message.questions = ctx.query.questions.clone();
-        message.answers = answers;
+        message.answers = honest_section(answers, ttl);
+        message.authorities = honest_section(authority, ttl);
 
         // Preserve EDNS OPT skeleton if the client requested EDNS
         if ctx.query.opt.is_some() {
@@ -247,6 +270,18 @@ impl ForgedAnswer {
     pub fn into_response(self) -> Message {
         self.message
     }
+}
+
+/// Applies the short TTL and drops any accidental DNSSEC key/sig records.
+fn honest_section(records: Vec<ResourceRecord>, ttl: Ttl) -> Vec<ResourceRecord> {
+    records
+        .into_iter()
+        .filter(|rr| rr.rtype != RecordType::RRSIG && rr.rtype != RecordType::DNSKEY)
+        .map(|mut rr| {
+            rr.ttl = ttl;
+            rr
+        })
+        .collect()
 }
 
 /// Wire message and audit outcome parts decomposed from a resolution response.

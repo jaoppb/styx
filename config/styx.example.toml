@@ -33,6 +33,16 @@ query_timeout_secs = 5
 # name still answers, and a blocked name is still blocked.
 # filter_aaaa = false
 
+# doh_canary answers use-application-dns.net NXDOMAIN, which tells Firefox to keep its
+# default DNS over HTTPS off so it keeps resolving through styx. Set it to false to forward
+# the name instead. On by default.
+#
+# It toggles nothing else: styx always answers the RFC 6303 reverse zones
+# (10.in-addr.arpa, 168.192.in-addr.arpa, d.f.ip6.arpa, ...) NXDOMAIN, localhost with
+# 127.0.0.1 and ::1, and *.invalid NXDOMAIN, without asking an upstream. A reverse zone
+# listed under [[upstream.conditional]] goes to its forwarders instead.
+# doh_canary = true
+
 # Client networks the listeners answer, in CIDR notation. Any other source gets no UDP
 # reply and its TCP connection is closed, before the query is read. The default is
 # loopback, the RFC 1918 and RFC 4193 private ranges, and link-local, so styx bound to a

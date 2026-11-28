@@ -14,6 +14,7 @@ use crate::domain::limits::{
     ConcurrencyLimits, DEFAULT_MAX_IN_FLIGHT_QUERIES, DEFAULT_MAX_TCP_CONNECTIONS,
     MAX_IN_FLIGHT_PER_CONNECTION, TCP_WRITE_TIMEOUT,
 };
+use crate::domain::locally_served::LocallyServed;
 use crate::domain::request::MaxResponseSize;
 use crate::infrastructure::supervisor::{
     SupervisorBackoffPolicy, DEFAULT_HEALTHY_THRESHOLD_SECS, DEFAULT_INITIAL_BACKOFF_MS,
@@ -57,6 +58,8 @@ pub(super) struct RawConfig {
     pub(super) max_tcp_connections: Option<usize>,
     #[serde(default)]
     pub(super) filter_aaaa: bool,
+    #[serde(default = "default_doh_canary")]
+    pub(super) doh_canary: bool,
     #[serde(default)]
     pub(super) allow_networks: Option<Vec<String>>,
     #[serde(default)]
@@ -82,6 +85,10 @@ const fn default_query_timeout() -> u64 {
     DEFAULT_QUERY_TIMEOUT_SECS
 }
 
+const fn default_doh_canary() -> bool {
+    true
+}
+
 /// Infrastructure configuration loaded from a TOML file.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -97,6 +104,8 @@ pub struct ServerConfig {
     pub limits: ConcurrencyLimits,
     /// Whether `AAAA` questions are answered NODATA without asking upstream.
     pub filter_aaaa: bool,
+    /// Whether the DoH canary `use-application-dns.net` is answered NXDOMAIN.
+    pub doh_canary: bool,
     /// Which client addresses the listeners answer; every other peer is dropped unread.
     pub client_access: ClientAccess,
     /// Policy controlling supervisor retry backoff and healthy run reset.
@@ -156,6 +165,7 @@ impl ServerConfig {
                 TCP_WRITE_TIMEOUT,
             ),
             filter_aaaa: raw.filter_aaaa,
+            doh_canary: raw.doh_canary,
             client_access,
             supervisor,
             upstream,
@@ -172,6 +182,19 @@ impl ServerConfig {
         }
 
         Ok(config)
+    }
+
+    /// The names styx answers itself: the RFC 6303 zones yield to every
+    /// `[[upstream.conditional]]` domain, and the DoH canary follows `doh_canary`.
+    #[must_use]
+    pub fn locally_served(&self) -> LocallyServed {
+        let deferred = self
+            .upstream
+            .iter()
+            .flat_map(|pool| &pool.conditional)
+            .flat_map(|entry| entry.domains.iter().cloned())
+            .collect();
+        LocallyServed::new(deferred, self.doh_canary)
     }
 
     /// Returns `true` when a listener binds a non-loopback address while the allow-list
