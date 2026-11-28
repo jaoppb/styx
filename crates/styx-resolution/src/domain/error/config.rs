@@ -1,5 +1,6 @@
 //! Server configuration error taxonomy.
 
+use styx_core::format_toml_key;
 use thiserror::Error;
 
 /// Errors arising during configuration loading or validation.
@@ -37,4 +38,66 @@ pub enum ConfigError {
     /// A recursor canary question does not require full root descent.
     #[error("recursor canary must test full root descent")]
     CanaryNotDescending,
+
+    /// A recursor pool member sets keys the recursor never reads; timeouts belong in
+    /// `[recursion.members.<name>]`, while `edns_buffer` has no recursor equivalent.
+    #[error(
+        "upstream member `{member}` is a recursor, which ignores {}; {}",
+        quoted_keys(keys),
+        recursor_key_advice(member, keys)
+    )]
+    RecursorMemberKeys {
+        /// The pool member's name.
+        member: String,
+        /// Every rejected key the member sets, so one restart reports them all.
+        keys: Vec<&'static str>,
+    },
+}
+
+fn quoted_keys<'a>(keys: impl IntoIterator<Item = &'a &'static str>) -> String {
+    keys.into_iter()
+        .map(|key| format!("`{key}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn recursor_key_advice(member: &str, keys: &[&'static str]) -> String {
+    let mut advice = Vec::new();
+    let timeouts: Vec<_> = keys.iter().filter(|key| **key != "edns_buffer").collect();
+    if !timeouts.is_empty() {
+        let formatted = format_toml_key(member);
+        advice.push(format!(
+            "set {} under [recursion.members.{formatted}] instead",
+            quoted_keys(timeouts)
+        ));
+    }
+    if keys.contains(&"edns_buffer") {
+        advice.push("edns_buffer has no recursor equivalent and should be removed".to_owned());
+    }
+    advice.join("; ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recursor_key_advice_quotes_non_bare_toml_member_names() {
+        let dotted = ConfigError::RecursorMemberKeys {
+            member: "rec.v4".to_owned(),
+            keys: vec!["udp_timeout_ms"],
+        }
+        .to_string();
+        assert!(
+            dotted.contains(r#"[recursion.members."rec.v4"]"#),
+            "{dotted}"
+        );
+
+        let bare = ConfigError::RecursorMemberKeys {
+            member: "recursor-v4_1".to_owned(),
+            keys: vec!["tcp_timeout_ms"],
+        }
+        .to_string();
+        assert!(bare.contains("[recursion.members.recursor-v4_1]"), "{bare}");
+    }
 }

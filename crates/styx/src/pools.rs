@@ -26,7 +26,7 @@ pub struct Pools {
 impl Pools {
     pub fn build(
         pool_config: &PoolConfig,
-        recursion: Option<&RecursionWiring>,
+        recursion: &RecursionWiring,
         clock: &Arc<SystemClock>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
@@ -37,7 +37,7 @@ impl Pools {
                 recursion,
                 clock,
             )?,
-            conditional: build_conditional_routes(pool_config, clock)?,
+            conditional: build_conditional_routes(pool_config, recursion, clock)?,
         })
     }
 
@@ -57,7 +57,7 @@ impl Pools {
 fn build_upstream(
     member_cfg: &UpstreamConfig,
     id: &UpstreamId,
-    recursion: Option<&RecursionWiring>,
+    recursion: &RecursionWiring,
     clock: &Arc<SystemClock>,
 ) -> anyhow::Result<PoolUpstream> {
     match member_cfg.kind {
@@ -69,17 +69,9 @@ fn build_upstream(
             member_cfg.timeouts.tcp,
             Arc::clone(clock),
         ))),
-        UpstreamKind::Recursor => {
-            let Some(recursion) = recursion else {
-                anyhow::bail!(
-                    "pool member '{}' is a recursor, but the file has no [recursion] section",
-                    member_cfg.name
-                );
-            };
-            Ok(PoolUpstream::Recursor(Arc::new(
-                recursion.recursor(id.clone(), clock),
-            )))
-        }
+        UpstreamKind::Recursor => Ok(PoolUpstream::Recursor(Arc::new(
+            recursion.recursor(id.clone(), clock)?,
+        ))),
     }
 }
 
@@ -88,7 +80,7 @@ fn build_pool(
     pool_config: &PoolConfig,
     members_config: &[UpstreamConfig],
     strategy: StrategyName,
-    recursion: Option<&RecursionWiring>,
+    recursion: &RecursionWiring,
     clock: &Arc<SystemClock>,
 ) -> anyhow::Result<Arc<ConcretePool>> {
     let mut members = Vec::with_capacity(members_config.len());
@@ -112,9 +104,10 @@ fn build_pool(
 }
 
 /// One ordered-failover pool per `[[upstream.conditional]]` entry. Its members are
-/// forwarders only, which `PoolConfig` already checked, so no recursion wiring is passed.
+/// forwarders only, which `PoolConfig` already checked, so `recursion` is never consulted.
 fn build_conditional_routes(
     pool_config: &PoolConfig,
+    recursion: &RecursionWiring,
     clock: &Arc<SystemClock>,
 ) -> anyhow::Result<ConditionalRoutes<Arc<ConcretePool>>> {
     let mut routes = Vec::with_capacity(pool_config.conditional.len());
@@ -123,7 +116,7 @@ fn build_conditional_routes(
             pool_config,
             &entry.members,
             StrategyName::OrderedFailover,
-            None,
+            recursion,
             clock,
         )?;
         routes.push(ConditionalRoute {

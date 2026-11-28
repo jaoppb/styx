@@ -204,7 +204,10 @@ async fn priming_failure_falls_back_to_hints_and_recovers_once_a_root_answers() 
         error,
         RecursionError::NoReachableNameserver { at_root: true }
     );
-    let snapshot = network.diagnostics.snapshot().expect("published");
+    let snapshot = network
+        .diagnostics
+        .snapshot(&recursor.id())
+        .expect("published");
     assert_eq!(snapshot.last_successful_priming, None);
     assert_eq!(snapshot.roots[0].last_outcome, ContactOutcome::Failed);
 
@@ -312,7 +315,10 @@ async fn diagnostics_report_root_and_tld_contact() {
         .await
         .expect("resolved");
 
-    let snapshot = network.diagnostics.snapshot().expect("published");
+    let snapshot = network
+        .diagnostics
+        .snapshot(&recursor.id())
+        .expect("published");
     assert!(snapshot.last_successful_priming.is_some());
     assert_eq!(snapshot.roots.len(), 1);
     assert_eq!(snapshot.roots[0].last_outcome, ContactOutcome::Answered);
@@ -321,4 +327,43 @@ async fn diagnostics_report_root_and_tld_contact() {
     assert_eq!(snapshot.tlds[0].tld.to_string(), "com.");
     assert_eq!(snapshot.descents_total, 1);
     assert_eq!(snapshot.descents_failed, 0);
+}
+
+#[tokio::test]
+async fn recursors_sharing_one_store_keep_their_diagnostics_apart() {
+    let network = standard().await.expect("network");
+    let first = network
+        .recursor_named("recursor-a", DescentLimits::default())
+        .expect("recursor");
+    let second = network
+        .recursor_named("recursor-b", DescentLimits::default())
+        .expect("recursor");
+    first
+        .resolve_iteratively(
+            &question("a.example.com.", RecordType::A),
+            network.deadline(),
+        )
+        .await
+        .expect("resolved");
+    for qname in ["a.example.com.", "b.example.com."] {
+        network.clock.advance(Duration::from_secs(2));
+        second
+            .resolve_iteratively(&question(qname, RecordType::A), network.deadline())
+            .await
+            .expect("resolved");
+    }
+
+    let snapshot_a = network
+        .diagnostics
+        .snapshot(&first.id())
+        .expect("first publishes under its own id");
+    assert_eq!(snapshot_a.upstream, first.id());
+    assert_eq!(snapshot_a.descents_total, 1);
+
+    let snapshot_b = network
+        .diagnostics
+        .snapshot(&second.id())
+        .expect("second publishes under its own id");
+    assert_eq!(snapshot_b.upstream, second.id());
+    assert_eq!(snapshot_b.descents_total, 2);
 }

@@ -15,9 +15,13 @@
 
 mod encrypted;
 mod pools;
+#[cfg(test)]
+mod recursion_wiring_tests;
 mod upstream;
 
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,15 +29,16 @@ use anyhow::{bail, Context};
 use pools::Pools;
 use styx_core::{SystemClock, SystemSleeper, UpstreamId};
 use styx_net::Do53Client;
-use styx_recursion::application::config::RecursionConfig;
-use styx_recursion::application::recursor::{Recursor, RecursorPorts, RecursorSettings};
+use styx_recursion::application::config::{RecursionConfig, RecursionSection};
+use styx_recursion::application::recursor::{Recursor, RecursorPorts};
 use styx_recursion::domain::root_hints::RootHints;
 use styx_recursion::infrastructure::do53_transport::{Do53Transport, DNS_PORT};
 use styx_recursion::infrastructure::infra_cache::MemoryInfraCache;
 use styx_recursion::infrastructure::sinks::{DiagnosticsStore, DiscardChainMaterial};
 use styx_resolution::{
     AllowAllFilter, CacheConfig, CacheStage, CacheStatsLogger, ConfiguredStrategy, DiscardObserver,
-    NoLocalRecords, Pipeline, ProbeScheduler, Server, ServerConfig, ShardedAnswerCache, TlsConfig,
+    NoLocalRecords, Pipeline, PoolConfig, ProbeScheduler, Server, ServerConfig, ShardedAnswerCache,
+    TlsConfig,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -114,11 +119,8 @@ async fn run(path: Option<String>) -> anyhow::Result<()> {
         Some(tls) => Some(encrypted::prepare(tls, Arc::clone(&clock)).await?),
         None => None,
     };
-    let recursion = match recursion {
-        Some(recursion) => Some(RecursionWiring::load(recursion).await?),
-        None => None,
-    };
-    let pools = Pools::build(pool_config, recursion.as_ref(), &clock)?;
+    let recursion = RecursionWiring::load(recursion, pool_config, config.query_timeout).await?;
+    let pools = Pools::build(pool_config, &recursion, &clock)?;
     let answer_cache = build_cache(clock.clone(), &cache)?;
     let pipeline = build_pipeline(
         pools.clone(),
@@ -202,51 +204,91 @@ fn log_listeners<L, F, O, C, T>(server: &Server<L, F, O, C, T>) {
     }
 }
 
-/// The `[recursion]` settings with their root hints loaded, and the diagnostics
-/// store the admin/web layer will read (Phase 11).
+/// Validated per-member recursion settings, each unique root-hints file loaded once,
+/// and the diagnostics store the admin/web layer will read (Phase 11), shared by every
+/// recursor and keyed by member.
 struct RecursionWiring {
-    config: RecursionConfig,
-    hints: RootHints,
+    configs: BTreeMap<String, RecursionConfig>,
+    hints: HashMap<PathBuf, RootHints>,
     diagnostics: Arc<DiagnosticsStore>,
 }
 
 impl RecursionWiring {
-    /// Loads the root hints the section names. A missing or unparseable file is a
-    /// startup error, like any other invalid configuration: failing loudly beats a
-    /// pool that silently lost its recursor.
-    async fn load(config: RecursionConfig) -> anyhow::Result<Self> {
-        let hints = RootHints::from_config_path(&config.root_hints)
-            .await
-            .context("failed to load root hints for the recursor")?;
+    /// Validates every recursor's merged settings and per-query timeouts before touching
+    /// disk, then canonicalises paths and loads each distinct root-hints file once. A
+    /// missing or unparseable file is a startup error, like any other invalid
+    /// configuration: failing loudly beats a pool that silently lost its recursor.
+    async fn load(
+        section: RecursionSection,
+        pool_config: &PoolConfig,
+        query_timeout: Duration,
+    ) -> anyhow::Result<Self> {
+        let recursors = pool_config.recursor_names();
+        let mut configs = section.validate(&recursors, query_timeout)?;
+        let mut hints = HashMap::new();
+        for (name, config) in &mut configs {
+            let canonical = tokio::fs::canonicalize(&config.root_hints)
+                .await
+                .with_context(|| {
+                    format!("failed to load root hints for recursor member '{name}'")
+                })?;
+            config.root_hints = canonical;
+            if hints.contains_key(&config.root_hints) {
+                continue;
+            }
+            let loaded = RootHints::from_config_path(&config.root_hints)
+                .await
+                .with_context(|| {
+                    format!("failed to load root hints for recursor member '{name}'")
+                })?;
+            hints.insert(config.root_hints.clone(), loaded);
+        }
         Ok(Self {
-            config,
+            configs,
             hints,
             diagnostics: Arc::new(DiagnosticsStore::new()),
         })
     }
 
-    fn recursor(&self, id: UpstreamId, clock: &Arc<SystemClock>) -> ProductionRecursor {
-        let client = Do53Client::new(
-            self.config.udp_timeout,
-            self.config.tcp_timeout,
-            Arc::clone(clock),
-        );
-        Recursor::new(
+    /// The merged settings and the loaded root hints the recursor `id` is built from.
+    fn member(&self, id: &UpstreamId) -> anyhow::Result<MemberRecursion<'_>> {
+        let config = self
+            .configs
+            .get(id.as_str())
+            .with_context(|| format!("missing validated recursion config for '{id}'"))?;
+        let hints = self
+            .hints
+            .get(&config.root_hints)
+            .with_context(|| format!("missing loaded root hints for '{id}'"))?;
+        Ok(MemberRecursion { config, hints })
+    }
+
+    fn recursor(
+        &self,
+        id: UpstreamId,
+        clock: &Arc<SystemClock>,
+    ) -> anyhow::Result<ProductionRecursor> {
+        let MemberRecursion { config, hints } = self.member(&id)?;
+        let client = Do53Client::new(config.udp_timeout, config.tcp_timeout, Arc::clone(clock));
+        Ok(Recursor::new(
             id,
-            RecursorSettings {
-                limits: self.config.limits,
-                use_ipv6: self.config.use_ipv6,
-            },
-            &self.hints,
+            config.settings(),
+            hints,
             RecursorPorts {
                 clock: Arc::clone(clock),
                 transport: Arc::new(Do53Transport::new(client, DNS_PORT)),
                 diagnostics: Arc::clone(&self.diagnostics),
                 chain_material: Arc::new(DiscardChainMaterial),
-                infra: Arc::new(MemoryInfraCache::new(self.config.capacity)),
+                infra: Arc::new(MemoryInfraCache::new(config.capacity)),
             },
-        )
+        ))
     }
+}
+
+/// What one recursor member is built from.
+struct MemberRecursion<'wiring> {
+    config: &'wiring RecursionConfig,
+    hints: &'wiring RootHints,
 }
 
 fn build_cache(
@@ -291,7 +333,7 @@ fn build_pipeline(
 /// What the TOML file holds, one parsed section per owner.
 struct LoadedConfig {
     server: ServerConfig,
-    recursion: Option<RecursionConfig>,
+    recursion: RecursionSection,
     cache: CacheConfig,
     tls: Option<TlsConfig>,
 }
@@ -316,8 +358,8 @@ async fn read_config(path: &str) -> anyhow::Result<String> {
 }
 
 /// Reads the TOML file once and parses the sections it owns: the server and pool, the
-/// `[cache]` and `[tls]` sections (`styx-resolution`), and the optional `[recursion]`
-/// section (`styx-recursion`).
+/// `[cache]` and `[tls]` sections (`styx-resolution`), and the `[recursion]` section
+/// (`styx-recursion`).
 async fn load_config(arg: Option<String>) -> anyhow::Result<LoadedConfig> {
     let path = config_path(arg).await?;
     let content = read_config(&path).await?;
@@ -326,7 +368,7 @@ async fn load_config(arg: Option<String>) -> anyhow::Result<LoadedConfig> {
     if config.upstream.is_none() {
         bail!("configuration file '{path}' is missing required [upstream] section");
     }
-    let recursion = RecursionConfig::from_toml_str(&content)
+    let recursion = RecursionSection::from_toml_str(&content)
         .with_context(|| format!("failed to parse [recursion] from {path}"))?;
     let cache = CacheConfig::from_toml_str(&content)
         .with_context(|| format!("failed to parse [cache] from {path}"))?;

@@ -1,5 +1,8 @@
 //! The recursion crate's error types.
 
+use std::time::Duration;
+
+use styx_core::format_toml_key;
 use thiserror::Error;
 
 /// Which denial-of-service bound a descent ran into.
@@ -89,6 +92,68 @@ pub enum ConfigError {
     /// The `[recursion]` TOML section did not parse.
     #[error("invalid [recursion] configuration: {0}")]
     Toml(String),
+    /// A `[recursion.members.<name>]` table names no recursor member of the pool.
+    #[error("{} names no recursor member of the pool", format_recursion_member_table(.0))]
+    UnknownMember(String),
+    /// A recursor member's longest per-exchange timeout does not fit inside the
+    /// whole-query deadline. `wall_clock_ms` is not compared here (#146).
+    #[error(
+        "query_timeout ({}ms) must exceed recursor member `{member}`'s longest per-exchange \
+         timeout ({}ms; only udp_timeout_ms and tcp_timeout_ms are checked, not \
+         wall_clock_ms); raise query_timeout_secs or lower udp_timeout_ms / tcp_timeout_ms \
+         under [recursion] or {}",
+        .query_timeout.as_millis(),
+        .timeout.as_millis(),
+        format_recursion_member_table(.member)
+    )]
+    ExchangeTimeoutOutlastsDeadline {
+        /// The pool member's name.
+        member: String,
+        /// The longer of its merged UDP and TCP timeouts.
+        timeout: Duration,
+        /// The server's whole-query deadline.
+        query_timeout: Duration,
+    },
+    /// One recursor member's settings are invalid.
+    #[error("recursor member `{member}`: {reason}")]
+    Member {
+        /// The pool member's name.
+        member: String,
+        /// What is wrong with its settings.
+        reason: MemberConfigError,
+    },
+}
+
+/// What can go wrong when parsing or resolving one recursor member's settings.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum MemberConfigError {
+    /// An override table did not parse or named an unknown key.
+    #[error("invalid configuration: {0}")]
+    Toml(String),
+    /// A descent limit was zero after merging.
+    #[error("descent limit `{0}` must be greater than zero")]
+    ZeroLimit(&'static str),
+    /// Neither the member's overrides nor the shared `[recursion]` section name a
+    /// root-hints file.
+    #[error("no root_hints in [recursion] or in the member's overrides")]
+    MissingRootHints,
+}
+
+impl ConfigError {
+    /// Attributes `reason` to the recursor member named `member`.
+    #[must_use]
+    pub fn member(member: &str, reason: MemberConfigError) -> Self {
+        Self::Member {
+            member: member.to_owned(),
+            reason,
+        }
+    }
+}
+
+/// Formats `[recursion.members.<name>]` as a valid TOML table header, quoting `member`
+/// whenever it is not a TOML bare key.
+fn format_recursion_member_table(member: &str) -> String {
+    format!("[recursion.members.{}]", format_toml_key(member))
 }
 
 #[cfg(test)]
@@ -105,5 +170,17 @@ mod tests {
         ] {
             assert!(!shared.is_local_to_descent());
         }
+    }
+
+    #[test]
+    fn unknown_member_quotes_non_bare_toml_keys() {
+        assert_eq!(
+            ConfigError::UnknownMember("recursor-v4".to_owned()).to_string(),
+            "[recursion.members.recursor-v4] names no recursor member of the pool"
+        );
+        assert_eq!(
+            ConfigError::UnknownMember("rec.v4".to_owned()).to_string(),
+            r#"[recursion.members."rec.v4"] names no recursor member of the pool"#
+        );
     }
 }
