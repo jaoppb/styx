@@ -47,6 +47,11 @@ where
 {
     /// Creates a new `Pipeline` with default refused terminal, serving every locally served
     /// name with none deferred (see [`LocallyServed::default`]).
+    ///
+    /// A caller that routes `[[upstream.conditional]]` zones must also call
+    /// [`Self::with_locally_served`] with `ServerConfig::locally_served()`: without it a
+    /// conditional reverse zone is answered as an RFC 6303 empty zone and never reaches its
+    /// forwarders.
     #[must_use]
     pub fn new(local_records: Arc<L>, filter: Arc<F>, observer: Arc<O>, clock: Arc<C>) -> Self {
         Self {
