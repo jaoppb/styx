@@ -272,8 +272,14 @@ addr = "127.0.0.1:5303"
     )
     .expect("valid conditional configuration");
 
-    assert!(!is_served(&config, "10.1.168.192.in-addr.arpa."), "first entry");
-    assert!(!is_served(&config, "1.16.172.in-addr.arpa."), "second entry");
+    assert!(
+        !is_served(&config, "10.1.168.192.in-addr.arpa."),
+        "first entry"
+    );
+    assert!(
+        !is_served(&config, "1.16.172.in-addr.arpa."),
+        "second entry"
+    );
     assert!(is_served(&config, "10.2.168.192.in-addr.arpa."));
     assert!(is_served(&config, "1.17.172.in-addr.arpa."));
 }
